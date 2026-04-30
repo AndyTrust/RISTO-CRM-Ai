@@ -83,23 +83,45 @@ function OperatorCard({ data, rank, onPlan }) {
   )
 }
 
-function TeamStats({ chiusure }) {
+// Media ponderata: SUM(fatturato) / SUM(coperti) — coerente con quantum individuale
+function weightedQuantum(ops) {
+  const totFat = ops.reduce((s, o) => s + (parseFloat(o.fatturato_totale) || 0), 0)
+  const totCop = ops.reduce((s, o) => s + (parseInt(o.coperti_gestiti) || 0), 0)
+  return totCop > 0 ? Math.round(totFat / totCop * 100) / 100 : null
+}
+
+function TeamStats({ quantum, chiusure }) {
+  // Coperto medio = media ponderata quantum dagli operatori iPratico (coerente con ranking)
+  const maOps = quantum.filter(x => x.location === 'MAMELI')
+  const pnOps = quantum.filter(x => x.location === 'PREDDA_NIEDDA')
+  const cmMA = weightedQuantum(maOps)
+  const cmPN = weightedQuantum(pnOps)
+
+  // Scontrino medio da chiusure cassa (diverso: include delivery/asporto)
   const ma = chiusure.find(x => x.location === 'MAMELI')
   const pn = chiusure.find(x => x.location === 'PREDDA_NIEDDA')
+
   return (
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-      {[
-        { label: 'Coperto medio MA', value: ma ? eur(ma.avg_coperto_medio) : '—', icon: '📊', color: 'bg-blue-50 text-blue-600' },
-        { label: 'Coperto medio PN', value: pn ? eur(pn.avg_coperto_medio) : '—', icon: '📊', color: 'bg-green-50 text-green-600' },
-        { label: 'Scontrino medio MA', value: ma ? eur(ma.avg_scontrino_medio) : '—', icon: '🧾', color: 'bg-violet-50 text-violet-600' },
-        { label: 'Scontrino medio PN', value: pn ? eur(pn.avg_scontrino_medio) : '—', icon: '🧾', color: 'bg-amber-50 text-amber-600' },
-      ].map((s, i) => (
-        <div key={i} className="kpi-card">
-          <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${s.color}`}>{s.icon}</div>
-          <p className="text-xl font-bold mt-2">{s.value}</p>
-          <p className="text-xs text-gray-500">{s.label}</p>
-        </div>
-      ))}
+    <div className="space-y-2 mb-6">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {[
+          { label: 'Coperto medio MA', sub: 'venduto/coperto operatori', value: cmMA != null ? eur(cmMA) : '—', icon: '📊', color: 'bg-blue-50 text-blue-600' },
+          { label: 'Coperto medio PN', sub: 'venduto/coperto operatori', value: cmPN != null ? eur(cmPN) : '—', icon: '📊', color: 'bg-green-50 text-green-600' },
+          { label: 'Scontrino medio MA', sub: 'da cassa (incl. delivery)', value: ma ? eur(ma.avg_scontrino_medio) : '—', icon: '🧾', color: 'bg-violet-50 text-violet-600' },
+          { label: 'Scontrino medio PN', sub: 'da cassa (incl. delivery)', value: pn ? eur(pn.avg_scontrino_medio) : '—', icon: '🧾', color: 'bg-amber-50 text-amber-600' },
+        ].map((s, i) => (
+          <div key={i} className="kpi-card">
+            <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${s.color}`}>{s.icon}</div>
+            <p className="text-xl font-bold mt-2">{s.value}</p>
+            <p className="text-xs text-gray-500 font-medium">{s.label}</p>
+            <p className="text-[10px] text-gray-400 mt-0.5">{s.sub}</p>
+          </div>
+        ))}
+      </div>
+      <p className="text-[10px] text-gray-400 italic px-1">
+        ℹ️ Coperto medio = fatturato operatori iPratico ÷ coperti gestiti (escl. coperto fisso e delivery).
+        Scontrino medio = media scontrini da cassa, include asporto/delivery e può risultare più alto.
+      </p>
     </div>
   )
 }
@@ -109,10 +131,11 @@ function TeamObjectivePanel({ quantum }) {
   const [teamTarget, setTeamTarget] = useState('')
   const [editing, setEditing] = useState(false)
 
-  const opsWithQuantum = quantum.filter(op => op.quantum != null)
+  const opsWithQuantum = quantum.filter(op => op.quantum != null && (op.coperti_gestiti || 0) > 0)
   if (opsWithQuantum.length === 0) return null
 
-  const avgQuantum = opsWithQuantum.reduce((s, op) => s + (op.quantum || 0), 0) / opsWithQuantum.length
+  // Media ponderata per coperti: coerente con "Coperto medio" nelle card statistiche
+  const avgQuantum = weightedQuantum(opsWithQuantum) || 0
   const savedTarget = parseFloat(teamTarget) || quantum.find(op => op.quantum_target)?.quantum_target || null
 
   // Conteggio operatori sopra/sotto target
@@ -554,7 +577,9 @@ export default function KPIWaiters() {
       </div>
 
       {/* Team Stats */}
-      {teamData.chiusure?.length > 0 && <TeamStats chiusure={teamData.chiusure} />}
+      {(quantum.length > 0 || teamData.chiusure?.length > 0) && (
+        <TeamStats quantum={byLoc} chiusure={teamData.chiusure || []} />
+      )}
 
       {/* Pannello obiettivo team */}
       {byLoc.length > 0 && <TeamObjectivePanel quantum={byLoc} />}
