@@ -353,14 +353,23 @@ export const kpi = {
     return sbFetch(q)
   },
 
-  // Quantum per operatore: usa v_fatturato_operatore_mensile (valorizzato da listino)
+  // Quantum per operatore: usa v_kpi_quantum_mensile
+  // quantum = fatturato_no_coperto / coperti_gestiti (qty prodotto COPERTO per operatore)
+  // Solo operatori con mapping in employee_operator_mapping per la loro sede (fix cross-sede)
   quantum: async (p = {}) => {
     const sede = locationToSede(p.location)
 
-    // Usa v_fatturato_operatore_mensile come fonte primaria (valorizzata da listino_prodotti)
-    let qView = supabase.from('v_fatturato_operatore_mensile').select('*')
+    // 1. Carica mapping operatori per sede (per filtrare cross-sede contamination)
+    let qMap = supabase.from('employee_operator_mapping').select('sede, op_name_ipratico')
+    if (sede) qMap = qMap.eq('sede', sede)
+    const mappings = await sbFetch(qMap)
+    // Set di chiavi valide: "SEDE|OP_NAME_UPPERCASE"
+    const mappingSet = new Set((mappings || []).map(m => `${m.sede}|${m.op_name_ipratico.toUpperCase()}`))
+
+    // 2. Carica quantum pre-calcolati da v_kpi_quantum_mensile
+    // quantum = fatturato_no_coperto / coperti_gestiti (qty del prodotto COPERTO)
+    let qView = supabase.from('v_kpi_quantum_mensile').select('*')
     if (sede) qView = qView.eq('sede', sede)
-    // Filtro periodo: p.period / p.month = 'YYYY-MM', p.from/to, oppure ultimi 3 mesi di default
     const periodStr = p.period || p.month
     if (periodStr) {
       const [y, m] = periodStr.split('-')
@@ -369,40 +378,40 @@ export const kpi = {
       const now2 = new Date()
       const fromD = p.from ? new Date(p.from) : new Date(now2.getFullYear(), now2.getMonth() - 2, 1)
       const toD   = p.to   ? new Date(p.to)   : now2
-      qView = qView
-        .gte('anno', fromD.getFullYear())
-        .lte('anno', toD.getFullYear())
+      qView = qView.gte('anno', fromD.getFullYear()).lte('anno', toD.getFullYear())
     }
     const viewRows = await sbFetch(qView)
 
-    // Aggrega per sede+operatore (somma su più mesi se nessun filtro periodo)
-    // FONTE: solo iPratico (venduto_camerieri) — nessun cross-reference con employees/buste_paga
+    // 3. Aggrega per sede+operatore filtrando:
+    //    a) pseudo-operatori di sistema
+    //    b) operatori senza mapping per quella sede (cross-sede contamination)
     const KPI_PSEUDO_OPS = ['pienissimo', 'extra', 'tecnico', 'antonio']
     const byOp = {}
     for (const r of viewRows) {
       if (!r.operator || KPI_PSEUDO_OPS.includes(r.operator.toLowerCase())) continue
+      // Escludi operatori non mappati per questa sede (es. CAMILLA-MA che appare in dati PN)
+      const mapKey = `${r.sede}|${r.operator.toUpperCase()}`
+      if (!mappingSet.has(mapKey)) continue
       const key = `${r.sede}|${r.operator}`
       if (!byOp[key]) byOp[key] = {
-        operatore:   r.operator,
-        op_code:     r.operator,
-        sede:        r.sede,
-        location:    r.sede === 'MA' ? 'MAMELI' : 'PREDDA_NIEDDA',
-        tot_importo: 0,
-        coperti:     0,
+        operatore:        r.operator,
+        op_code:          r.operator,
+        sede:             r.sede,
+        location:         r.sede === 'MA' ? 'MAMELI' : 'PREDDA_NIEDDA',
         fatturato_totale: 0,
-        costo_totale: 0,
-        margine_totale: 0,
-        n_mesi: 0,
+        coperti_gestiti:  0,
+        costo_totale:     0,
+        margine_totale:   0,
+        n_mesi:           0,
       }
-      byOp[key].tot_importo     += parseFloat(r.fatturato_totale) || 0
-      byOp[key].fatturato_totale+= parseFloat(r.fatturato_totale) || 0
-      byOp[key].costo_totale    += parseFloat(r.costo_materia_totale) || 0
-      byOp[key].margine_totale  += parseFloat(r.margine_totale) || 0
-      byOp[key].coperti         += parseInt(r.pezzi_totali) || 0
+      byOp[key].fatturato_totale += parseFloat(r.fatturato_no_coperto) || 0
+      byOp[key].coperti_gestiti  += parseFloat(r.coperti_gestiti) || 0
+      byOp[key].costo_totale     += parseFloat(r.costo_materia_totale) || 0
+      byOp[key].margine_totale   += parseFloat(r.margine_totale) || 0
       byOp[key].n_mesi++
     }
 
-    // Carica target salvati
+    // 4. Carica target salvati da kpi_targets
     let qTargets = supabase.from('kpi_targets').select('operator_code,sede,quantum_target,quorum,period')
     if (sede) qTargets = qTargets.eq('sede', sede)
     const periodForTargets = p.period || p.month
@@ -412,23 +421,23 @@ export const kpi = {
     for (const t of targetsRows) targetMap[`${t.sede}|${t.operator_code}`] = t
 
     return Object.values(byOp).map(op => {
-      // Quantum = fatturato per pezzo venduto (proxy coperto medio)
-      const quantum = op.coperti > 0
-        ? Math.round(op.tot_importo / op.coperti * 100) / 100
+      // quantum = fatturato_no_coperto / coperti_gestiti (€ per coperto reale servito)
+      const quantum = op.coperti_gestiti > 0
+        ? Math.round(op.fatturato_totale / op.coperti_gestiti * 100) / 100
         : 0
-      const margine_pct = op.tot_importo > 0
-        ? Math.round(op.margine_totale / op.tot_importo * 1000) / 10
+      const margine_pct = op.fatturato_totale > 0
+        ? Math.round(op.margine_totale / op.fatturato_totale * 1000) / 10
         : 0
       const tgt = targetMap[`${op.sede}|${op.op_code}`] || null
       return {
         ...op,
+        tot_importo:     op.fatturato_totale,
         quantum,
         margine_pct,
-        quantum_target: tgt?.quantum_target ?? null,
-        quorum:         tgt?.quorum ?? null,
-        coperti_gestiti: op.coperti,
+        quantum_target:  tgt?.quantum_target ?? null,
+        quorum:          tgt?.quorum ?? null,
       }
-    }).sort((a, b) => b.tot_importo - a.tot_importo)
+    }).sort((a, b) => b.quantum - a.quantum)
   },
 
   stats: async (p = {}) => {
@@ -2806,7 +2815,7 @@ export const kpiTargetsApi = {
       updated_at: new Date().toISOString(),
     }
     const { data, error } = await supabase.from('kpi_targets_individuale')
-      .upsert(payload, { onConflict: 'employee_id,anno,mese' }).select().single()
+      .upsert(payload, { onConflict: 'employee_id,sede,anno,mese' }).select().single()
     if (error) throw error
     try { localStorage.setItem('crm_kpi_updated', JSON.stringify({ ts: Date.now() })) } catch (_) {}
     return data

@@ -309,6 +309,7 @@ export default function VendutoPage() {
   }
 
   useEffect(() => {
+    let cancelled = false
     setLoading(true)
     Promise.all([
       loadOperatori(sede, from, to),
@@ -318,13 +319,15 @@ export default function VendutoPage() {
       loadVarianti(sede, from, to),
       loadDailyChiusure(sede, from, to),
     ]).then(([op, fatOp, cat, prod, var_, daily]) => {
+      if (cancelled) return
       setOperatori(op)
       setFatturatoOp(fatOp)
       setCategorie(cat); setProdotti(prod); setVarianti(var_)
       setDailyData(daily)
       setSelOp(null)
-    }).catch(console.error)
-      .finally(() => setLoading(false))
+    }).catch(e => { if (!cancelled) console.error(e) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
   }, [location, from, to])
 
   // Merge pezzi (venduto_camerieri) con fatturato (v_fatturato_operatore_mensile)

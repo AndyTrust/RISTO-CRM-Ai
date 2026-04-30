@@ -145,7 +145,7 @@ function TeamObjectivePanel({ quantum }) {
         {/* Stats team */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="bg-white rounded-xl p-4 border border-violet-100">
-            <p className="text-xs text-gray-500">€/Piatto medio team</p>
+            <p className="text-xs text-gray-500">€/Coperto medio operatori</p>
             <p className="text-2xl font-bold text-violet-700">{eur(avgQuantum)}</p>
           </div>
           <div className="bg-white rounded-xl p-4 border border-violet-100">
@@ -577,8 +577,8 @@ export default function KPIWaiters() {
           <div className="card">
             <div className="card-header flex items-center justify-between">
               <div>
-                <h2 className="font-semibold">Quantum Ranking — €/piatto medio</h2>
-                <p className="text-xs text-gray-400 mt-0.5">Fatturato medio per articolo venduto da ogni operatore — linea viola = target individuale</p>
+                <h2 className="font-semibold">Quantum Ranking — €/coperto medio</h2>
+                <p className="text-xs text-gray-400 mt-0.5">Fatturato netto per coperto servito da ogni operatore — linea viola = target individuale</p>
               </div>
             </div>
             <div className="card-body">
@@ -590,7 +590,7 @@ export default function KPIWaiters() {
                     <CartesianGrid strokeDasharray="3 3" horizontal={false} />
                     <XAxis type="number" tickFormatter={v => `€${v}`} tick={{ fontSize: 12 }} />
                     <YAxis type="category" dataKey="operatore" tick={{ fontSize: 12 }} width={90} />
-                    <Tooltip formatter={(v) => [`€ ${v.toFixed(2)}`, 'Quantum']} />
+                    <Tooltip formatter={(v) => [`€ ${v.toFixed(2)}`, '€/coperto']} />
                     <Bar dataKey="quantum" radius={[0,4,4,0]}>
                       {byLoc.map((op, i) => (
                         <Cell key={i} fill={
@@ -649,7 +649,7 @@ export default function KPIWaiters() {
           <div className="card p-4 bg-violet-50 border-violet-200">
             <h3 className="font-semibold text-violet-800 mb-2">📖 Glossario KPI — Academy Risto CRM</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs text-violet-700">
-              <div><strong>Quantum</strong> = venduto totale operatore ÷ coperti gestiti. Misura l'efficacia di vendita per coperto.</div>
+              <div><strong>Quantum</strong> = fatturato netto operatore ÷ coperti gestiti (dal prodotto COPERTO in iPratico). Misura il ricavo medio per ogni cliente servito.</div>
               <div><strong>Quorum</strong> = soglia minima di quantum accettabile. Sotto il quorum = attivazione piano di miglioramento.</div>
               <div><strong>Target</strong> = obiettivo quantum da raggiungere nel periodo. Concordato in riunione 1:1.</div>
               <div><strong>Coperto medio</strong> = venduto locale ÷ coperti giornata. KPI del locale, non del singolo operatore.</div>

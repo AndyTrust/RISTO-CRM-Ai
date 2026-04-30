@@ -6,6 +6,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { turni as turniApi, employees as empApi, repartiApi } from '../api/client'
 import { bustePaga as bustePagaApi, venduto as vendutoApi } from '../api/client'
 import supabase from '../supabase'
+import useClaudeAI from '../hooks/useClaudeAI'
 
 // ─── COSTANTI ─────────────────────────────────────────────────────────────────
 
@@ -1529,6 +1530,7 @@ function extractJsonFromAI(text) {
 
 function AIPlannerTab({ ctx }) {
   const { enrichedEmps, reparti, fabbisogno, regole, shifts, bozzaShifts, reloadBozza, reload } = ctx
+  const { callClaude } = useClaudeAI()
   const [prompt, setPrompt]         = useState('')
   const [aiSede, setAiSede]         = useState(ctx.selectedSede === 'ALL' ? 'MA' : ctx.selectedSede)
   const [aiAnalysis, setAiAnalysis] = useState(null)   // testo analisi AI
@@ -1665,42 +1667,16 @@ IMPORTANTE: includi SOLO i turni lavorativi (Pranzo/Cena/Intero/Ferie). NON incl
       await supabase.from('shifts').delete()
         .eq('stato','bozza').eq('settimana_label',weekLabel).eq('sede',aiSede)
 
-      // 2. API key
-      const {data:cfg} = await supabase.from('crm_config').select('value').eq('key','anthropic_api_key').single()
-      const apiKey = cfg?.value ? String(cfg.value).replace(/^"|"$/g,'') : ''
-      if (!apiKey) throw new Error('API key non configurata (CRM Config → anthropic_api_key)')
-
-      // 3. Chiama Claude — FIX: passa historicalContext esplicitamente + max_tokens 8192
+      // 2. Chiama Claude via Edge Function (la API key rimane server-side)
       const contextText = buildContext(historicalContext)
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json',
-          'anthropic-dangerous-direct-browser-access': 'true',
-        },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 8000,  // FIX: era 6000, troppo poco per JSON completo
-          system: 'Sei un esperto HR per ristoranti italiani. Genera planning turni ottimizzati. Rispondi in italiano. Il JSON deve essere COMPLETO e valido — non troncare mai la risposta.',
-          messages: [{ role: 'user', content: contextText }]
-        })
-      })
+      const text = await callClaude(
+        [{ role: 'user', content: contextText }],
+        'Sei un esperto HR per ristoranti italiani. Genera planning turni ottimizzati. Rispondi in italiano. Il JSON deve essere COMPLETO e valido — non troncare mai la risposta.',
+        { model: 'claude-sonnet-4-6', max_tokens: 8000 }
+      )
 
-      const jsonResp = await res.json()
-      console.log('[AI Planner] stop_reason:', jsonResp.stop_reason, 'usage:', jsonResp.usage)
-
-      // FIX: gestisci errori API separatamente dall'assenza di JSON
-      if (jsonResp.error) throw new Error(`API Error: ${jsonResp.error.message || JSON.stringify(jsonResp.error)}`)
-      if (!jsonResp.content?.[0]?.text) throw new Error(`Risposta vuota dall\'API (type: ${jsonResp.type})`)
-
-      const text = jsonResp.content[0].text
-      setRawResponse(text) // FIX: salva per debug
-
-      // FIX: avvisa se troncato
-      const truncated = jsonResp.stop_reason === 'max_tokens'
-      if (truncated) console.warn('[AI Planner] Risposta troncata! Tentativo recupero JSON parziale…')
+      if (!text) throw new Error('Risposta vuota dall\'API')
+      setRawResponse(text) // salva per debug
 
       // 4. Analisi testuale (senza il JSON)
       const analysis = text.replace(/```[\s\S]*?```/g,'').trim()
