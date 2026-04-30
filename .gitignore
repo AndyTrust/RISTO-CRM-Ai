@@ -1,0 +1,12 @@
+node_modules/
+data/
+*.db
+.env
+.env.local
+.env.*.local
+*.log
+dist/
+*.timestamp-*.mjs
+.DS_Store
+.ssh_deploy_key
+.ssh_deploy_key.pub

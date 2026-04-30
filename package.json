@@ -1,0 +1,17 @@
+{
+  "name": "crm-140grammi",
+  "version": "1.0.0",
+  "description": "CRM Gestionale 140 Grammi — Mameli & Predda Niedda",
+  "private": true,
+  "scripts": {
+    "build": "cd client && npm install && npm run build",
+    "dev": "concurrently --kill-others-on-fail \"npm run server\" \"npm run client\"",
+    "server": "node --watch server/index.js",
+    "client": "cd client && npm run dev",
+    "install:all": "npm install && cd server && npm install && cd ../client && npm install",
+    "setup": "node server/setup.js"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
