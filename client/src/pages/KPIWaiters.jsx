@@ -9,9 +9,6 @@ import PageAssistant from '../components/PageAssistant'
 
 const COLORS = ['#6366f1','#3b82f6','#10b981','#f59e0b','#ec4899','#8b5cf6','#ef4444','#14b8a6']
 
-// Ruoli che identificano personale sala (camerieri)
-const SALA_ROLES = ['Cameriere', 'Commis', 'Responsabile']
-
 function eur(n) { return n != null ? `€ ${Number(n).toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—' }
 function pct(actual, target) { if (!target || !actual) return 0; return Math.min(150, Math.round(actual / target * 100)) }
 
@@ -500,18 +497,8 @@ export default function KPIWaiters() {
       kpiApi.team(params),
       empApi.getAll({ active: 'true' }),
     ]).then(([q, t, e]) => {
-      // Whitelist: solo camerieri/sala registrati come dipendenti attivi
-      const salaNames = new Set(
-        (e || [])
-          .filter(emp => SALA_ROLES.includes(emp.role))
-          .map(emp => (emp.name || '').toLowerCase().trim())
-      )
-      const rawQ = Array.isArray(q) ? q : []
-      // Se la whitelist è vuota (nessun dipendente caricato) mostra tutto; altrimenti filtra
-      const filteredQ = salaNames.size > 0
-        ? rawQ.filter(op => salaNames.has((op.operatore || '').toLowerCase().trim()))
-        : rawQ
-      setQuantum(filteredQ)
+      // Fonte dati: solo iPratico (venduto_camerieri) — nessun filtro su employees/buste_paga
+      setQuantum(Array.isArray(q) ? q : [])
       setTeamData(t && typeof t === 'object' ? t : { chiusure: [], operatori: [] })
       setEmployees(e)
     }).catch(console.error).finally(() => setLoading(false))
@@ -522,18 +509,7 @@ export default function KPIWaiters() {
   const refreshQuantum = () => {
     const loc = location === 'all' ? undefined : location
     const month = !useTuttiMesi && selectedMese ? selectedMese : undefined
-    kpiApi.quantum({ location: loc, month }).then(q => {
-      const salaNames = new Set(
-        employees
-          .filter(emp => SALA_ROLES.includes(emp.role))
-          .map(emp => (emp.name || '').toLowerCase().trim())
-      )
-      const rawQ = Array.isArray(q) ? q : []
-      const filteredQ = salaNames.size > 0
-        ? rawQ.filter(op => salaNames.has((op.operatore || '').toLowerCase().trim()))
-        : rawQ
-      setQuantum(filteredQ)
-    })
+    kpiApi.quantum({ location: loc, month }).then(q => setQuantum(Array.isArray(q) ? q : []))
   }
 
   return (

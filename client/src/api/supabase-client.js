@@ -375,26 +375,12 @@ export const kpi = {
     }
     const viewRows = await sbFetch(qView)
 
-    // ── Whitelist: solo dipendenti attivi con ruolo sala ─────────────────────
-    // Esclude cucina, lavapiatti, amministrazione, ecc. da iPratico
-    const SALA_ROLES = ['Cameriere', 'Commis', 'Responsabile']
-    const { data: empRows } = await supabase
-      .from('employees')
-      .select('name, sede, role')
-      .eq('active', true)
-    const salaNameSet = new Set(
-      (empRows || [])
-        .filter(e => SALA_ROLES.includes(e.role))
-        .map(e => (e.name || '').toLowerCase().trim())
-    )
-
     // Aggrega per sede+operatore (somma su più mesi se nessun filtro periodo)
+    // FONTE: solo iPratico (venduto_camerieri) — nessun cross-reference con employees/buste_paga
     const KPI_PSEUDO_OPS = ['pienissimo', 'extra', 'tecnico', 'antonio']
     const byOp = {}
     for (const r of viewRows) {
       if (!r.operator || KPI_PSEUDO_OPS.includes(r.operator.toLowerCase())) continue
-      // Escludi operatori non registrati come sala dipendenti
-      if (salaNameSet.size > 0 && !salaNameSet.has(r.operator.toLowerCase().trim())) continue
       const key = `${r.sede}|${r.operator}`
       if (!byOp[key]) byOp[key] = {
         operatore:   r.operator,
