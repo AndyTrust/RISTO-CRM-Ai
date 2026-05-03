@@ -109,7 +109,8 @@ function BESection({ beMensile, loading }) {
     </div>
   )
 
-  const filtered = beMensile.filter(r => r.sede === sede && r.incasso > 0)
+  // Mesi con almeno 25 giorni = mese completo (esclude mese corrente parziale)
+  const filtered = beMensile.filter(r => r.sede === sede && r.incasso > 0 && r.giorni >= 25)
 
   // Dati per il grafico stacked bar: costi vs incasso
   const chartData = filtered.map(r => ({
@@ -122,8 +123,9 @@ function BESection({ beMensile, loading }) {
     unreliable: r.fatture_unreliable,
   }))
 
-  // Summary dell'ultimo mese completo con tutti i dati
-  const lastFull = [...filtered].reverse().find(r => r.costo_personale > 0 && r.costo_fatture > 0)
+  // Summary dell'ultimo mese completo con dati affidabili (escludo mesi ⚠ se possibile)
+  const lastFull = [...filtered].reverse().find(r => !r.fatture_unreliable && r.costo_personale > 0 && r.costo_fatture > 0)
+    || [...filtered].reverse().find(r => r.costo_personale > 0 && r.costo_fatture > 0)
 
   return (
     <div>
@@ -229,7 +231,7 @@ function BESection({ beMensile, loading }) {
 
       {/* Box calcolo semplice */}
       <div className="mt-4 bg-gray-50 border border-gray-200 rounded-xl p-4">
-        <p className="text-xs font-semibold text-gray-700 mb-2">📐 Calcolo semplice — Costi totali azienda ÷ 2 locali</p>
+        <p className="text-xs font-semibold text-gray-700 mb-2">📐 Calcolo semplice — (Buste paga + Fatture acquisto) ÷ 2 locali — Aprile 2026</p>
         {(() => {
           const aprMA = beMensile.find(r => r.sede === 'MA' && r.mese === 4)
           const aprPN = beMensile.find(r => r.sede === 'PN' && r.mese === 4)
@@ -240,11 +242,21 @@ function BESection({ beMensile, loading }) {
           const totCosti = totPersonale + totFatture + totFissi
           const perLocale = Math.round(totCosti / 2)
           return (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
-              <div><span className="text-gray-500">Buste paga totali:</span><br /><strong>€{totPersonale.toLocaleString('it-IT')}</strong></div>
-              <div><span className="text-gray-500">Fatture totali (apr):</span><br /><strong>€{totFatture.toLocaleString('it-IT')}</strong></div>
-              <div><span className="text-gray-500">Costi fissi:</span><br /><strong>€{totFissi.toLocaleString('it-IT')}</strong></div>
-              <div className="bg-indigo-50 rounded p-2"><span className="text-indigo-600 font-semibold">÷ 2 locali = </span><br /><strong className="text-indigo-700 text-sm">€{perLocale.toLocaleString('it-IT')}/locale</strong></div>
+            <div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs mb-2">
+                <div>
+                  <span className="text-gray-500">Buste paga (apr):</span><br />
+                  <strong>€{totPersonale.toLocaleString('it-IT')}</strong>
+                  <span className="text-amber-500 ml-1" title="Aprile ha 18 cedolini per sede vs 28 normali — probabilmente incompleto">⚠</span>
+                </div>
+                <div><span className="text-gray-500">Fatture acq. (apr):</span><br /><strong>€{totFatture.toLocaleString('it-IT')}</strong></div>
+                <div><span className="text-gray-500">Costi fissi (parziali):</span><br /><strong>€{totFissi.toLocaleString('it-IT')}</strong></div>
+                <div className="bg-indigo-50 rounded p-2">
+                  <span className="text-indigo-600 font-semibold">÷ 2 locali = </span><br />
+                  <strong className="text-indigo-700 text-sm">€{perLocale.toLocaleString('it-IT')}/locale</strong>
+                </div>
+              </div>
+              <p className="text-xs text-amber-600">⚠ Buste paga apr: 18 cedolini per sede (vs 28+ normali) → personale probabilmente sottostimato. Fissi registrati = solo affitto+indennizzi, mancano utenze/commercialista/assicurazioni.</p>
             </div>
           )
         })()}
