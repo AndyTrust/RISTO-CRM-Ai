@@ -1,698 +1,640 @@
-import React, { useEffect, useState } from 'react'
-import { kpi as kpiApi, employees as empApi } from '../api/client'
+/**
+ * KPIWaiters.jsx — Performance Camerieri
+ * Dati reali da: v_operatore_mese, v_be_mensile, kpi_targets_team,
+ *               kpi_targets_individuale, v_kpi_quantum_mensile,
+ *               v_bonus_team, v_bonus_operatore, venduto_camerieri
+ */
+import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell, ResponsiveContainer,
-  ReferenceLine
-} from 'recharts'
-import { Target, TrendingUp, Users, Award, ChevronDown, ChevronUp, CheckSquare, Square, Save, Trophy, Medal } from 'lucide-react'
-import PageAssistant from '../components/PageAssistant'
+  Target, TrendingUp, Users, Euro, BarChart3,
+  RefreshCw, ChevronDown, ChevronUp, Award,
+  Sparkles, Package
+} from 'lucide-react'
+import {
+  operatoreMeseApi, beMensileApi, kpiTargetsApi, bonusApi
+} from '../api/client'
+import supabase from '../supabase'
 
-const COLORS = ['#6366f1','#3b82f6','#10b981','#f59e0b','#ec4899','#8b5cf6','#ef4444','#14b8a6']
+// ── Utils ──────────────────────────────────────────────────────────────
+const MESI = ['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic']
+const COLORS = ['#6366f1','#3b82f6','#10b981','#f59e0b','#ec4899','#8b5cf6','#ef4444','#14b8a6','#f97316','#06b6d4']
+const fmt    = (n, d = 2) => n == null || isNaN(n) ? '—' : Number(n).toLocaleString('it-IT', { minimumFractionDigits: d, maximumFractionDigits: d })
+const fmtEur = n => n == null ? '—' : `€ ${fmt(n)}`
+const fmtPct = n => n == null ? '—' : `${fmt(n, 1)}%`
 
-function eur(n) { return n != null ? `€ ${Number(n).toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—' }
-function pct(actual, target) { if (!target || !actual) return 0; return Math.min(150, Math.round(actual / target * 100)) }
-
-function ProgressBar({ value, target, color = '#6366f1', showLabel = true }) {
-  const p = pct(value, target)
-  const isOk   = p >= 100
-  const isWarn = p >= 80 && p < 100
-  const isLow  = p < 80
+function KpiCard({ icon: Icon, label, value, sub, color = 'indigo', badge }) {
   return (
-    <div className="w-full">
-      {showLabel && (
-        <div className="flex justify-between text-xs mb-1">
-          <span className="text-gray-500">{value != null ? eur(value) : '—'}</span>
-          <span className={isOk ? 'text-green-600 font-semibold' : isWarn ? 'text-amber-600' : 'text-red-500'}>
-            {target ? `${p}% di ${eur(target)}` : 'No target'}
-          </span>
-        </div>
-      )}
-      <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-        <div className="h-full rounded-full transition-all duration-700"
-          style={{ width: `${Math.min(p, 100)}%`, backgroundColor: isOk ? '#10b981' : isWarn ? '#f59e0b' : color }} />
+    <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm flex flex-col gap-1">
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] font-medium text-gray-500 uppercase tracking-wide">{label}</span>
+        <div className={`p-1.5 rounded-lg bg-${color}-50 text-${color}-600`}><Icon size={16} /></div>
       </div>
+      <div className="text-xl font-bold text-gray-900 leading-tight">{value}</div>
+      {sub  && <div className="text-[11px] text-gray-400">{sub}</div>}
+      {badge && <div className={`text-[10px] font-semibold mt-0.5 ${badge.color}`}>{badge.text}</div>}
     </div>
   )
 }
 
-function OperatorCard({ data, rank, onPlan }) {
-  const isTop = rank === 0
-  return (
-    <div className={`card p-4 ${isTop ? 'ring-2 ring-violet-400' : ''}`}>
-      <div className="flex items-start gap-3 mb-3">
-        <div className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold text-white flex-shrink-0"
-          style={{ backgroundColor: COLORS[rank % COLORS.length] }}>
-          {data.operatore?.charAt(0)}
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <h3 className="font-semibold text-sm truncate">{data.operatore}</h3>
-            {isTop && <span className="badge badge-violet">🏆 Top</span>}
-            {rank === 1 && <span className="badge bg-gray-100 text-gray-600">🥈 2°</span>}
-            {rank === 2 && <span className="badge bg-amber-100 text-amber-700">🥉 3°</span>}
-          </div>
-          <p className="text-xs text-gray-400">{data.location === 'MAMELI' ? 'Sede MA' : 'Sede PN'}</p>
-        </div>
-        <div className="text-right flex-shrink-0">
-          <p className="text-lg font-bold text-violet-600">{eur(data.quantum)}</p>
-          <p className="text-xs text-gray-400">quantum/cop.</p>
-        </div>
-      </div>
-      <div className="space-y-2">
-        <div>
-          <p className="text-xs text-gray-500 mb-1">Quantum vs Target</p>
-          <ProgressBar value={data.quantum} target={data.quantum_target} color={COLORS[rank % COLORS.length]} />
-        </div>
-        <div className="grid grid-cols-2 gap-3 pt-1">
-          <div>
-            <p className="text-xs text-gray-400">Coperti gestiti</p>
-            <p className="font-semibold text-sm">{data.coperti_gestiti || '—'}</p>
-          </div>
-          <div>
-            <p className="text-xs text-gray-400">Venduto totale</p>
-            <p className="font-semibold text-sm">{eur(data.tot_importo)}</p>
-          </div>
-        </div>
-      </div>
-      {onPlan && (
-        <button onClick={onPlan} className="mt-3 btn-secondary text-xs py-1 px-2 w-full">
-          📋 Piano individuale
-        </button>
-      )}
-    </div>
-  )
-}
+// ── Riga operatore espandibile ─────────────────────────────────────────
+function OperatoreRow({ op, rank, target, quantum, payout, expanded, onToggle }) {
+  const [prodotti, setProdotti]       = useState([])
+  const [loadingProd, setLoadingProd] = useState(false)
 
-// Media ponderata: SUM(fatturato) / SUM(coperti) — coerente con quantum individuale
-function weightedQuantum(ops) {
-  const totFat = ops.reduce((s, o) => s + (parseFloat(o.fatturato_totale) || 0), 0)
-  const totCop = ops.reduce((s, o) => s + (parseInt(o.coperti_gestiti) || 0), 0)
-  return totCop > 0 ? Math.round(totFat / totCop * 100) / 100 : null
-}
-
-function TeamStats({ quantum, chiusure }) {
-  // Coperto medio = media ponderata quantum dagli operatori iPratico (coerente con ranking)
-  const maOps = quantum.filter(x => x.location === 'MAMELI')
-  const pnOps = quantum.filter(x => x.location === 'PREDDA_NIEDDA')
-  const cmMA = weightedQuantum(maOps)
-  const cmPN = weightedQuantum(pnOps)
-
-  // Scontrino medio da chiusure cassa (diverso: include delivery/asporto)
-  const ma = chiusure.find(x => x.location === 'MAMELI')
-  const pn = chiusure.find(x => x.location === 'PREDDA_NIEDDA')
-
-  return (
-    <div className="space-y-2 mb-6">
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {[
-          { label: 'Coperto medio MA', sub: 'venduto/coperto operatori', value: cmMA != null ? eur(cmMA) : '—', icon: '📊', color: 'bg-blue-50 text-blue-600' },
-          { label: 'Coperto medio PN', sub: 'venduto/coperto operatori', value: cmPN != null ? eur(cmPN) : '—', icon: '📊', color: 'bg-green-50 text-green-600' },
-          { label: 'Scontrino medio MA', sub: 'da cassa (incl. delivery)', value: ma ? eur(ma.avg_scontrino_medio) : '—', icon: '🧾', color: 'bg-violet-50 text-violet-600' },
-          { label: 'Scontrino medio PN', sub: 'da cassa (incl. delivery)', value: pn ? eur(pn.avg_scontrino_medio) : '—', icon: '🧾', color: 'bg-amber-50 text-amber-600' },
-        ].map((s, i) => (
-          <div key={i} className="kpi-card">
-            <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${s.color}`}>{s.icon}</div>
-            <p className="text-xl font-bold mt-2">{s.value}</p>
-            <p className="text-xs text-gray-500 font-medium">{s.label}</p>
-            <p className="text-[10px] text-gray-400 mt-0.5">{s.sub}</p>
-          </div>
-        ))}
-      </div>
-      <p className="text-[10px] text-gray-400 italic px-1">
-        ℹ️ Coperto medio = fatturato operatori iPratico ÷ coperti gestiti (escl. coperto fisso e delivery).
-        Scontrino medio = media scontrini da cassa, include asporto/delivery e può risultare più alto.
-      </p>
-    </div>
-  )
-}
-
-// ─── Pannello Obiettivo Team ─────────────────────────────────────────────────
-function TeamObjectivePanel({ quantum }) {
-  const [teamTarget, setTeamTarget] = useState('')
-  const [editing, setEditing] = useState(false)
-
-  const opsWithQuantum = quantum.filter(op => op.quantum != null && (op.coperti_gestiti || 0) > 0)
-  if (opsWithQuantum.length === 0) return null
-
-  // Media ponderata per coperti: coerente con "Coperto medio" nelle card statistiche
-  const avgQuantum = weightedQuantum(opsWithQuantum) || 0
-  const savedTarget = parseFloat(teamTarget) || quantum.find(op => op.quantum_target)?.quantum_target || null
-
-  // Conteggio operatori sopra/sotto target
-  const opsAbove = savedTarget ? opsWithQuantum.filter(op => op.quantum >= savedTarget).length : 0
-  const opsBelow = savedTarget ? opsWithQuantum.filter(op => op.quantum < savedTarget).length : 0
-  const teamPct  = savedTarget ? Math.round(avgQuantum / savedTarget * 100) : null
-
-  return (
-    <div className="card border-2 border-violet-200 bg-gradient-to-br from-violet-50 to-white">
-      <div className="card-header flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Trophy size={18} className="text-violet-600" />
-          <h2 className="font-semibold text-violet-800">Obiettivo Team</h2>
-        </div>
-        <button onClick={() => setEditing(e => !e)} className="text-xs text-violet-600 hover:text-violet-800 font-medium">
-          {editing ? 'Chiudi' : '✏️ Imposta obiettivo team'}
-        </button>
-      </div>
-      <div className="card-body space-y-4">
-        {editing && (
-          <div className="flex items-center gap-3 bg-white border border-violet-200 rounded-xl p-3">
-            <label className="text-sm text-gray-600">Quantum target team (€/piatto medio)</label>
-            <input type="number" step="0.01" placeholder="es. 8.00"
-              className="input w-32 text-sm" value={teamTarget}
-              onChange={e => setTeamTarget(e.target.value)} />
-            <button onClick={() => setEditing(false)} className="btn-primary text-xs">Applica</button>
-          </div>
-        )}
-
-        {/* Stats team */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="bg-white rounded-xl p-4 border border-violet-100">
-            <p className="text-xs text-gray-500">€/Coperto medio operatori</p>
-            <p className="text-2xl font-bold text-violet-700">{eur(avgQuantum)}</p>
-          </div>
-          <div className="bg-white rounded-xl p-4 border border-violet-100">
-            <p className="text-xs text-gray-500">Operatori attivi</p>
-            <p className="text-2xl font-bold">{opsWithQuantum.length}</p>
-          </div>
-          {savedTarget && (
-            <>
-              <div className={`rounded-xl p-4 border ${opsAbove > opsBelow ? 'bg-green-50 border-green-200' : 'bg-amber-50 border-amber-200'}`}>
-                <p className="text-xs text-gray-500">Sopra obiettivo</p>
-                <p className="text-2xl font-bold text-green-600">{opsAbove}/{opsWithQuantum.length}</p>
-              </div>
-              <div className="bg-white rounded-xl p-4 border border-violet-100">
-                <p className="text-xs text-gray-500">Raggiungimento team</p>
-                <p className={`text-2xl font-bold ${teamPct >= 100 ? 'text-green-600' : teamPct >= 80 ? 'text-amber-600' : 'text-red-500'}`}>
-                  {teamPct}%
-                </p>
-              </div>
-            </>
-          )}
-        </div>
-
-        {/* Progress barra team */}
-        {savedTarget && (
-          <div>
-            <div className="flex justify-between text-sm mb-2">
-              <span className="font-medium text-gray-700">Progresso team verso obiettivo {eur(savedTarget)}</span>
-              <span className={`font-bold ${teamPct >= 100 ? 'text-green-600' : teamPct >= 80 ? 'text-amber-600' : 'text-red-500'}`}>
-                {teamPct}%
-              </span>
-            </div>
-            <div className="h-4 bg-gray-100 rounded-full overflow-hidden">
-              <div className="h-full rounded-full transition-all duration-700 flex items-center justify-end pr-2"
-                style={{
-                  width: `${Math.min(teamPct, 100)}%`,
-                  backgroundColor: teamPct >= 100 ? '#10b981' : teamPct >= 80 ? '#f59e0b' : '#6366f1'
-                }}>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-// ─── Leaderboard ──────────────────────────────────────────────────────────────
-function LeaderboardView({ quantum, teamTargetOverride }) {
-  const opsWithQ = quantum.filter(op => op.quantum != null).sort((a, b) => (b.quantum || 0) - (a.quantum || 0))
-  if (opsWithQ.length === 0) return <p className="text-gray-400 text-sm text-center py-8">Nessun dato operatori</p>
-
-  const maxQ = opsWithQ[0]?.quantum || 1
-  const medals = ['🏆', '🥈', '🥉']
-
-  return (
-    <div className="space-y-3">
-      {opsWithQ.map((op, i) => {
-        const barPct = (op.quantum / maxQ * 100).toFixed(1)
-        const targetPct = op.quantum_target ? pct(op.quantum, op.quantum_target) : null
-        const isAboveTarget = targetPct != null && targetPct >= 100
-        const isBelowTarget = targetPct != null && targetPct < 80
-        return (
-          <div key={i} className={`flex items-center gap-4 p-4 rounded-xl border transition-all ${
-            i === 0 ? 'bg-violet-50 border-violet-200' :
-            i === 1 ? 'bg-blue-50 border-blue-100' :
-            'bg-white border-gray-100'
-          }`}>
-            {/* Rank */}
-            <div className="w-8 text-center flex-shrink-0">
-              {i < 3 ? (
-                <span className="text-xl">{medals[i]}</span>
-              ) : (
-                <span className="text-sm font-bold text-gray-400">{i + 1}</span>
-              )}
-            </div>
-
-            {/* Avatar */}
-            <div className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold text-white flex-shrink-0"
-              style={{ backgroundColor: COLORS[i % COLORS.length] }}>
-              {op.operatore?.charAt(0)}
-            </div>
-
-            {/* Info */}
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 flex-wrap mb-1.5">
-                <span className="font-semibold text-sm truncate">{op.operatore}</span>
-                <span className={`badge ${op.sede === 'MA' ? 'badge-blue' : 'badge-green'}`}>{op.sede}</span>
-                {isAboveTarget && <span className="badge bg-green-100 text-green-700">✓ Target</span>}
-                {isBelowTarget && <span className="badge bg-red-100 text-red-600">⚠ Sotto target</span>}
-              </div>
-              {/* Progress bar */}
-              <div className="flex items-center gap-2">
-                <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
-                  <div className="h-full rounded-full" style={{ width: `${barPct}%`, backgroundColor: COLORS[i % COLORS.length] }} />
-                </div>
-                {op.quantum_target && (
-                  <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden relative">
-                    <div className={`h-full rounded-full transition-all ${
-                      targetPct >= 100 ? 'bg-green-500' : targetPct >= 80 ? 'bg-amber-400' : 'bg-red-400'
-                    }`} style={{ width: `${Math.min(targetPct, 100)}%` }} />
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Quantum */}
-            <div className="text-right flex-shrink-0 min-w-[100px]">
-              <p className="font-bold text-violet-700">{eur(op.quantum)}</p>
-              <p className="text-xs text-gray-400">/{op.coperti_gestiti || '—'} cop.</p>
-              {op.quantum_target && (
-                <p className="text-xs text-gray-400">target: {eur(op.quantum_target)}</p>
-              )}
-            </div>
-          </div>
+  useEffect(() => {
+    if (!expanded || prodotti.length > 0) return
+    setLoadingProd(true)
+    const meseStr = String(op.mese).padStart(2, '0')
+    const ini  = `${op.anno}-${meseStr}-01`
+    const fine = new Date(op.anno, op.mese, 0).toISOString().slice(0, 10)
+    supabase
+      .from('venduto_camerieri')
+      .select('categoria, prodotto, quantita, totale')
+      .eq('sede', op.sede)
+      .eq('operatore', op.operatore)
+      .gte('data_inizio', ini)
+      .lte('data_fine', fine)
+      .not('prodotto', 'ilike', '%coperto%')
+      .then(({ data }) => {
+        if (!data) { setLoadingProd(false); return }
+        const byCat = {}
+        data.forEach(r => {
+          const cat = r.categoria || 'Altro'
+          if (!byCat[cat]) byCat[cat] = { pezzi: 0, fatturato: 0 }
+          byCat[cat].pezzi    += Number(r.quantita) || 0
+          byCat[cat].fatturato += Number(r.totale)  || 0
+        })
+        setProdotti(
+          Object.entries(byCat)
+            .map(([cat, v]) => ({ cat, ...v }))
+            .sort((a, b) => b.fatturato - a.fatturato)
+            .slice(0, 8)
         )
-      })}
-    </div>
-  )
-}
+        setLoadingProd(false)
+      })
+  }, [expanded, op])
 
-// Piano individuale modale
-function PlanModal({ emp, onClose }) {
-  const [plans, setPlans] = useState([])
-  const [form, setForm] = useState({
-    period_start: new Date().toISOString().slice(0, 7) + '-01',
-    period_end: new Date().toISOString().slice(0, 7) + '-31',
-    quantum_target: '', quantum_quorum: '', coperto_medio_target: '',
-    coperti_target: '', upsell_target: '', notes: ''
-  })
+  const pezzi     = Number(op.tot_pezzi) || 0
+  const fatturato = Number(op.fatturato_stimato_operatore) || 0
+  const aggiunte  = Number(op.tot_importo_aggiunte) || 0
+  const pctTeam   = Number(op.pct_pezzi_team) || 0
+  const q         = quantum?.quantum != null ? Number(quantum.quantum) : null
 
-  useEffect(() => {
-    empApi.getPlans(emp.id).then(setPlans).catch(console.error)
-  }, [emp.id])
-
-  const save = async () => {
-    await empApi.addPlan(emp.id, form)
-    const updated = await empApi.getPlans(emp.id)
-    setPlans(updated)
-  }
-
-  return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[80vh] overflow-y-auto">
-        <div className="sticky top-0 bg-white p-6 pb-4 border-b">
-          <div className="flex items-center justify-between">
-            <h3 className="font-semibold text-lg">Piano individuale — {emp.name}</h3>
-            <button onClick={onClose} className="btn-ghost p-1 text-gray-400">✕</button>
-          </div>
-        </div>
-        <div className="p-6 space-y-4">
-          {plans.map(p => (
-            <div key={p.id} className="bg-gray-50 rounded-xl p-4">
-              <div className="flex justify-between items-center mb-2">
-                <span className="text-sm font-medium text-gray-700">{p.period_start} → {p.period_end}</span>
-              </div>
-              <div className="grid grid-cols-3 gap-2 text-xs">
-                {p.quantum_target && <div><span className="text-gray-400">Quantum target</span><br/><strong>{eur(p.quantum_target)}</strong></div>}
-                {p.quantum_quorum && <div><span className="text-gray-400">Quorum minimo</span><br/><strong>{eur(p.quantum_quorum)}</strong></div>}
-                {p.coperto_medio_target && <div><span className="text-gray-400">Coperto medio</span><br/><strong>{eur(p.coperto_medio_target)}</strong></div>}
-                {p.coperti_target && <div><span className="text-gray-400">Coperti/periodo</span><br/><strong>{p.coperti_target}</strong></div>}
-                {p.upsell_target && <div><span className="text-gray-400">Up-sell target</span><br/><strong>{eur(p.upsell_target)}</strong></div>}
-              </div>
-              {p.notes && <p className="text-xs text-gray-400 mt-2 italic">{p.notes}</p>}
-            </div>
-          ))}
-          <div className="border-t pt-4">
-            <p className="text-sm font-medium text-gray-700 mb-3">Nuovo piano</p>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs text-gray-400 mb-1 block">Da</label>
-                <input type="date" className="input" value={form.period_start} onChange={e => setForm(f => ({ ...f, period_start: e.target.value }))} />
-              </div>
-              <div>
-                <label className="text-xs text-gray-400 mb-1 block">A</label>
-                <input type="date" className="input" value={form.period_end} onChange={e => setForm(f => ({ ...f, period_end: e.target.value }))} />
-              </div>
-              <div>
-                <label className="text-xs text-gray-400 mb-1 block">Quantum target (€/cop.)</label>
-                <input type="number" className="input" placeholder="es. 45.00" value={form.quantum_target} onChange={e => setForm(f => ({ ...f, quantum_target: e.target.value }))} />
-              </div>
-              <div>
-                <label className="text-xs text-gray-400 mb-1 block">Quorum minimo (€/cop.)</label>
-                <input type="number" className="input" placeholder="es. 35.00" value={form.quantum_quorum} onChange={e => setForm(f => ({ ...f, quantum_quorum: e.target.value }))} />
-              </div>
-              <div>
-                <label className="text-xs text-gray-400 mb-1 block">Coperto medio target</label>
-                <input type="number" className="input" placeholder="es. 50.00" value={form.coperto_medio_target} onChange={e => setForm(f => ({ ...f, coperto_medio_target: e.target.value }))} />
-              </div>
-              <div>
-                <label className="text-xs text-gray-400 mb-1 block">Coperti target periodo</label>
-                <input type="number" className="input" placeholder="es. 200" value={form.coperti_target} onChange={e => setForm(f => ({ ...f, coperti_target: e.target.value }))} />
-              </div>
-              <div className="col-span-2">
-                <label className="text-xs text-gray-400 mb-1 block">Note piano</label>
-                <textarea className="input resize-none" rows={2} value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
-              </div>
-            </div>
-            <button onClick={save} className="btn-primary w-full mt-3">Salva piano</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ─── Pannello assegnazione bulk target ──────────────────────────────────────
-function BulkTargetPanel({ quantum, mesiDisp, meseCorrente, onSaved }) {
-  const [open, setOpen]         = useState(false)
-  const [period, setPeriod]     = useState(meseCorrente)
-  const [selected, setSelected] = useState(new Set())
-  const [form, setForm]         = useState({ quantum_target: '', quorum: '', coperto_medio_target: '', notes: '' })
-  const [saving, setSaving]     = useState(false)
-  const [msg, setMsg]           = useState(null)
-
-  const allKeys = quantum.map(op => `${op.sede}|${op.operatore}`)
-  const toggleAll = () => { if (selected.size === allKeys.length) setSelected(new Set()); else setSelected(new Set(allKeys)) }
-  const toggle = (key) => setSelected(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n })
-  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
-
-  const handleSave = async () => {
-    if (selected.size === 0) return setMsg({ type: 'error', text: 'Seleziona almeno un operatore' })
-    if (!form.quantum_target && !form.quorum) return setMsg({ type: 'error', text: 'Inserisci almeno un valore target' })
-    setSaving(true); setMsg(null)
-    try {
-      const ops = quantum.filter(op => selected.has(`${op.sede}|${op.operatore}`))
-        .map(op => ({ code: op.operatore, name: op.operatore, sede: op.sede }))
-      const result = await kpiApi.setBulkTargets(ops, { period, ...form })
-      setMsg({ type: 'ok', text: `✓ Target salvati per ${result.count} operatori` })
-      setSelected(new Set())
-      if (onSaved) onSaved()
-    } catch(e) {
-      setMsg({ type: 'error', text: e.message || 'Errore salvataggio' })
-    } finally { setSaving(false) }
-  }
-
-  return (
-    <div className="card border-violet-200 bg-violet-50/50">
-      <button onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center justify-between p-4 hover:bg-violet-100/50 rounded-xl transition-colors">
-        <div className="flex items-center gap-2">
-          <Target size={16} className="text-violet-600"/>
-          <span className="font-semibold text-violet-800 text-sm">Assegna Target Mensile</span>
-          <span className="text-xs text-violet-500">— imposta obiettivi a più operatori in un click</span>
-        </div>
-        {open ? <ChevronUp size={16} className="text-violet-400"/> : <ChevronDown size={16} className="text-violet-400"/>}
-      </button>
-
-      {open && (
-        <div className="px-4 pb-4 space-y-4">
-          {msg && (
-            <div className={`text-sm rounded-lg px-3 py-2 ${msg.type === 'ok' ? 'bg-green-100 text-green-800 border border-green-200' : 'bg-red-100 text-red-800 border border-red-200'}`}>
-              {msg.text}
-            </div>
-          )}
-          <div className="flex items-center gap-3 flex-wrap">
-            <span className="text-sm font-medium text-gray-700">Periodo:</span>
-            <select value={period} onChange={e => setPeriod(e.target.value)}
-              className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm text-gray-700 focus:ring-2 focus:ring-violet-300 outline-none bg-white">
-              {mesiDisp.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
-            </select>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div>
-              <label className="text-xs text-gray-500 block mb-1">Quantum Target (€/cop.)</label>
-              <input type="number" step="0.01" placeholder="es. 45.00" className="input w-full text-sm" value={form.quantum_target} onChange={e => set('quantum_target', e.target.value)}/>
-            </div>
-            <div>
-              <label className="text-xs text-gray-500 block mb-1">Quorum minimo (€/cop.)</label>
-              <input type="number" step="0.01" placeholder="es. 35.00" className="input w-full text-sm" value={form.quorum} onChange={e => set('quorum', e.target.value)}/>
-            </div>
-            <div>
-              <label className="text-xs text-gray-500 block mb-1">Coperto medio target</label>
-              <input type="number" step="0.01" placeholder="es. 50.00" className="input w-full text-sm" value={form.coperto_medio_target} onChange={e => set('coperto_medio_target', e.target.value)}/>
-            </div>
-          </div>
-          <div>
-            <label className="text-xs text-gray-500 block mb-1">Note (opzionale)</label>
-            <input type="text" placeholder="es. Obiettivo Q2 2026" className="input w-full text-sm" value={form.notes} onChange={e => set('notes', e.target.value)}/>
-          </div>
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-medium text-gray-700">Operatori ({selected.size}/{allKeys.length})</span>
-              <button onClick={toggleAll} className="text-xs text-violet-600 hover:text-violet-800 font-medium">
-                {selected.size === allKeys.length ? 'Deseleziona tutti' : 'Seleziona tutti'}
-              </button>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-h-52 overflow-y-auto pr-1">
-              {quantum.map(op => {
-                const key = `${op.sede}|${op.operatore}`
-                const checked = selected.has(key)
-                return (
-                  <button key={key} onClick={() => toggle(key)}
-                    className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-left text-sm transition-all ${checked ? 'bg-violet-100 border-violet-400 text-violet-800' : 'bg-white border-gray-200 text-gray-600 hover:border-violet-200'}`}>
-                    {checked ? <CheckSquare size={14} className="text-violet-600 flex-shrink-0"/> : <Square size={14} className="text-gray-300 flex-shrink-0"/>}
-                    <span className="truncate">{op.operatore}</span>
-                    <span className={`ml-auto text-xs font-semibold flex-shrink-0 ${op.sede === 'MA' ? 'text-red-500' : 'text-blue-500'}`}>{op.sede}</span>
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-          <div className="flex justify-end">
-            <button onClick={handleSave} disabled={saving || selected.size === 0}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${saving || selected.size === 0 ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : 'bg-violet-600 hover:bg-violet-700 text-white'}`}>
-              <Save size={14}/>{saving ? 'Salvataggio...' : `Salva target (${selected.size} op.)`}
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function getMesiDisponibili() {
-  const now = new Date()
-  const mesi = []
-  for (let i = 0; i < 18; i++) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
-    const val = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`
-    const lbl = d.toLocaleDateString('it-IT', { month: 'long', year: 'numeric' })
-    mesi.push({ value: val, label: lbl.charAt(0).toUpperCase() + lbl.slice(1) })
-  }
-  return mesi
-}
-
-export default function KPIWaiters() {
-  const [quantum, setQuantum] = useState([])
-  const [teamData, setTeamData] = useState({ chiusure: [], operatori: [] })
-  const [location, setLocation] = useState('all')
-  const [planFor, setPlanFor] = useState(null)
-  const [employees, setEmployees] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [view, setView] = useState('cards') // 'cards' | 'leaderboard'
-
-  const now = new Date()
-  const meseCorrente = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`
-  const [selectedMese, setSelectedMese] = useState(meseCorrente)
-  const [useTuttiMesi, setUseTuttiMesi] = useState(true)
-  const mesiDisp = getMesiDisponibili()
-
-  useEffect(() => {
-    const loc = location === 'all' ? undefined : location
-    // "Tutti i periodi" → nessun filtro mese; "Mese specifico" → usa selectedMese
-    const month = !useTuttiMesi && selectedMese ? selectedMese : undefined
-    const params = { location: loc, month }
-    setLoading(true)
-    Promise.all([
-      kpiApi.quantum(params),
-      kpiApi.team(params),
-      empApi.getAll({ active: 'true' }),
-    ]).then(([q, t, e]) => {
-      // Fonte dati: solo iPratico (venduto_camerieri) — nessun filtro su employees/buste_paga
-      setQuantum(Array.isArray(q) ? q : [])
-      setTeamData(t && typeof t === 'object' ? t : { chiusure: [], operatori: [] })
-      setEmployees(e)
-    }).catch(console.error).finally(() => setLoading(false))
-  }, [location, selectedMese, useTuttiMesi])
-
-  const byLoc = location === 'all' ? quantum : quantum.filter(x => x.location === location)
-
-  const refreshQuantum = () => {
-    const loc = location === 'all' ? undefined : location
-    const month = !useTuttiMesi && selectedMese ? selectedMese : undefined
-    kpiApi.quantum({ location: loc, month }).then(q => setQuantum(Array.isArray(q) ? q : []))
-  }
+  const targetPezzi = target?.target  ? Number(target.target) : null
+  const targetPct   = targetPezzi     ? Math.min(150, (pezzi / targetPezzi) * 100) : null
+  const targetColor = targetPct == null ? ''
+    : targetPct >= 100 ? 'text-emerald-600'
+    : targetPct >= 75  ? 'text-amber-600'
+    : 'text-red-500'
+  const mancano = targetPezzi ? Math.max(0, targetPezzi - pezzi) : null
 
   return (
     <>
-    <div className="space-y-5">
-      {planFor && <PlanModal emp={planFor} onClose={() => setPlanFor(null)} />}
+      <tr
+        className={`border-t border-gray-100 hover:bg-gray-50 cursor-pointer transition-colors ${expanded ? 'bg-indigo-50/40' : ''}`}
+        onClick={onToggle}
+      >
+        <td className="px-3 py-2.5 w-8 text-center text-base">
+          {rank < 3 ? ['🥇','🥈','🥉'][rank] : <span className="text-xs font-bold text-gray-400">{rank + 1}</span>}
+        </td>
 
-      <div className="page-header">
+        <td className="px-3 py-2.5">
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0"
+              style={{ backgroundColor: COLORS[rank % COLORS.length] }}>
+              {op.operatore?.charAt(0)?.toUpperCase()}
+            </div>
+            <div className="min-w-0">
+              <div className="font-semibold text-sm text-gray-900 truncate">{op.operatore}</div>
+              {target?.employees?.role && (
+                <div className="text-[10px] text-gray-400 capitalize">{(target.employees.role || '').toLowerCase()}</div>
+              )}
+            </div>
+          </div>
+        </td>
+
+        {/* Pezzi + progress target */}
+        <td className="px-3 py-2.5 text-right">
+          <div className="text-sm font-semibold text-gray-900">{fmt(pezzi, 0)}</div>
+          {targetPezzi && (
+            <div className={`text-[10px] font-medium ${targetColor}`}>
+              {targetPct >= 100 ? `✓ +${fmt(pezzi - targetPezzi, 0)}` : `–${fmt(mancano, 0)} al target`}
+            </div>
+          )}
+          {targetPezzi && (
+            <div className="mt-0.5 w-full h-1 bg-gray-100 rounded-full overflow-hidden">
+              <div className="h-full rounded-full transition-all"
+                style={{
+                  width: `${Math.min(100, (pezzi / targetPezzi) * 100)}%`,
+                  backgroundColor: targetPct >= 100 ? '#10b981' : targetPct >= 75 ? '#f59e0b' : '#ef4444',
+                }} />
+            </div>
+          )}
+        </td>
+
+        <td className="px-3 py-2.5 text-right font-semibold text-sm text-gray-900">{fmtEur(fatturato)}</td>
+
+        <td className="px-3 py-2.5 w-28">
+          <div className="flex items-center gap-1.5">
+            <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+              <div className="h-full rounded-full" style={{ width: `${Math.min(100, pctTeam)}%`, backgroundColor: COLORS[rank % COLORS.length] }} />
+            </div>
+            <span className="text-xs font-semibold text-gray-700 w-10 text-right">{fmtPct(pctTeam)}</span>
+          </div>
+        </td>
+
+        <td className="px-3 py-2.5 text-right text-sm">
+          <span className="text-emerald-700 font-medium">{fmtEur(aggiunte)}</span>
+          <div className="text-[10px] text-gray-400">{fmt(op.tot_aggiunte, 0)} vol.</div>
+        </td>
+
+        <td className="px-3 py-2.5 text-right">
+          {q != null
+            ? <span className={`text-sm font-bold ${q >= 30 ? 'text-emerald-600' : q >= 15 ? 'text-amber-600' : 'text-gray-500'}`}>{fmtEur(q)}</span>
+            : <span className="text-[10px] text-gray-300">n/d</span>}
+        </td>
+
+        <td className="px-3 py-2.5 text-right">
+          {payout > 0
+            ? <span className="text-sm font-bold text-violet-700">{fmtEur(payout)}</span>
+            : <span className="text-[10px] text-gray-300">—</span>}
+        </td>
+
+        <td className="px-3 py-2.5 text-center">
+          {expanded ? <ChevronUp size={14} className="text-gray-400 inline" /> : <ChevronDown size={14} className="text-gray-400 inline" />}
+        </td>
+      </tr>
+
+      {expanded && (
+        <tr className="bg-indigo-50/30">
+          <td colSpan={9} className="px-6 py-3">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+
+              {/* Scheda individuale */}
+              <div className="bg-white rounded-lg border border-indigo-100 p-3 text-xs space-y-1.5">
+                <div className="font-bold text-gray-800 flex items-center gap-1.5 mb-2">
+                  <Award size={13} className="text-violet-500" /> Riepilogo individuale
+                </div>
+                {[
+                  ['Prodotti distinti', op.n_prodotti_distinti || 0],
+                  ['Tot. pezzi venduti', fmt(pezzi, 0)],
+                  ['Fatturato stimato', fmtEur(fatturato)],
+                  ['Aggiunte (€)', fmtEur(aggiunte)],
+                  ...(q != null ? [['Quantum €/coperto', fmtEur(q)]] : []),
+                ].map(([l, v]) => (
+                  <div key={l} className="flex justify-between">
+                    <span className="text-gray-500">{l}</span>
+                    <span className="font-semibold">{v}</span>
+                  </div>
+                ))}
+                {targetPezzi && (
+                  <>
+                    <div className="border-t border-gray-100 pt-1.5 flex justify-between">
+                      <span className="text-gray-500">Target pezzi mese</span>
+                      <span className="font-semibold">{fmt(targetPezzi, 0)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">% completamento</span>
+                      <span className={`font-bold ${targetColor}`}>{fmtPct(targetPct)}</span>
+                    </div>
+                    <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden mt-1">
+                      <div className="h-full rounded-full"
+                        style={{
+                          width: `${Math.min(100, (pezzi / targetPezzi) * 100)}%`,
+                          backgroundColor: targetPct >= 100 ? '#10b981' : targetPct >= 75 ? '#f59e0b' : '#ef4444',
+                        }} />
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* Top categorie */}
+              <div className="col-span-3">
+                <div className="font-bold text-[11px] text-gray-700 uppercase tracking-wide mb-2 flex items-center gap-1.5">
+                  <Package size={12} className="text-indigo-500" /> Venduto per categoria (mese)
+                </div>
+                {loadingProd ? (
+                  <p className="text-xs text-gray-400 italic">Caricamento...</p>
+                ) : prodotti.length === 0 ? (
+                  <p className="text-xs text-gray-400 italic">Nessun dato prodotti disponibile</p>
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {prodotti.map((p, i) => {
+                      const pctFat = (p.fatturato / (prodotti[0]?.fatturato || 1)) * 100
+                      return (
+                        <div key={p.cat} className="bg-white rounded-lg border border-gray-100 p-2.5">
+                          <div className="text-[10px] font-semibold text-gray-500 truncate uppercase tracking-wide">{p.cat}</div>
+                          <div className="text-sm font-bold text-gray-900 mt-0.5">{fmtEur(p.fatturato)}</div>
+                          <div className="text-[10px] text-gray-400">{fmt(p.pezzi, 0)} pz.</div>
+                          <div className="mt-1.5 h-1 bg-gray-100 rounded-full overflow-hidden">
+                            <div className="h-full rounded-full" style={{ width: `${pctFat}%`, backgroundColor: COLORS[i % COLORS.length] }} />
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  )
+}
+
+// ── Pannello obiettivi prodotto (se esistono) ─────────────────────────
+function ObiettiviPanel({ bonusTeam, bonusOp }) {
+  if (!bonusTeam || bonusTeam.length === 0) return null
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <div className="p-3 border-b border-gray-100 flex items-center gap-2">
+        <Target size={15} className="text-violet-600" />
+        <h2 className="text-sm font-bold text-gray-900">Obiettivi Prodotto · {bonusTeam.length} attivi</h2>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead className="bg-gray-50 text-gray-500">
+            <tr>
+              <th className="text-left px-3 py-2 font-semibold">Prodotto</th>
+              <th className="text-left px-3 py-2 font-semibold">Reparto</th>
+              <th className="text-right px-3 py-2 font-semibold">Target</th>
+              <th className="text-right px-3 py-2 font-semibold">Venduti</th>
+              <th className="text-right px-3 py-2 font-semibold">Mancano</th>
+              <th className="px-3 py-2 font-semibold w-36">Completamento</th>
+              <th className="text-right px-3 py-2 font-semibold">Premio</th>
+              <th className="text-right px-3 py-2 font-semibold">Maturato</th>
+            </tr>
+          </thead>
+          <tbody>
+            {bonusTeam.map(b => {
+              const pct = Number(b.pct_completamento) || 0
+              const bgBar = pct >= 100 ? 'bg-emerald-500' : pct >= 60 ? 'bg-amber-500' : 'bg-red-400'
+              return (
+                <tr key={`${b.prodotto}-${b.reparto}`} className="border-t border-gray-100 hover:bg-gray-50">
+                  <td className="px-3 py-2 font-medium text-gray-900">{b.prodotto}</td>
+                  <td className="px-3 py-2">
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                      b.reparto === 'CUCINA' ? 'bg-orange-100 text-orange-700'
+                      : b.reparto === 'SALA' ? 'bg-indigo-100 text-indigo-700'
+                      : 'bg-gray-100 text-gray-600'
+                    }`}>{b.reparto}</span>
+                  </td>
+                  <td className="px-3 py-2 text-right font-semibold">{b.pezzi_target || 0}</td>
+                  <td className="px-3 py-2 text-right">{b.pezzi_venduti || 0}</td>
+                  <td className="px-3 py-2 text-right">
+                    {b.raggiunto ? <span className="text-emerald-600 font-bold">✓</span> : (b.pezzi_mancanti || 0)}
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="flex items-center gap-1.5">
+                      <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full ${bgBar}`} style={{ width: `${Math.min(100, pct)}%` }} />
+                      </div>
+                      <span className="w-10 text-right font-semibold">{fmtPct(pct)}</span>
+                    </div>
+                  </td>
+                  <td className="px-3 py-2 text-right text-gray-600">{fmtEur(b.premio_euro)}</td>
+                  <td className="px-3 py-2 text-right font-bold text-emerald-700">{fmtEur(b.premio_maturato)}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ── Main Page ──────────────────────────────────────────────────────────
+export default function KPIWaiters() {
+  const now = new Date()
+  const [sede,    setSede]    = useState('MA')
+  const [anno,    setAnno]    = useState(now.getFullYear())
+  const [mese,    setMese]    = useState(now.getMonth() + 1)
+  const [loading, setLoading] = useState(false)
+  const [sortBy,  setSortBy]  = useState('fatturato')
+  const [expanded, setExpanded] = useState(null)
+
+  const [operatori,   setOperatori]   = useState([])
+  const [be,          setBe]          = useState(null)
+  const [targetTeam,  setTargetTeam]  = useState(null)
+  const [targetsInd,  setTargetsInd]  = useState([])
+  const [quantumData, setQuantumData] = useState([])
+  const [bonusTeam,   setBonusTeam]   = useState([])
+  const [bonusOp,     setBonusOp]     = useState([])
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    setExpanded(null)
+    try {
+      const [ops, beData, tt, ti, qtRes, bt, bo] = await Promise.all([
+        operatoreMeseApi.list({ sede, anno, mese }),
+        beMensileApi.mese({ sede, anno, mese }),
+        kpiTargetsApi.getTeam({ sede, anno, mese }),
+        kpiTargetsApi.listIndividuale({ sede, anno, mese }),
+        supabase.from('v_kpi_quantum_mensile')
+          .select('operator, coperti_gestiti, quantum, fatturato_totale')
+          .eq('sede', sede).eq('anno', anno).eq('mese', mese),
+        bonusApi.team({ sede, anno, mese }),
+        bonusApi.operatori({ sede, anno, mese }),
+      ])
+      setOperatori(ops  || [])
+      setBe(beData)
+      setTargetTeam(tt)
+      setTargetsInd(ti  || [])
+      setQuantumData(qtRes?.data || [])
+      setBonusTeam(bt   || [])
+      setBonusOp(bo     || [])
+    } catch (e) {
+      console.error('[KPIWaiters] load error', e)
+    } finally {
+      setLoading(false)
+    }
+  }, [sede, anno, mese])
+
+  useEffect(() => { load() }, [load])
+
+  // Lookup: nome operatore → target individuale (fuzzy match per prima parola)
+  const targetMap = useMemo(() => {
+    const map = {}
+    ;(targetsInd || []).forEach(t => {
+      const empName = (t.employees?.name || t.operatore || '').split(' ')[0].toUpperCase()
+      if (empName) map[empName] = t
+    })
+    return map
+  }, [targetsInd])
+
+  // Lookup: operator name → quantum view
+  const quantumMap = useMemo(() => {
+    const map = {}
+    ;(quantumData || []).forEach(q => { map[(q.operator || '').toUpperCase()] = q })
+    return map
+  }, [quantumData])
+
+  // Lookup: operatore → payout bonus totale
+  const bonusOpMap = useMemo(() => {
+    const map = {}
+    ;(bonusOp || []).forEach(b => {
+      const k = (b.operatore || '').toUpperCase()
+      map[k] = (map[k] || 0) + (Number(b.payout_operatore) || 0)
+    })
+    return map
+  }, [bonusOp])
+
+  // Operatori filtrati (escludi "pienissimo") e ordinati
+  const operatoriSorted = useMemo(() => {
+    return [...(operatori || [])]
+      .filter(op => op.operatore && op.operatore.toLowerCase() !== 'pienissimo')
+      .sort((a, b) => {
+        if (sortBy === 'pezzi')    return (Number(b.tot_pezzi) || 0) - (Number(a.tot_pezzi) || 0)
+        if (sortBy === 'pctTeam')  return (Number(b.pct_pezzi_team) || 0) - (Number(a.pct_pezzi_team) || 0)
+        if (sortBy === 'aggiunte') return (Number(b.tot_importo_aggiunte) || 0) - (Number(a.tot_importo_aggiunte) || 0)
+        if (sortBy === 'quantum') {
+          const qa = quantumMap[(a.operatore || '').toUpperCase()]?.quantum || 0
+          const qb = quantumMap[(b.operatore || '').toUpperCase()]?.quantum || 0
+          return qb - qa
+        }
+        return (Number(b.fatturato_stimato_operatore) || 0) - (Number(a.fatturato_stimato_operatore) || 0)
+      })
+  }, [operatori, sortBy, quantumMap])
+
+  // KPI team
+  const fatturatoTeam = Number(be?.fatturato) || 0
+  const copertiTeam   = Number(be?.coperti)   || 0
+  const targetFatt    = Number(targetTeam?.target_fatturato) || 0
+  const margine       = Number(be?.margine)    || 0
+  const quantumMedio  = copertiTeam > 0 ? fatturatoTeam / copertiTeam : 0
+  const pctVsTarget   = targetFatt > 0 ? (fatturatoTeam / targetFatt) * 100 : 0
+  const gapTarget     = targetFatt > 0 ? targetFatt - fatturatoTeam : 0
+
+  const totPezzi    = operatoriSorted.reduce((s, o) => s + (Number(o.tot_pezzi) || 0), 0)
+  const totAggiunte = operatoriSorted.reduce((s, o) => s + (Number(o.tot_importo_aggiunte) || 0), 0)
+  const totBonusOp  = (bonusOp || []).reduce((s, b) => s + (Number(b.payout_operatore) || 0), 0)
+
+  const SortTh = ({ col, children }) => (
+    <th className={`text-right px-3 py-2 font-semibold cursor-pointer select-none hover:text-indigo-600 transition-colors ${sortBy === col ? 'text-indigo-600' : ''}`}
+      onClick={() => setSortBy(col)}>
+      {children}{sortBy === col ? ' ↓' : ''}
+    </th>
+  )
+
+  return (
+    <div className="space-y-5">
+
+      {/* Header */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="page-title">KPI Camerieri</h1>
-          <p className="text-sm text-gray-500 mt-0.5">Quantum · Quorum · Obiettivi team e individuali</p>
+          <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+            <Sparkles className="text-violet-600" size={24} />
+            Performance Camerieri
+          </h1>
+          <p className="text-sm text-gray-500 mt-0.5">Venduto reale · quota team · progress target · bonus</p>
         </div>
-        <div className="flex gap-2 flex-wrap items-center">
-          {['all','MAMELI','PREDDA_NIEDDA'].map(l => (
-            <button key={l} onClick={() => setLocation(l)}
-              className={`btn text-xs ${location === l ? 'btn-primary' : 'btn-secondary'}`}>
-              {l === 'all' ? 'Tutti' : l === 'MAMELI' ? 'Sede MA' : 'Sede PN'}
+        <button onClick={load} disabled={loading} className="btn-secondary text-sm flex items-center gap-1.5">
+          <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
+          {loading ? 'Caricamento...' : 'Ricarica'}
+        </button>
+      </div>
+
+      {/* Filtri */}
+      <div className="bg-white rounded-xl border border-gray-200 p-3 flex flex-wrap gap-3 items-center shadow-sm">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-gray-600">Sede:</span>
+          {['MA', 'PN'].map(s => (
+            <button key={s} onClick={() => setSede(s)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${sede === s ? 'bg-indigo-600 text-white shadow' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+              {s === 'MA' ? '🏛️ Mameli' : '🏭 Predda Niedda'}
             </button>
           ))}
         </div>
-      </div>
-
-      {/* Filtro periodo */}
-      <div className="flex items-center gap-3 flex-wrap bg-white border border-gray-100 rounded-xl px-4 py-3 shadow-sm">
-        <Target size={15} className="text-violet-500 flex-shrink-0" />
-        <span className="text-sm font-medium text-gray-600">Periodo:</span>
-        <button onClick={() => setUseTuttiMesi(true)}
-          className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-all ${useTuttiMesi ? 'bg-violet-600 text-white border-violet-600' : 'bg-white text-gray-600 border-gray-200 hover:border-violet-300'}`}>
-          Tutti i periodi
-        </button>
-        <button onClick={() => setUseTuttiMesi(false)}
-          className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-all ${!useTuttiMesi ? 'bg-violet-600 text-white border-violet-600' : 'bg-white text-gray-600 border-gray-200 hover:border-violet-300'}`}>
-          Mese specifico
-        </button>
-        {!useTuttiMesi && (
-          <select value={selectedMese} onChange={e => setSelectedMese(e.target.value)}
-            className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm text-gray-700 focus:ring-2 focus:ring-violet-300 outline-none">
-            {mesiDisp.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-gray-600">Anno:</span>
+          <select className="input text-xs py-1" value={anno} onChange={e => setAnno(parseInt(e.target.value))}>
+            {[2024, 2025, 2026, 2027].map(y => <option key={y}>{y}</option>)}
           </select>
-        )}
-        {loading && <span className="text-xs text-gray-400 italic">aggiornamento...</span>}
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-gray-600">Mese:</span>
+          <select className="input text-xs py-1" value={mese} onChange={e => setMese(parseInt(e.target.value))}>
+            {MESI.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+          </select>
+        </div>
+        {loading && <span className="text-xs text-gray-400 italic flex items-center gap-1"><RefreshCw size={11} className="animate-spin" /> caricamento...</span>}
       </div>
 
-      {/* Team Stats */}
-      {(quantum.length > 0 || teamData.chiusure?.length > 0) && (
-        <TeamStats quantum={byLoc} chiusure={teamData.chiusure || []} />
-      )}
-
-      {/* Pannello obiettivo team */}
-      {byLoc.length > 0 && <TeamObjectivePanel quantum={byLoc} />}
-
-      {/* Bulk target */}
-      {quantum.length > 0 && (
-        <BulkTargetPanel
-          quantum={byLoc}
-          mesiDisp={mesiDisp}
-          meseCorrente={meseCorrente}
-          onSaved={refreshQuantum}
+      {/* KPI Cards team */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <KpiCard
+          icon={Euro}
+          label="Fatturato Mese"
+          value={fmtEur(fatturatoTeam)}
+          sub={`${MESI[mese - 1]} ${anno} · ${copertiTeam} coperti`}
+          color="indigo"
+          badge={targetFatt > 0 ? {
+            text: pctVsTarget >= 100
+              ? `✓ Sopra target (+${fmt(fatturatoTeam - targetFatt, 0)}€)`
+              : `${fmt(pctVsTarget, 1)}% del target`,
+            color: pctVsTarget >= 100 ? 'text-emerald-600' : pctVsTarget >= 80 ? 'text-amber-600' : 'text-red-500',
+          } : null}
         />
+        <KpiCard
+          icon={Target}
+          label="Target Fatturato"
+          value={targetFatt > 0 ? fmtEur(targetFatt) : 'Non impostato'}
+          sub={targetFatt > 0
+            ? (gapTarget > 0 ? `Mancano ${fmtEur(gapTarget)}` : `Superato di ${fmtEur(-gapTarget)}`)
+            : 'Impostalo in KPI Team → Config'}
+          color="violet"
+        />
+        <KpiCard
+          icon={BarChart3}
+          label="Quantum Medio"
+          value={quantumMedio > 0 ? fmtEur(quantumMedio) : '—'}
+          sub="€ per coperto (team)"
+          color="blue"
+        />
+        <KpiCard
+          icon={TrendingUp}
+          label="Margine"
+          value={fmtEur(margine)}
+          sub={be ? `personale ${fmtPct(be.pct_personale)} · food ${fmtPct(be.pct_food)}` : ''}
+          color={margine >= 0 ? 'emerald' : 'red'}
+        />
+      </div>
+
+      {/* Barra progresso team verso target */}
+      {targetFatt > 0 && (
+        <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
+          <div className="flex justify-between items-center mb-2">
+            <span className="text-sm font-semibold text-gray-800">
+              Avanzamento team verso target · {MESI[mese - 1]} {anno}
+            </span>
+            <span className={`text-sm font-bold ${pctVsTarget >= 100 ? 'text-emerald-600' : pctVsTarget >= 80 ? 'text-amber-600' : 'text-red-500'}`}>
+              {fmt(pctVsTarget, 1)}%
+            </span>
+          </div>
+          <div className="h-5 bg-gray-100 rounded-full overflow-hidden">
+            <div
+              className="h-full rounded-full transition-all duration-700 flex items-center justify-end pr-2 text-[11px] text-white font-bold"
+              style={{
+                width: `${Math.min(100, pctVsTarget)}%`,
+                backgroundColor: pctVsTarget >= 100 ? '#10b981' : pctVsTarget >= 80 ? '#f59e0b' : '#6366f1',
+                minWidth: fatturatoTeam > 0 ? '3%' : '0',
+              }}>
+              {pctVsTarget > 20 && fmtEur(fatturatoTeam)}
+            </div>
+          </div>
+          <div className="flex justify-between text-[10px] text-gray-400 mt-1">
+            <span>€ 0</span>
+            <span>Target: {fmtEur(targetFatt)}</span>
+          </div>
+        </div>
       )}
 
-      {loading ? (
-        <div className="text-gray-400 text-sm text-center py-12">Caricamento KPI...</div>
-      ) : (
-        <>
-          {/* Quantum ranking chart */}
-          <div className="card">
-            <div className="card-header flex items-center justify-between">
-              <div>
-                <h2 className="font-semibold">Quantum Ranking — €/coperto medio</h2>
-                <p className="text-xs text-gray-400 mt-0.5">Fatturato netto per coperto servito da ogni operatore — linea viola = target individuale</p>
-              </div>
-            </div>
-            <div className="card-body">
-              {byLoc.length === 0 ? (
-                <p className="text-center text-gray-400 py-8 text-sm">Nessun dato operatori nel periodo</p>
-              ) : (
-                <ResponsiveContainer width="100%" height={Math.max(200, byLoc.length * 40)}>
-                  <BarChart data={byLoc} layout="vertical" margin={{ left: 20, right: 30 }}>
-                    <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-                    <XAxis type="number" tickFormatter={v => `€${v}`} tick={{ fontSize: 12 }} />
-                    <YAxis type="category" dataKey="operatore" tick={{ fontSize: 12 }} width={90} />
-                    <Tooltip formatter={(v) => [`€ ${v.toFixed(2)}`, '€/coperto']} />
-                    <Bar dataKey="quantum" radius={[0,4,4,0]}>
-                      {byLoc.map((op, i) => (
-                        <Cell key={i} fill={
-                          op.quantum_target
-                            ? (op.quantum >= op.quantum_target ? '#10b981' : op.quantum >= op.quantum_target * 0.8 ? '#f59e0b' : '#ef4444')
-                            : COLORS[i % COLORS.length]
-                        } />
-                      ))}
-                    </Bar>
-                    {byLoc.some(x => x.quantum_target) && (
-                      <Bar dataKey="quantum_target" name="Target" fill="transparent"
-                        stroke="#6366f1" strokeWidth={2} strokeDasharray="4 2" radius={[0,4,4,0]} />
-                    )}
-                  </BarChart>
-                </ResponsiveContainer>
-              )}
-            </div>
+      {/* Tabella Operatori */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+        <div className="p-3 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center gap-2">
+            <Users size={15} className="text-indigo-600" />
+            <h2 className="text-sm font-bold text-gray-900">
+              Operatori · {operatoriSorted.length} attivi · {MESI[mese - 1]} {anno} · {sede}
+            </h2>
           </div>
-
-          {/* Vista toggle: Cards vs Leaderboard */}
-          <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-gray-700 text-sm">Confronto operatori</h2>
-            <div className="flex gap-1 bg-gray-100 rounded-lg p-0.5">
-              <button onClick={() => setView('cards')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all ${view === 'cards' ? 'bg-white shadow text-violet-700' : 'text-gray-500'}`}>
-                🃏 Schede
+          <div className="flex items-center gap-1 text-[11px] text-gray-400">
+            <span className="mr-1 text-gray-500">Ordina:</span>
+            {[
+              { key: 'fatturato', label: '€ Fatt.' },
+              { key: 'pezzi',    label: 'Pezzi'   },
+              { key: 'pctTeam',  label: '% Team'  },
+              { key: 'aggiunte', label: 'Aggiunte' },
+              { key: 'quantum',  label: 'Quantum'  },
+            ].map(({ key, label }) => (
+              <button key={key} onClick={() => setSortBy(key)}
+                className={`px-2 py-1 rounded-md transition-all font-medium ${sortBy === key ? 'bg-indigo-100 text-indigo-700' : 'hover:bg-gray-100 text-gray-500'}`}>
+                {label}
               </button>
-              <button onClick={() => setView('leaderboard')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all ${view === 'leaderboard' ? 'bg-white shadow text-violet-700' : 'text-gray-500'}`}>
-                🏆 Leaderboard
-              </button>
-            </div>
+            ))}
           </div>
+        </div>
 
-          {view === 'leaderboard' && <LeaderboardView quantum={byLoc} />}
-
-          {view === 'cards' && (
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {byLoc.map((op, i) => (
-                <OperatorCard
-                  key={i}
-                  data={op}
-                  rank={i}
-                  onPlan={employees.find(e => e.name === op.operatore)
-                    ? () => setPlanFor(employees.find(e => e.name === op.operatore))
-                    : null}
-                />
-              ))}
-              {byLoc.length === 0 && (
-                <div className="col-span-3 text-center text-gray-400 py-12">Nessun dato operatori nel periodo selezionato</div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="bg-gray-50 text-gray-500 text-[11px]">
+              <tr>
+                <th className="px-3 py-2 w-8 text-center">#</th>
+                <th className="text-left px-3 py-2 font-semibold">Operatore</th>
+                <SortTh col="pezzi">Pezzi ↕</SortTh>
+                <SortTh col="fatturato">Fatturato ↕</SortTh>
+                <th className="text-right px-3 py-2 font-semibold w-28">% Team</th>
+                <SortTh col="aggiunte">Aggiunte € ↕</SortTh>
+                <SortTh col="quantum">Quantum ↕</SortTh>
+                <th className="text-right px-3 py-2 font-semibold">Bonus</th>
+                <th className="w-8"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {!loading && operatoriSorted.length === 0 && (
+                <tr>
+                  <td colSpan={9} className="text-center py-10 text-gray-400 text-sm">
+                    Nessun dato operatori per {sede} · {MESI[mese - 1]} {anno}
+                  </td>
+                </tr>
               )}
-            </div>
-          )}
+              {operatoriSorted.map((op, i) => {
+                const key    = (op.operatore || '').toUpperCase()
+                const target = targetMap[key]  || null
+                const qData  = quantumMap[key] || null
+                const payout = bonusOpMap[key] || 0
+                return (
+                  <OperatoreRow
+                    key={op.operatore}
+                    op={op}
+                    rank={i}
+                    target={target}
+                    quantum={qData}
+                    payout={payout}
+                    expanded={expanded === op.operatore}
+                    onToggle={() => setExpanded(expanded === op.operatore ? null : op.operatore)}
+                  />
+                )
+              })}
+            </tbody>
 
-          {/* Glossario */}
-          <div className="card p-4 bg-violet-50 border-violet-200">
-            <h3 className="font-semibold text-violet-800 mb-2">📖 Glossario KPI — Academy Risto CRM</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs text-violet-700">
-              <div><strong>Quantum</strong> = fatturato netto operatore ÷ coperti gestiti (dal prodotto COPERTO in iPratico). Misura il ricavo medio per ogni cliente servito.</div>
-              <div><strong>Quorum</strong> = soglia minima di quantum accettabile. Sotto il quorum = attivazione piano di miglioramento.</div>
-              <div><strong>Target</strong> = obiettivo quantum da raggiungere nel periodo. Concordato in riunione 1:1.</div>
-              <div><strong>Coperto medio</strong> = venduto locale ÷ coperti giornata. KPI del locale, non del singolo operatore.</div>
-              <div><strong>Up-sell</strong> = aggiunta varianti premium (es. frutti di bosco, caramello salato). Tracciato come aggiunta_qty.</div>
-              <div><strong>CNQ</strong> = Cosa Non va, Quantità. Reclami e note negative ricevute sull'operatore nel periodo.</div>
-            </div>
-          </div>
-        </>
-      )}
+            {operatoriSorted.length > 0 && (
+              <tfoot className="bg-gray-50 border-t-2 border-gray-200 font-bold text-gray-800 text-xs">
+                <tr>
+                  <td colSpan={2} className="px-3 py-2 text-gray-700">TOTALE {sede}</td>
+                  <td className="px-3 py-2 text-right">{fmt(totPezzi, 0)}</td>
+                  <td className="px-3 py-2 text-right">{fmtEur(fatturatoTeam)}</td>
+                  <td className="px-3 py-2 text-right pr-5">100%</td>
+                  <td className="px-3 py-2 text-right text-emerald-700">{fmtEur(totAggiunte)}</td>
+                  <td className="px-3 py-2 text-right">{quantumMedio > 0 ? fmtEur(quantumMedio) : '—'}</td>
+                  <td className="px-3 py-2 text-right text-violet-700">{totBonusOp > 0 ? fmtEur(totBonusOp) : '—'}</td>
+                  <td></td>
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
+      </div>
+
+      {/* Obiettivi Prodotto (se esistono per il mese) */}
+      <ObiettiviPanel bonusTeam={bonusTeam} bonusOp={bonusOp} />
+
+      {/* Glossario */}
+      <div className="bg-indigo-50 rounded-xl border border-indigo-100 p-4">
+        <h3 className="text-xs font-bold text-indigo-800 uppercase tracking-wide mb-2">📖 Glossario KPI</h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs text-indigo-700">
+          <div><strong>Fatturato stimato</strong> — totale venduto dall'operatore nel mese (proporzionale ai pezzi × prezzo medio dal venduto iPratico)</div>
+          <div><strong>% Team</strong> — quota pezzi dell'operatore sul totale pezzi del locale nel mese</div>
+          <div><strong>Aggiunte €</strong> — valore varianti premium vendute (es. frutti di bosco, caramello salato)</div>
+          <div><strong>Quantum €/cop.</strong> — fatturato operatore ÷ coperti gestiti. Più alto = più valore per cliente servito</div>
+          <div><strong>Target Pezzi</strong> — obiettivo mensile individuale. Impostalo in KPI Config → Target Individuali</div>
+          <div><strong>Bonus</strong> — payout maturato su obiettivi prodotto. Si calcola in KPI Team → Calcola Obiettivi Mese</div>
+        </div>
+      </div>
+
     </div>
-      <PageAssistant
-        pagina="KPI Camerieri"
-        suggerimenti={[
-          "Chi ha il coperto medio più alto?",
-          "Mostrami il quantum dell'ultimo mese",
-          "Confronta le performance tra camerieri",
-        ]}
-      />
-    </>
   )
 }

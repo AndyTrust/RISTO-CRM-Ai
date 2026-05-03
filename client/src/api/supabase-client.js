@@ -3271,7 +3271,7 @@ export const bonusApi = {
     return sbFetch(q)
   },
   operatori: async ({ sede, anno, mese } = {}) => {
-    let q = supabase.from('v_bonus_operatore').select('*').order('payout_euro', { ascending: false })
+    let q = supabase.from('v_bonus_operatore').select('*').order('payout_operatore', { ascending: false })
     if (sede) q = q.eq('sede', locationToSede(sede) || sede)
     if (anno) q = q.eq('anno', parseInt(anno))
     if (mese) q = q.eq('mese', parseInt(mese))

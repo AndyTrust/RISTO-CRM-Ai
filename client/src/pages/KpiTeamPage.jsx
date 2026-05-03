@@ -624,7 +624,7 @@ export default function KpiTeamPage() {
               {operatori.length === 0 && <tr><td colSpan={8} className="text-center py-8 text-gray-400">Nessun dato operatori per questo mese.</td></tr>}
               {operatori.map(op => {
                 const payout = bonusOp.filter(b => (b.operatore || '').toLowerCase().trim() === (op.operatore || '').toLowerCase().trim())
-                  .reduce((a, b) => a + (b.payout_euro || 0), 0)
+                  .reduce((a, b) => a + (b.payout_operatore || 0), 0)
                 return (
                   <tr key={op.operatore} className="border-t border-gray-100 hover:bg-gray-50">
                     <td className="px-3 py-2 font-medium">{op.operatore}</td>
@@ -639,7 +639,7 @@ export default function KpiTeamPage() {
                       </div>
                     </td>
                     <td className="px-3 py-2 text-right text-gray-500">{op.tot_aggiunte || 0}</td>
-                    <td className="px-3 py-2 text-right">{fmtEur(op.importo_aggiunte)}</td>
+                    <td className="px-3 py-2 text-right">{fmtEur(op.tot_importo_aggiunte)}</td>
                     <td className="px-3 py-2 text-right">{fmtEur(op.fatturato_stimato_operatore)}</td>
                     <td className="px-3 py-2 text-right font-bold text-emerald-700">{fmtEur(payout)}</td>
                   </tr>
@@ -654,9 +654,9 @@ export default function KpiTeamPage() {
                   <td></td>
                   <td className="px-3 py-2 text-right">100%</td>
                   <td className="px-3 py-2 text-right">{operatori.reduce((a, b) => a + (b.tot_aggiunte || 0), 0)}</td>
-                  <td className="px-3 py-2 text-right">{fmtEur(operatori.reduce((a, b) => a + (b.importo_aggiunte || 0), 0))}</td>
+                  <td className="px-3 py-2 text-right">{fmtEur(operatori.reduce((a, b) => a + (b.tot_importo_aggiunte || 0), 0))}</td>
                   <td className="px-3 py-2 text-right">{fmtEur(operatori.reduce((a, b) => a + (b.fatturato_stimato_operatore || 0), 0))}</td>
-                  <td className="px-3 py-2 text-right text-emerald-700">{fmtEur(bonusOp.reduce((a, b) => a + (b.payout_euro || 0), 0))}</td>
+                  <td className="px-3 py-2 text-right text-emerald-700">{fmtEur(bonusOp.reduce((a, b) => a + (b.payout_operatore || 0), 0))}</td>
                 </tr>
               </tfoot>
             )}
