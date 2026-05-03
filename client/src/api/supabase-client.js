@@ -1273,11 +1273,27 @@ export const analytics = {
     } catch { return null }
   },
 
-  // Previsioni prossimi 3 mesi via regressione lineare
+  // Previsioni prossimi 3 mesi via regressione lineare + stagionalità 2025
   forecast: async () => {
     try {
       const { data: rows } = await supabase.from('chiusure_giornaliere')
         .select('sede, data, totale_venduto_ipratico, coperti').order('data')
+
+      // Indici stagionali da 2025 (combinati MA+PN)
+      const byMn2025 = {}
+      let tot2025 = 0
+      for (const r of rows ?? []) {
+        if (!r.data?.startsWith('2025')) continue
+        const mn = parseInt(r.data.substring(5, 7))
+        if (!byMn2025[mn]) byMn2025[mn] = 0
+        byMn2025[mn] += parseFloat(r.totale_venduto_ipratico) || 0
+        tot2025 += parseFloat(r.totale_venduto_ipratico) || 0
+      }
+      const avg2025 = Object.keys(byMn2025).length > 0 ? tot2025 / Object.keys(byMn2025).length : 0
+      const seasonIdx = {}
+      for (const [mn, v] of Object.entries(byMn2025)) {
+        seasonIdx[parseInt(mn)] = avg2025 > 0 ? Math.round(v / avg2025 * 100) / 100 : 1.0
+      }
 
       const byLocMese = {}
       for (const r of rows ?? []) {
@@ -1285,44 +1301,56 @@ export const analytics = {
         const mese = r.data?.substring(0, 7); if (!mese) continue
         const k = `${loc}-${mese}`
         if (!byLocMese[k]) byLocMese[k] = { loc, mese, venduto: 0, coperti: 0 }
-        byLocMese[k].venduto += parseFloat(r.totale_venduto_ipratico)||0
-        byLocMese[k].coperti += parseInt(r.coperti)||0
+        byLocMese[k].venduto += parseFloat(r.totale_venduto_ipratico) || 0
+        byLocMese[k].coperti += parseInt(r.coperti) || 0
       }
 
       const result = {}
-      for (const loc of ['MAMELI','PREDDA_NIEDDA']) {
-        const locRows = Object.values(byLocMese).filter(r=>r.loc===loc).sort((a,b)=>a.mese.localeCompare(b.mese))
-        if (locRows.length < 3) { result[loc]={storico:[],forecasts:[],regressione:{r2:0}}; continue }
+      for (const loc of ['MAMELI', 'PREDDA_NIEDDA']) {
+        const locRows = Object.values(byLocMese).filter(r => r.loc === loc).sort((a, b) => a.mese.localeCompare(b.mese))
+        if (locRows.length < 3) { result[loc] = { storico: [], forecasts: [], regressione: { r2: 0 } }; continue }
 
-        const storico = locRows.map((r,i) => ({
+        const storico = locRows.map((r, i) => ({
           mese: r.mese, x: i,
-          mese_label: MESI_IT_SHORT[parseInt(r.mese.substring(5,7))-1]+' '+r.mese.substring(2,4),
+          mese_label: MESI_IT_SHORT[parseInt(r.mese.substring(5, 7)) - 1] + ' ' + r.mese.substring(2, 4),
           tot_venduto: Math.round(r.venduto), tot_coperti: r.coperti,
         }))
 
         const n = storico.length
-        const meanX = (n-1)/2, meanY = storico.reduce((s,d)=>s+d.tot_venduto,0)/n
-        const meanC = storico.reduce((s,d)=>s+d.tot_coperti,0)/n
-        let ssxy=0, ssxx=0, ssyy=0, ssxyC=0
+        const meanX = (n - 1) / 2
+        const meanY = storico.reduce((s, d) => s + d.tot_venduto, 0) / n
+        const meanC = storico.reduce((s, d) => s + d.tot_coperti, 0) / n
+        let ssxy = 0, ssxx = 0, ssyy = 0, ssxyC = 0
         for (const d of storico) {
-          ssxy += (d.x-meanX)*(d.tot_venduto-meanY); ssxx += (d.x-meanX)**2
-          ssyy += (d.tot_venduto-meanY)**2; ssxyC += (d.x-meanX)*(d.tot_coperti-meanC)
+          ssxy += (d.x - meanX) * (d.tot_venduto - meanY); ssxx += (d.x - meanX) ** 2
+          ssyy += (d.tot_venduto - meanY) ** 2; ssxyC += (d.x - meanX) * (d.tot_coperti - meanC)
         }
-        const bV = ssxx>0?ssxy/ssxx:0, aV = meanY-bV*meanX
-        const bC = ssxx>0?ssxyC/ssxx:0, aC = meanC-bC*meanX
-        const r2 = ssxx>0&&ssyy>0 ? Math.round(ssxy**2/(ssxx*ssyy)*100)/100 : 0
+        const bV = ssxx > 0 ? ssxy / ssxx : 0, aV = meanY - bV * meanX
+        const bC = ssxx > 0 ? ssxyC / ssxx : 0, aC = meanC - bC * meanX
+        const r2 = ssxx > 0 && ssyy > 0 ? Math.round(ssxy ** 2 / (ssxx * ssyy) * 100) / 100 : 0
 
-        const lastMese = storico[storico.length-1].mese
+        const lastMese = storico[storico.length - 1].mese
         const forecasts = []
-        for (let i=1;i<=3;i++) {
-          const d = new Date(lastMese+'-15'); d.setMonth(d.getMonth()+i)
-          const mese = d.toISOString().substring(0,7), mn = parseInt(mese.substring(5,7))
-          const xF = n+i-1
-          const fv = Math.round(Math.max(0,aV+bV*xF))
-          const fc = Math.round(Math.max(0,aC+bC*xF))
-          forecasts.push({ mese, mese_label: MESI_IT_SHORT[mn-1]+' '+mese.substring(2,4),
-            forecast_venduto: fv, forecast_min: Math.round(fv*0.9), forecast_max: Math.round(fv*1.1),
-            forecast_coperti: fc, tendenza: bV>0?'crescita':'calo', coeff_stagionale: '1.00' })
+        for (let i = 1; i <= 3; i++) {
+          const d = new Date(lastMese + '-15'); d.setMonth(d.getMonth() + i)
+          const mese = d.toISOString().substring(0, 7), mn = parseInt(mese.substring(5, 7))
+          const xF = n + i - 1
+          const fvBase = Math.max(0, aV + bV * xF)
+          const fcBase = Math.max(0, aC + bC * xF)
+          // Applica indice stagionale 2025
+          const coeff = seasonIdx[mn] || 1.0
+          const fv = Math.round(fvBase * coeff)
+          const fc = Math.round(fcBase * coeff)
+          forecasts.push({
+            mese,
+            mese_label: MESI_IT_SHORT[mn - 1] + ' ' + mese.substring(2, 4),
+            forecast_venduto: fv,
+            forecast_min: Math.round(fv * 0.88),
+            forecast_max: Math.round(fv * 1.12),
+            forecast_coperti: fc,
+            tendenza: (bV * coeff) > 0 ? 'crescita' : 'calo',
+            coeff_stagionale: String(coeff),
+          })
         }
         result[loc] = { storico, forecasts, regressione: { r2 } }
       }
@@ -1330,185 +1358,150 @@ export const analytics = {
     } catch { return null }
   },
 
+  // Target operatori — fonte: kpi_revenues (coperti e fatturato reali per operatore)
   operatorTargets: async () => {
     try {
-      // Calcola periodo: ultimi 3 mesi completi (per avere storico) + mese target (prossimo)
       const now = new Date()
-      const targetMese = new Date(now.getFullYear(), now.getMonth() + 1, 1) // prossimo mese
-      const targetAnno = targetMese.getFullYear()
-      const targetMeseNum = targetMese.getMonth() + 1 // 1-12
+      // Mese target = prossimo mese
+      const targetD = new Date(now.getFullYear(), now.getMonth() + 1, 1)
+      const targetAnno = targetD.getFullYear()
+      const targetMeseNum = targetD.getMonth() + 1 // 1-12
 
-      // Ultimi 3 mesi da oggi
-      const mesiStorico = []
-      for (let i = 3; i >= 1; i--) {
-        const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
-        mesiStorico.push({ anno: d.getFullYear(), mese: d.getMonth() + 1 })
-      }
+      // Tutti i dati kpi_revenues 2026
+      const { data: kpiRows } = await supabase
+        .from('kpi_revenues')
+        .select('sede, period, op, totale, coperti, coperto_medio')
+        .gte('period', '2026-01')
+        .order('period')
 
-      // Query venduto_camerieri ultimi 3 mesi
-      const earliest = `${mesiStorico[0].anno}-${String(mesiStorico[0].mese).padStart(2,'0')}-01`
-      const latestM = new Date(now.getFullYear(), now.getMonth(), 1)
-      const latestEnd = `${latestM.getFullYear()}-${String(latestM.getMonth() + 1).padStart(2,'0')}-01`
+      if (!kpiRows?.length) return []
 
-      const { data: vcRows } = await supabase.from('venduto_camerieri')
-        .select('sede, operatore, data_inizio, data_fine, quantita')
-        .gte('data_inizio', earliest)
-        .lt('data_inizio', latestEnd)
+      // Normalizza nomi operatori (uppercase, trim) per cross-period matching
+      const normalize = n => (n || '').trim().toUpperCase()
+      const SKIP_OPS = new Set(['PIENISSIMO', 'TECNICO', 'EXTRA', '', 'LAURA']) // LAURA PN ha 3 coperti anomali
 
-      if (!vcRows?.length) return []
+      const byOp = {}
+      for (const r of kpiRows) {
+        const normOp = normalize(r.op)
+        // Salta operatori di sistema e anomalie
+        if (SKIP_OPS.has(normOp) && r.sede === 'PN') continue
+        if (['PIENISSIMO', 'TECNICO', 'EXTRA', ''].includes(normOp)) continue
 
-      // Aggregazione per sede + operatore + mese (usando data_inizio)
-      const bySedeOpMese = {}
-      for (const r of vcRows) {
-        const mKey = r.data_inizio?.substring(0, 7); if (!mKey) continue
-        const loc = r.sede === 'MA' ? 'MAMELI' : 'PREDDA_NIEDDA'
-        const key = `${loc}|${r.operatore}`
-        if (!bySedeOpMese[key]) bySedeOpMese[key] = { loc, operatore: r.operatore, mesi: {}, totale: 0, n: 0 }
-        if (!bySedeOpMese[key].mesi[mKey]) bySedeOpMese[key].mesi[mKey] = { qty: 0 }
-        bySedeOpMese[key].mesi[mKey].qty += parseFloat(r.quantita) || 0
-        bySedeOpMese[key].totale += parseFloat(r.quantita) || 0
-        bySedeOpMese[key].n++
-      }
-
-      // Totale per sede per calcolare quota di mercato
-      const totPerSede = { MAMELI: 0, PREDDA_NIEDDA: 0 }
-      for (const op of Object.values(bySedeOpMese)) {
-        totPerSede[op.loc] = (totPerSede[op.loc] || 0) + op.totale
-      }
-
-      // Coperto medio sede da chiusure_giornaliere (mese corrente)
-      const cmMeseKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2,'0')}`
-      const cmMeseNext = now.getMonth() === 11
-        ? `${now.getFullYear() + 1}-01`
-        : `${now.getFullYear()}-${String(now.getMonth() + 2).padStart(2,'0')}`
-      const { data: chiusureRows } = await supabase.from('chiusure_giornaliere')
-        .select('sede, totale_venduto_ipratico, coperti')
-        .gte('data', `${cmMeseKey}-01`)
-        .lt('data', `${cmMeseNext}-01`)
-        .eq('chiusura_anticipata', false)
-
-      const cmPerSede = { MAMELI: 0, PREDDA_NIEDDA: 0 }
-      const copertiPerSede = { MAMELI: 0, PREDDA_NIEDDA: 0 }
-      for (const r of chiusureRows ?? []) {
-        const loc = r.sede === 'MA' ? 'MAMELI' : 'PREDDA_NIEDDA'
-        cmPerSede[loc] += parseFloat(r.totale_venduto_ipratico) || 0
-        copertiPerSede[loc] += parseInt(r.coperti) || 0
-      }
-      for (const loc of ['MAMELI','PREDDA_NIEDDA']) {
-        cmPerSede[loc] = copertiPerSede[loc] > 0
-          ? Math.round(cmPerSede[loc] / copertiPerSede[loc] * 100) / 100
-          : 22
-      }
-
-      // Coefficiente stagionale: confronto mese target 2025 vs media storica
-      const targPrevAnno = targetAnno - 1
-      const targPrevM = String(targetMeseNum).padStart(2,'0')
-      const targPrevNext = targetMeseNum === 12
-        ? `${targPrevAnno + 1}-01`
-        : `${targPrevAnno}-${String(targetMeseNum + 1).padStart(2,'0')}`
-
-      const { data: prevYearRows } = await supabase.from('chiusure_giornaliere')
-        .select('sede, totale_venduto_ipratico')
-        .gte('data', `${targPrevAnno}-${targPrevM}-01`)
-        .lt('data', `${targPrevNext}-01`)
-        .eq('chiusura_anticipata', false)
-
-      const targMonthPrev = { MAMELI: 0, PREDDA_NIEDDA: 0 }
-      for (const r of prevYearRows ?? []) {
-        const loc = r.sede === 'MA' ? 'MAMELI' : 'PREDDA_NIEDDA'
-        targMonthPrev[loc] += parseFloat(r.totale_venduto_ipratico) || 0
-      }
-
-      // Media mensile anno precedente per sede
-      const { data: annoPrecRows } = await supabase.from('chiusure_giornaliere')
-        .select('sede, data, totale_venduto_ipratico')
-        .gte('data', `${targPrevAnno}-01-01`)
-        .lte('data', `${targPrevAnno}-12-31`)
-        .eq('chiusura_anticipata', false)
-
-      const annoPrecMesi = { MAMELI: {}, PREDDA_NIEDDA: {} }
-      for (const r of annoPrecRows ?? []) {
-        const loc = r.sede === 'MA' ? 'MAMELI' : 'PREDDA_NIEDDA'
-        const m = r.data?.substring(0, 7); if (!m) continue
-        if (!annoPrecMesi[loc][m]) annoPrecMesi[loc][m] = 0
-        annoPrecMesi[loc][m] += parseFloat(r.totale_venduto_ipratico) || 0
-      }
-      const coeffStagionale = { MAMELI: 1.0, PREDDA_NIEDDA: 1.0 }
-      for (const loc of ['MAMELI','PREDDA_NIEDDA']) {
-        const mensili = Object.values(annoPrecMesi[loc])
-        const media = mensili.length > 0 ? mensili.reduce((a,b) => a+b, 0) / mensili.length : 0
-        if (media > 0 && targMonthPrev[loc] > 0) {
-          coeffStagionale[loc] = Math.round(targMonthPrev[loc] / media * 100) / 100
+        const key = `${r.sede}|${normOp}`
+        if (!byOp[key]) byOp[key] = {
+          sede: r.sede, normOp,
+          displayOp: r.op,
+          mesi: {},
+          lastCM: 0, lastTotale: 0, lastPeriod: '',
         }
+        byOp[key].mesi[r.period] = {
+          coperti: parseInt(r.coperti) || 0,
+          totale: parseFloat(r.totale) || 0,
+          cm: parseFloat(r.coperto_medio) || 0,
+        }
+        // Teniamo il CM dell'ultimo mese con fatturato reale
+        if ((parseFloat(r.totale) || 0) > 0 && r.period >= byOp[key].lastPeriod) {
+          byOp[key].lastCM = parseFloat(r.coperto_medio) || 0
+          byOp[key].lastTotale = parseFloat(r.totale) || 0
+          byOp[key].lastPeriod = r.period
+          byOp[key].displayOp = r.op // nome più recente (già corretto)
+        }
+      }
+
+      // Indici stagionali dal 2025 (per sede)
+      const { data: rows2025 } = await supabase.from('chiusure_giornaliere')
+        .select('sede, data, totale_venduto_ipratico')
+        .gte('data', '2025-01-01').lte('data', '2025-12-31')
+
+      const bySedeM = { MA: {}, PN: {} }
+      for (const r of rows2025 ?? []) {
+        const mn = parseInt(r.data?.substring(5, 7))
+        const sede = r.sede
+        if (!bySedeM[sede]?.[mn]) { if (!bySedeM[sede]) bySedeM[sede] = {}; bySedeM[sede][mn] = 0 }
+        bySedeM[sede][mn] += parseFloat(r.totale_venduto_ipratico) || 0
+      }
+      const coeffStagionale = { MA: 1.0, PN: 1.0 }
+      for (const sede of ['MA', 'PN']) {
+        const mensili = Object.values(bySedeM[sede] || {})
+        const media = mensili.length > 0 ? mensili.reduce((a, b) => a + b, 0) / mensili.length : 0
+        const meseV = bySedeM[sede]?.[targetMeseNum] || 0
+        if (media > 0 && meseV > 0) coeffStagionale[sede] = Math.round(meseV / media * 100) / 100
+      }
+
+      // Totale coperti nell'ultimo mese disponibile per quota di mercato
+      const lastAvailPeriod = Object.values(byOp)
+        .flatMap(o => Object.keys(o.mesi)).sort().at(-1) || '2026-04'
+      const totCopertiSede = { MA: 0, PN: 0 }
+      for (const op of Object.values(byOp)) {
+        totCopertiSede[op.sede] = (totCopertiSede[op.sede] || 0) + (op.mesi[lastAvailPeriod]?.coperti || 0)
       }
 
       const MESI_IT_LONG = ['Gennaio','Febbraio','Marzo','Aprile','Maggio','Giugno',
                             'Luglio','Agosto','Settembre','Ottobre','Novembre','Dicembre']
       const FATTORE_TARGET = 1.10
 
-      // Costruisci array risultati per operatore
       const results = []
-      for (const [key, op] of Object.entries(bySedeOpMese)) {
-        // Media ultimi 2 mesi (più recenti nello storico)
-        const mesiKeys = Object.keys(op.mesi).sort()
-        const last2 = mesiKeys.slice(-2)
-        const media2m = last2.length > 0
-          ? Math.round(last2.reduce((s, m) => s + (op.mesi[m]?.qty || 0), 0) / last2.length)
+      for (const op of Object.values(byOp)) {
+        const sortedP = Object.keys(op.mesi).sort()
+        if (sortedP.length === 0) continue
+
+        // Media ultimi 2 mesi di coperti
+        const last2 = sortedP.slice(-2)
+        const media2m_coperti = last2.length > 0
+          ? Math.round(last2.reduce((s, m) => s + (op.mesi[m]?.coperti || 0), 0) / last2.length)
           : 0
 
-        // Trend: confronto ultimo mese vs penultimo
-        const trend = mesiKeys.length >= 2
-          ? (op.mesi[mesiKeys[mesiKeys.length-1]]?.qty > op.mesi[mesiKeys[mesiKeys.length-2]]?.qty ? 'up' : 'down')
+        // Trend coperti
+        const trend = sortedP.length >= 2
+          ? ((op.mesi[sortedP.at(-1)]?.coperti || 0) >= (op.mesi[sortedP.at(-2)]?.coperti || 0) ? 'up' : 'down')
           : 'neutral'
 
-        // Coperto medio proxy: usa CM sede
-        const cm = cmPerSede[op.loc]
+        const coeff = coeffStagionale[op.sede] || 1.0
+        const copertiTarget = Math.round(media2m_coperti * coeff * FATTORE_TARGET)
+        const cmUse = op.lastCM > 0 ? op.lastCM : 15
+        const vendutoTarget = Math.round(copertiTarget * cmUse)
 
-        // Target con coefficiente stagionale
-        const coeff = coeffStagionale[op.loc]
-        const copertiTarget = Math.round(media2m * coeff * FATTORE_TARGET)
-        const vendutoTarget = Math.round(copertiTarget * cm)
+        // Quota di mercato su coperti ultimo mese
+        const totSede = totCopertiSede[op.sede] || 1
+        const lastCop = op.mesi[lastAvailPeriod]?.coperti || 0
+        const quotaPct = Math.round(lastCop / totSede * 100)
 
-        // Score 0-100: normalizzato su quota mercato + trend
-        const quotaPct = totPerSede[op.loc] > 0
-          ? Math.round(op.totale / totPerSede[op.loc] * 100)
-          : 0
-        const score = Math.min(100, Math.round(quotaPct * 3 + (trend === 'up' ? 10 : trend === 'down' ? -5 : 0)))
+        // Score composito: quota × 2 + trend + bonus CM reale
+        const score = Math.min(100, Math.max(0, Math.round(
+          quotaPct * 2 + (trend === 'up' ? 15 : -5) + (op.lastCM > 0 ? 15 : 0)
+        )))
 
-        // Upsell rate proxy: CM sede / CM medio sede (1.0 se uguali)
-        const upsellRate = 1.0
-
-        // Mesi per mini trend chart
         const mesiObj = {}
         for (const [m, d] of Object.entries(op.mesi)) {
-          mesiObj[m] = { coperti: Math.round(d.qty) }
+          mesiObj[m] = { coperti: d.coperti, totale: Math.round(d.totale), cm: d.cm }
         }
 
         results.push({
-          operatore: op.operatore,
-          location: op.loc,
-          storico: {
-            media2m_coperti: media2m,
-            media2m_cm: cm,
-          },
+          operatore: op.displayOp,
+          location: op.sede === 'MA' ? 'MAMELI' : 'PREDDA_NIEDDA',
+          sede: op.sede,
+          storico: { media2m_coperti, media2m_cm: op.lastCM, mesi_dispo: sortedP.length },
           target: {
             coperti_target: copertiTarget,
             venduto_target: vendutoTarget,
-            target_fattore_pct: Math.round((FATTORE_TARGET - 1) * 100),
+            target_fattore_pct: 10,
             periodo: `${MESI_IT_LONG[targetMeseNum - 1]} ${targetAnno}`,
             coeff_stagionale: String(coeff),
           },
           performance: {
-            score: Math.max(0, score),
+            score,
             quota_mercato_pct: quotaPct,
             trend,
-            upsell_rate: upsellRate,
+            upsell_rate: op.lastCM > 0 ? Math.round(op.lastCM * 10) / 10 : null,
           },
           mesi: mesiObj,
         })
       }
 
-      return results
+      return results.sort((a, b) => {
+        if (a.sede !== b.sede) return a.sede.localeCompare(b.sede)
+        return b.storico.media2m_coperti - a.storico.media2m_coperti
+      })
     } catch (e) {
       console.error('operatorTargets error:', e)
       return []
@@ -1544,6 +1537,67 @@ export const analytics = {
       allDays.sort((a,b)=>b.venduto-a.venduto)
       return { byDow: byDowFinal, top5: allDays.slice(0,5) }
     } catch { return null }
+  },
+
+  // BE mensile: costi (personale + fatture + fissi) vs incasso per sede
+  beMensile: async () => {
+    try {
+      const [{ data: costiRows }, { data: chiusureRows }] = await Promise.all([
+        supabase.from('v_costi_mensili').select('*').eq('anno', 2026).order('mese'),
+        supabase.from('v_chiusure_mensile').select('sede, mese, tot_venduto, tot_coperti, n_giorni')
+          .gte('mese', '2026-01').lte('mese', '2026-05'),
+      ])
+
+      // Lookup incasso per sede-mese
+      const revMap = {}
+      for (const r of chiusureRows ?? []) {
+        const mn = parseInt(r.mese.split('-')[1])
+        revMap[`${r.sede}-${mn}`] = {
+          incasso: parseFloat(r.tot_venduto) || 0,
+          coperti: parseInt(r.tot_coperti) || 0,
+          giorni: parseInt(r.n_giorni) || 0,
+        }
+      }
+
+      // Mesi con attribuzione fatture per sede non affidabile (MA quasi zero, PN gonfiata)
+      const unreliable = new Set(['MA-1','MA-2','PN-1','PN-2'])
+
+      const meseCorrente = new Date().getMonth() + 1 // 1-12
+      const result = []
+      for (const r of costiRows ?? []) {
+        if (r.mese > meseCorrente) continue // non mostrare mesi futuri senza dati
+
+        const revKey = `${r.sede}-${r.mese}`
+        const rev = revMap[revKey] || { incasso: 0, coperti: 0, giorni: 0 }
+        const costoTot = parseFloat(r.be_totale) || 0
+        const incasso = rev.incasso
+        const margine = incasso > 0 ? incasso - costoTot : null
+        const margine_pct = incasso > 0 ? Math.round(margine / incasso * 100) : null
+
+        result.push({
+          sede: r.sede,
+          anno: r.anno,
+          mese: r.mese,
+          mese_label: MESI_IT_SHORT[r.mese - 1],
+          incasso,
+          coperti: rev.coperti,
+          giorni: rev.giorni,
+          costo_personale: parseFloat(r.costo_personale) || 0,
+          costo_fatture: parseFloat(r.costo_fatture) || 0,
+          costo_fissi: parseFloat(r.costo_fissi) || 0,
+          be_totale: costoTot,
+          margine,
+          margine_pct,
+          fatture_unreliable: unreliable.has(revKey),
+          has_real_data: incasso > 0 && costoTot > 0,
+        })
+      }
+
+      return result.sort((a, b) => a.mese - b.mese || a.sede.localeCompare(b.sede))
+    } catch (e) {
+      console.error('beMensile error:', e)
+      return []
+    }
   },
 }
 

@@ -1,14 +1,14 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import {
   AreaChart, Area, BarChart, Bar, LineChart, Line,
-  RadarChart, Radar, PolarGrid, PolarAngleAxis,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-  ResponsiveContainer, ReferenceLine, Cell, ComposedChart
+  ResponsiveContainer, ReferenceLine, ComposedChart
 } from 'recharts'
 import {
   TrendingUp, TrendingDown, Minus, Target, Users, BarChart2,
   Calendar, Zap, AlertTriangle, CheckCircle, ChevronRight,
-  RefreshCw, ArrowUpRight, ArrowDownRight, Star, Award
+  RefreshCw, ArrowUpRight, ArrowDownRight, Star, Award,
+  DollarSign, TrendingDown as CostIcon, Info
 } from 'lucide-react'
 import { analytics as analyticsApi, data as dataApi } from '../api/client'
 import PageAssistant from '../components/PageAssistant'
@@ -23,13 +23,15 @@ const C = {
   down:    '#ef4444',
   neutral: '#94a3b8',
   forecast:'#a78bfa',
+  profit:  '#22c55e',
+  loss:    '#ef4444',
 }
 
-const LOC_LABEL = { MAMELI: 'Sede MA (MA)', PREDDA_NIEDDA: 'Sede PN (PN)' }
+const LOC_LABEL = { MAMELI: 'Mameli (MA)', PREDDA_NIEDDA: 'Predda Niedda (PN)' }
 const MESI_IT = ['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic']
 
 // ── Componenti UI ────────────────────────────────────────────────────────────
-function KPICard({ title, value, sub, delta, icon: Icon, color = '#6366f1', size = 'md' }) {
+function KPICard({ title, value, sub, delta, icon: Icon, color = '#6366f1' }) {
   const positive = delta > 0
   const DeltaIcon = delta > 0 ? ArrowUpRight : delta < 0 ? ArrowDownRight : Minus
   return (
@@ -40,7 +42,7 @@ function KPICard({ title, value, sub, delta, icon: Icon, color = '#6366f1', size
           <Icon size={14} style={{ color }} />
         </div>}
       </div>
-      <div className={`font-bold text-gray-900 ${size === 'lg' ? 'text-3xl' : 'text-2xl'}`}>{value}</div>
+      <div className="font-bold text-gray-900 text-2xl">{value}</div>
       <div className="flex items-center gap-2">
         {delta !== undefined && delta !== null && (
           <span className={`flex items-center gap-0.5 text-xs font-semibold ${positive ? 'text-green-600' : delta < 0 ? 'text-red-500' : 'text-gray-400'}`}>
@@ -66,15 +68,12 @@ function SectionTitle({ icon: Icon, label, color = '#6366f1' }) {
 
 function TabBar({ tabs, active, onChange }) {
   return (
-    <div className="flex gap-1 bg-gray-100 rounded-lg p-1 w-fit mb-4">
+    <div className="flex gap-1 bg-gray-100 rounded-lg p-1 w-fit mb-4 flex-wrap">
       {tabs.map(t => (
-        <button
-          key={t.id}
-          onClick={() => onChange(t.id)}
+        <button key={t.id} onClick={() => onChange(t.id)}
           className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
             active === t.id ? 'bg-white shadow text-gray-900' : 'text-gray-500 hover:text-gray-700'
-          }`}
-        >
+          }`}>
           {t.label}
         </button>
       ))}
@@ -82,7 +81,6 @@ function TabBar({ tabs, active, onChange }) {
   )
 }
 
-// Tooltip customizzato
 function CustomTooltip({ active, payload, label, prefix = '€', suffix = '' }) {
   if (!active || !payload?.length) return null
   return (
@@ -99,54 +97,198 @@ function CustomTooltip({ active, payload, label, prefix = '€', suffix = '' }) 
   )
 }
 
+// ── Sezione: Costi & BE Mensile ──────────────────────────────────────────────
+function BESection({ beMensile, loading }) {
+  const [sede, setSede] = useState('MA')
+  if (loading) return <div className="animate-pulse bg-gray-100 rounded-xl h-64" />
+  if (!beMensile?.length) return (
+    <div className="bg-amber-50 border border-amber-200 rounded-xl p-6 text-center">
+      <AlertTriangle size={28} className="text-amber-400 mx-auto mb-3" />
+      <p className="font-semibold text-amber-800 mb-1">Nessun dato BE disponibile</p>
+      <p className="text-sm text-amber-600">Importa buste paga e fatture per visualizzare il break-even.</p>
+    </div>
+  )
+
+  const filtered = beMensile.filter(r => r.sede === sede && r.incasso > 0)
+
+  // Dati per il grafico stacked bar: costi vs incasso
+  const chartData = filtered.map(r => ({
+    mese: r.mese_label,
+    personale: Math.round(r.costo_personale),
+    fatture: Math.round(r.costo_fatture),
+    fissi: Math.round(r.costo_fissi),
+    incasso: Math.round(r.incasso),
+    be_totale: Math.round(r.be_totale),
+    unreliable: r.fatture_unreliable,
+  }))
+
+  // Summary dell'ultimo mese completo con tutti i dati
+  const lastFull = [...filtered].reverse().find(r => r.costo_personale > 0 && r.costo_fatture > 0)
+
+  return (
+    <div>
+      <SectionTitle icon={DollarSign} label="Costi & Break-Even Mensile 2026" color={C.MA} />
+
+      <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-4 flex items-start gap-2">
+        <Info size={14} className="text-amber-600 mt-0.5 flex-shrink-0" />
+        <p className="text-xs text-amber-700">
+          <strong>Nota dati:</strong> Gen–Feb 2026 le fatture di acquisto non avevano sede assegnata → l'attribuzione per locale è inaffidabile per quei mesi (segnalati con ⚠). Apr 2026 è il primo mese con dati fatture affidabili per sede.
+          I costi fissi registrati (affitto + indennizzi) sono parziali — mancano utenze, commercialista, assicurazioni.
+        </p>
+      </div>
+
+      <TabBar
+        tabs={[{ id: 'MA', label: '🔵 Mameli (MA)' }, { id: 'PN', label: '🟢 Predda Niedda (PN)' }]}
+        active={sede} onChange={setSede}
+      />
+
+      {/* KPI summary ultimo mese completo */}
+      {lastFull && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+            <div className="text-xs text-gray-500 mb-1">Incasso ({lastFull.mese_label})</div>
+            <div className="text-2xl font-bold text-gray-900">€{lastFull.incasso.toLocaleString('it-IT')}</div>
+            <div className="text-xs text-gray-400">{lastFull.giorni} giorni · {lastFull.coperti.toLocaleString()} coperti</div>
+          </div>
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+            <div className="text-xs text-gray-500 mb-1">Costo Personale</div>
+            <div className="text-2xl font-bold text-indigo-600">€{lastFull.costo_personale.toLocaleString('it-IT')}</div>
+            <div className="text-xs text-gray-400">{lastFull.incasso > 0 ? Math.round(lastFull.costo_personale / lastFull.incasso * 100) : '–'}% del fatturato</div>
+          </div>
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+            <div className="text-xs text-gray-500 mb-1">Costo Fatture Acquisto</div>
+            <div className="text-2xl font-bold text-violet-600">€{lastFull.costo_fatture.toLocaleString('it-IT')}</div>
+            <div className="text-xs text-gray-400">{lastFull.incasso > 0 ? Math.round(lastFull.costo_fatture / lastFull.incasso * 100) : '–'}% del fatturato</div>
+          </div>
+          <div className={`rounded-xl border shadow-sm p-4 ${lastFull.margine >= 0 ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+            <div className="text-xs text-gray-500 mb-1">Margine ({lastFull.mese_label})</div>
+            <div className={`text-2xl font-bold ${lastFull.margine >= 0 ? 'text-green-700' : 'text-red-600'}`}>
+              {lastFull.margine >= 0 ? '+' : ''}€{lastFull.margine?.toLocaleString('it-IT')}
+            </div>
+            <div className={`text-xs font-medium ${lastFull.margine >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+              {lastFull.margine_pct !== null ? `${lastFull.margine_pct > 0 ? '+' : ''}${lastFull.margine_pct}% su fatturato` : '—'}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Grafico stacked */}
+      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 mb-4">
+        <p className="text-xs font-semibold text-gray-600 mb-3">Struttura Costi vs Incasso</p>
+        <ResponsiveContainer width="100%" height={280}>
+          <ComposedChart data={chartData} barGap={4}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+            <XAxis dataKey="mese" tick={{ fontSize: 11 }} />
+            <YAxis tickFormatter={v => `€${(v/1000).toFixed(0)}k`} tick={{ fontSize: 11 }} />
+            <Tooltip content={<CustomTooltip />} />
+            <Legend wrapperStyle={{ fontSize: 11 }} />
+            <Bar dataKey="personale" name="Personale" stackId="costi" fill={C.MA} radius={[0,0,0,0]} />
+            <Bar dataKey="fatture" name="Fatture acq." stackId="costi" fill="#8b5cf6" radius={[0,0,0,0]} />
+            <Bar dataKey="fissi" name="Costi fissi" stackId="costi" fill={C.warn} radius={[3,3,0,0]} />
+            <Line type="monotone" dataKey="incasso" name="Incasso" stroke={C.PN} strokeWidth={2.5} dot={{ r: 4 }} />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Tabella dettaglio mesi */}
+      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+        <table className="w-full text-xs">
+          <thead className="bg-gray-50">
+            <tr>
+              {['Mese','Incasso','Personale','Fatture','Fissi','Totale Costi','Margine'].map(h => (
+                <th key={h} className="px-3 py-2 text-left font-semibold text-gray-600">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map(r => (
+              <tr key={`${r.sede}-${r.mese}`} className="border-t border-gray-50 hover:bg-gray-50">
+                <td className="px-3 py-2 font-medium">
+                  {r.mese_label}
+                  {r.fatture_unreliable && <span className="ml-1 text-amber-500" title="Attribuzione fatture per sede non affidabile">⚠</span>}
+                </td>
+                <td className="px-3 py-2 text-green-700 font-medium">€{r.incasso.toLocaleString('it-IT')}</td>
+                <td className="px-3 py-2 text-indigo-600">€{r.costo_personale.toLocaleString('it-IT')}</td>
+                <td className="px-3 py-2 text-violet-600">
+                  €{r.costo_fatture.toLocaleString('it-IT')}
+                  {r.fatture_unreliable && <span className="ml-1 text-amber-400">⚠</span>}
+                </td>
+                <td className="px-3 py-2 text-amber-600">€{r.costo_fissi.toLocaleString('it-IT')}</td>
+                <td className="px-3 py-2 font-semibold text-gray-800">€{r.be_totale.toLocaleString('it-IT')}</td>
+                <td className={`px-3 py-2 font-bold ${r.margine >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                  {r.margine !== null ? `${r.margine >= 0 ? '+' : ''}€${r.margine.toLocaleString('it-IT')}` : '—'}
+                  {r.margine_pct !== null && (
+                    <span className="ml-1 text-xs font-normal">({r.margine_pct}%)</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Box calcolo semplice */}
+      <div className="mt-4 bg-gray-50 border border-gray-200 rounded-xl p-4">
+        <p className="text-xs font-semibold text-gray-700 mb-2">📐 Calcolo semplice — Costi totali azienda ÷ 2 locali</p>
+        {(() => {
+          const aprMA = beMensile.find(r => r.sede === 'MA' && r.mese === 4)
+          const aprPN = beMensile.find(r => r.sede === 'PN' && r.mese === 4)
+          if (!aprMA || !aprPN) return <p className="text-xs text-gray-400">Dati aprile non disponibili</p>
+          const totPersonale = aprMA.costo_personale + aprPN.costo_personale
+          const totFatture = aprMA.costo_fatture + aprPN.costo_fatture
+          const totFissi = aprMA.costo_fissi + aprPN.costo_fissi
+          const totCosti = totPersonale + totFatture + totFissi
+          const perLocale = Math.round(totCosti / 2)
+          return (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+              <div><span className="text-gray-500">Buste paga totali:</span><br /><strong>€{totPersonale.toLocaleString('it-IT')}</strong></div>
+              <div><span className="text-gray-500">Fatture totali (apr):</span><br /><strong>€{totFatture.toLocaleString('it-IT')}</strong></div>
+              <div><span className="text-gray-500">Costi fissi:</span><br /><strong>€{totFissi.toLocaleString('it-IT')}</strong></div>
+              <div className="bg-indigo-50 rounded p-2"><span className="text-indigo-600 font-semibold">÷ 2 locali = </span><br /><strong className="text-indigo-700 text-sm">€{perLocale.toLocaleString('it-IT')}/locale</strong></div>
+            </div>
+          )
+        })()}
+      </div>
+    </div>
+  )
+}
+
 // ── Sezione: Overview YoY ────────────────────────────────────────────────────
 function OverviewSection({ overview, loading }) {
   const [tab, setTab] = useState('venduto')
-
   if (loading) return <div className="animate-pulse bg-gray-100 rounded-xl h-48" />
   if (!overview) return null
 
   const { yoy, kpiBox } = overview
-
   const ma = kpiBox?.MAMELI || {}
   const pn = kpiBox?.PREDDA_NIEDDA || {}
   const periodoLabel = ma.periodo_label || pn.periodo_label || 'YTD'
-  const annoC = ma.anno_corrente || pn.anno_corrente || new Date().getFullYear()
-  const annoP = ma.anno_prec || pn.anno_prec || annoC - 1
+  const annoC = ma.anno_corrente || new Date().getFullYear()
+  const annoP = ma.anno_prec || annoC - 1
 
-  const deltaMA_v = ma.venduto_ytd_prec > 0
-    ? Math.round(((ma.venduto_ytd - ma.venduto_ytd_prec) / ma.venduto_ytd_prec) * 1000) / 10 : null
-  const deltaPN_v = pn.venduto_ytd_prec > 0
-    ? Math.round(((pn.venduto_ytd - pn.venduto_ytd_prec) / pn.venduto_ytd_prec) * 1000) / 10 : null
-  const deltaMA_cm = ma.cm_avg_prec > 0
-    ? Math.round(((ma.cm_avg - ma.cm_avg_prec) / ma.cm_avg_prec) * 1000) / 10 : null
-  const deltaPN_cm = pn.cm_avg_prec > 0
-    ? Math.round(((pn.cm_avg - pn.cm_avg_prec) / pn.cm_avg_prec) * 1000) / 10 : null
-
-  const tabs = [
-    { id: 'venduto', label: 'Venduto' },
-    { id: 'coperti', label: 'Coperti' },
-  ]
+  const deltaMA_v = ma.venduto_ytd_prec > 0 ? Math.round(((ma.venduto_ytd - ma.venduto_ytd_prec) / ma.venduto_ytd_prec) * 1000) / 10 : null
+  const deltaPN_v = pn.venduto_ytd_prec > 0 ? Math.round(((pn.venduto_ytd - pn.venduto_ytd_prec) / pn.venduto_ytd_prec) * 1000) / 10 : null
 
   return (
     <div>
-      <SectionTitle icon={TrendingUp} label={`Confronto Anno su Anno — ${periodoLabel} ${annoC} vs ${annoP}`} color={C.MA} />
-
-      {/* KPI cards */}
+      <SectionTitle icon={TrendingUp} label={`Anno su Anno — ${periodoLabel} ${annoC} vs ${annoP}`} color={C.MA} />
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-        <KPICard title={`Venduto MA ${periodoLabel} ${annoC}`} value={`€${((ma.venduto_ytd||0)/1000).toFixed(0)}k`}
+        <KPICard title={`Venduto MA ${periodoLabel}`} value={`€${((ma.venduto_ytd||0)/1000).toFixed(0)}k`}
           sub={`vs €${((ma.venduto_ytd_prec||0)/1000).toFixed(0)}k anno fa`} delta={deltaMA_v} icon={TrendingUp} color={C.MA} />
-        <KPICard title={`Venduto PN ${periodoLabel} ${annoC}`} value={`€${((pn.venduto_ytd||0)/1000).toFixed(0)}k`}
+        <KPICard title={`Venduto PN ${periodoLabel}`} value={`€${((pn.venduto_ytd||0)/1000).toFixed(0)}k`}
           sub={`vs €${((pn.venduto_ytd_prec||0)/1000).toFixed(0)}k anno fa`} delta={deltaPN_v} icon={TrendingUp} color={C.PN} />
         <KPICard title="Cop. Medio MA" value={`€${(ma.cm_avg||0).toFixed(2)}`}
-          sub={`vs €${(ma.cm_avg_prec||0).toFixed(2)} anno fa`} delta={deltaMA_cm} icon={Target} color={C.MA} />
+          sub={`vs €${(ma.cm_avg_prec||0).toFixed(2)} anno fa`}
+          delta={ma.cm_avg_prec > 0 ? Math.round(((ma.cm_avg - ma.cm_avg_prec) / ma.cm_avg_prec) * 1000) / 10 : null}
+          icon={Target} color={C.MA} />
         <KPICard title="Cop. Medio PN" value={`€${(pn.cm_avg||0).toFixed(2)}`}
-          sub={`vs €${(pn.cm_avg_prec||0).toFixed(2)} anno fa`} delta={deltaPN_cm} icon={Target} color={C.PN} />
+          sub={`vs €${(pn.cm_avg_prec||0).toFixed(2)} anno fa`}
+          delta={pn.cm_avg_prec > 0 ? Math.round(((pn.cm_avg - pn.cm_avg_prec) / pn.cm_avg_prec) * 1000) / 10 : null}
+          icon={Target} color={C.PN} />
       </div>
 
-      {/* Chart YoY */}
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-        <TabBar tabs={tabs} active={tab} onChange={setTab} />
+        <TabBar tabs={[{ id: 'venduto', label: 'Venduto' }, { id: 'coperti', label: 'Coperti' }]} active={tab} onChange={setTab} />
         <ResponsiveContainer width="100%" height={260}>
           <BarChart data={yoy} barGap={2} barCategoryGap="25%">
             <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
@@ -163,15 +305,13 @@ function OverviewSection({ overview, loading }) {
             </>}
           </BarChart>
         </ResponsiveContainer>
-
-        {/* Delta pills */}
         <div className="flex flex-wrap gap-2 mt-3">
           {yoy.map(m => {
             const delta = tab === 'venduto' ? m.delta_venduto_pct : m.delta_coperti_pct
             if (delta === null) return null
             const pos = delta >= 0
             return (
-              <span key={m.mese} className={`text-xs px-2 py-0.5 rounded-full font-medium ${pos ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
+              <span key={m.mese_label} className={`text-xs px-2 py-0.5 rounded-full font-medium ${pos ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
                 {m.mese_label}: {pos ? '+' : ''}{delta}%
               </span>
             )
@@ -188,50 +328,35 @@ function SeasonalitySection({ seasonality, loading }) {
   if (!seasonality) return null
 
   const data = seasonality.combined || []
-  const filled = data.filter(d => d.indice_combined !== null)
-
-  // Colore cella heatmap
   const getColor = (v) => {
     if (v === null) return '#f3f4f6'
-    if (v >= 1.3) return '#166534'
-    if (v >= 1.1) return '#16a34a'
-    if (v >= 1.0) return '#4ade80'
-    if (v >= 0.9) return '#fbbf24'
-    if (v >= 0.7) return '#f97316'
-    return '#dc2626'
+    if (v >= 1.3) return '#166534'; if (v >= 1.1) return '#16a34a'
+    if (v >= 1.0) return '#4ade80'; if (v >= 0.9) return '#fbbf24'
+    if (v >= 0.7) return '#f97316'; return '#dc2626'
   }
   const getTextColor = (v) => {
     if (v === null) return '#9ca3af'
-    if (v >= 1.1) return '#fff'
-    if (v >= 0.9) return '#1f2937'
-    return '#fff'
+    if (v >= 1.1) return '#fff'; if (v >= 0.9) return '#1f2937'; return '#fff'
   }
 
   return (
     <div>
       <SectionTitle icon={Calendar} label="Stagionalità — Indici Mensili 2025" color={C.warn} />
-
-      {/* Heatmap mesi */}
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 mb-4">
-        <p className="text-xs text-gray-500 mb-3">Indice &gt;1 = mese sopra la media annuale · &lt;1 = sotto media</p>
+        <p className="text-xs text-gray-500 mb-3">Indice &gt;1 = mese sopra la media annuale · &lt;1 = sotto media (usato per correggere le previsioni)</p>
         <div className="grid grid-cols-6 md:grid-cols-12 gap-2">
           {data.map(m => (
-            <div key={m.mese_num} className="text-center rounded-lg p-2"
-              style={{ backgroundColor: getColor(m.indice_combined) }}>
-              <div className="text-xs font-bold" style={{ color: getTextColor(m.indice_combined) }}>
-                {MESI_IT[(m.mese_num - 1)]}
-              </div>
+            <div key={m.mese_num} className="text-center rounded-lg p-2" style={{ backgroundColor: getColor(m.indice_combined) }}>
+              <div className="text-xs font-bold" style={{ color: getTextColor(m.indice_combined) }}>{MESI_IT[(m.mese_num - 1)]}</div>
               <div className="text-xs font-semibold mt-0.5" style={{ color: getTextColor(m.indice_combined) }}>
                 {m.indice_combined !== null ? `×${m.indice_combined.toFixed(2)}` : '—'}
               </div>
             </div>
           ))}
         </div>
-
-        {/* Legenda */}
         <div className="flex items-center gap-3 mt-3 flex-wrap">
-          {[['#dc2626','Molto basso (<0.7)'],['#f97316','Basso'],['#fbbf24','Sotto media'],
-            ['#4ade80','Nella media'],['#16a34a','Alto (>1.1)'],['#166534','Molto alto (>1.3)']].map(([c, l]) => (
+          {[['#dc2626','Molto basso'],['#f97316','Basso'],['#fbbf24','Sotto media'],
+            ['#4ade80','Nella media'],['#16a34a','Alto'],['#166534','Molto alto']].map(([c, l]) => (
             <div key={c} className="flex items-center gap-1.5">
               <div className="w-3 h-3 rounded" style={{ backgroundColor: c }} />
               <span className="text-xs text-gray-500">{l}</span>
@@ -240,22 +365,17 @@ function SeasonalitySection({ seasonality, loading }) {
         </div>
       </div>
 
-      {/* Chart radar stagionalità */}
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-        <p className="text-xs font-semibold text-gray-600 mb-3">Andamento Coperto Medio per Mese (2025)</p>
+        <p className="text-xs font-semibold text-gray-600 mb-3">Coperto Medio per Mese — 2025</p>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {['MAMELI','PREDDA_NIEDDA'].map(loc => {
             const rows = (seasonality.byLocation?.[loc] || []).map(r => ({
-              month: MESI_IT[r.mese_num - 1],
-              cm: r.avg_cm,
-              coperti: r.tot_coperti,
+              month: MESI_IT[r.mese_num - 1], cm: r.avg_cm, coperti: r.tot_coperti,
             }))
             if (!rows.length) return null
             return (
               <div key={loc}>
-                <p className="text-xs text-center font-medium mb-2" style={{ color: loc === 'MAMELI' ? C.MA : C.PN }}>
-                  {LOC_LABEL[loc]}
-                </p>
+                <p className="text-xs text-center font-medium mb-2" style={{ color: loc === 'MAMELI' ? C.MA : C.PN }}>{LOC_LABEL[loc]}</p>
                 <ResponsiveContainer width="100%" height={180}>
                   <AreaChart data={rows}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
@@ -286,29 +406,20 @@ function ForecastSection({ forecast, loading }) {
   const data = forecast[loc]
   if (!data) return null
 
-  // Combina storico + forecast in un unico dataset
   const combined = [
-    ...(data.storico || []).map(r => ({
-      mese: r.mese_label, venduto: r.tot_venduto, coperti: r.tot_coperti, tipo: 'storico',
-    })),
-    ...(data.forecasts || []).map(r => ({
-      mese: r.mese_label + '✦', forecast: r.forecast_venduto,
-      forecast_min: r.forecast_min, forecast_max: r.forecast_max, tipo: 'forecast',
-    })),
+    ...(data.storico || []).map(r => ({ mese: r.mese_label, venduto: r.tot_venduto, coperti: r.tot_coperti })),
+    ...(data.forecasts || []).map(r => ({ mese: r.mese_label + ' ✦', forecast: r.forecast_venduto,
+      forecast_min: r.forecast_min, forecast_max: r.forecast_max })),
   ]
 
   const reg = data.regressione || {}
-
   return (
     <div>
-      <SectionTitle icon={Zap} label="Previsioni — Prossimi 3 Mesi" color={C.forecast} />
-
+      <SectionTitle icon={Zap} label="Previsioni — Prossimi 3 Mesi (con stagionalità 2025)" color={C.forecast} />
       <TabBar
-        tabs={[{ id: 'MAMELI', label: '🔵 Mameli' },{ id: 'PREDDA_NIEDDA', label: '🟢 Predda Niedda' }]}
+        tabs={[{ id: 'MAMELI', label: '🔵 Mameli' }, { id: 'PREDDA_NIEDDA', label: '🟢 Predda Niedda' }]}
         active={loc} onChange={setLoc}
       />
-
-      {/* Forecast cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
         {(data.forecasts || []).map(f => (
           <div key={f.mese} className="bg-white rounded-xl border border-purple-100 shadow-sm p-4">
@@ -318,12 +429,8 @@ function ForecastSection({ forecast, loading }) {
                 {f.tendenza === 'crescita' ? '↗ Crescita' : '↘ Calo'}
               </span>
             </div>
-            <div className="text-2xl font-bold text-gray-900 mb-1">
-              €{f.forecast_venduto.toLocaleString('it-IT')}
-            </div>
-            <div className="text-xs text-gray-500 mb-2">
-              Range: €{f.forecast_min.toLocaleString('it-IT')} – €{f.forecast_max.toLocaleString('it-IT')}
-            </div>
+            <div className="text-2xl font-bold text-gray-900 mb-1">€{f.forecast_venduto.toLocaleString('it-IT')}</div>
+            <div className="text-xs text-gray-500 mb-2">Range: €{f.forecast_min.toLocaleString('it-IT')} – €{f.forecast_max.toLocaleString('it-IT')}</div>
             <div className="flex items-center gap-3 text-xs text-gray-500">
               <span>👥 ~{f.forecast_coperti.toLocaleString('it-IT')} coperti</span>
               <span>🌊 ×{f.coeff_stagionale} stagionale</span>
@@ -331,17 +438,15 @@ function ForecastSection({ forecast, loading }) {
           </div>
         ))}
       </div>
-
-      {/* Chart */}
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
         <div className="flex items-center gap-3 mb-3">
           <p className="text-xs font-semibold text-gray-600">Andamento + Previsione Venduto</p>
-          <span className="text-xs text-gray-400">R² regressione: {reg.r2}</span>
+          <span className="text-xs text-gray-400">R² regressione: {reg.r2} · ✦ = previsione corretta per stagionalità</span>
         </div>
         <ResponsiveContainer width="100%" height={240}>
           <ComposedChart data={combined}>
             <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
-            <XAxis dataKey="mese" tick={{ fontSize: 11 }} />
+            <XAxis dataKey="mese" tick={{ fontSize: 10 }} />
             <YAxis tickFormatter={v => `€${(v/1000).toFixed(0)}k`} tick={{ fontSize: 11 }} />
             <Tooltip content={<CustomTooltip />} />
             <Legend wrapperStyle={{ fontSize: 11 }} />
@@ -349,9 +454,6 @@ function ForecastSection({ forecast, loading }) {
             <Bar dataKey="forecast" name="Previsione" fill={C.forecast} radius={[3,3,0,0]} opacity={0.9} />
           </ComposedChart>
         </ResponsiveContainer>
-        <p className="text-xs text-gray-400 mt-2 text-center">
-          ✦ Mesi con previsione · Range ±10% confidence interval
-        </p>
       </div>
     </div>
   )
@@ -361,12 +463,13 @@ function ForecastSection({ forecast, loading }) {
 function OperatorTargetsSection({ targets, loading }) {
   const [loc, setLoc] = useState('MAMELI')
   const [sortBy, setSortBy] = useState('coperti')
+
   if (loading) return <div className="animate-pulse bg-gray-100 rounded-xl h-64" />
   if (!targets?.length) return (
     <div className="bg-amber-50 border border-amber-200 rounded-xl p-6 text-center">
       <Target size={28} className="text-amber-400 mx-auto mb-3" />
       <p className="font-semibold text-amber-800 mb-1">Nessun dato operatori disponibile</p>
-      <p className="text-sm text-amber-600">Importa i dati venduto camerieri da iPratico per vedere i target smart.</p>
+      <p className="text-sm text-amber-600">Importa i dati venduto camerieri da iPratico.</p>
     </div>
   )
 
@@ -375,10 +478,10 @@ function OperatorTargetsSection({ targets, loading }) {
     if (sortBy === 'coperti') return b.storico.media2m_coperti - a.storico.media2m_coperti
     if (sortBy === 'target') return b.target.coperti_target - a.target.coperti_target
     if (sortBy === 'score') return b.performance.score - a.performance.score
+    if (sortBy === 'cm') return (b.performance.upsell_rate || 0) - (a.performance.upsell_rate || 0)
     return 0
   })
 
-  // Chart ranking
   const chartData = sorted.map(t => ({
     name: t.operatore.length > 10 ? t.operatore.slice(0, 9) + '.' : t.operatore,
     media_2m: t.storico.media2m_coperti,
@@ -388,58 +491,60 @@ function OperatorTargetsSection({ targets, loading }) {
 
   return (
     <div>
-      <SectionTitle icon={Target} label="Target Smart per Operatore — Prossimo Mese" color={C.MA} />
-      <p className="text-xs text-gray-500 mb-4">
-        Base: media coperti gen–feb 2026 · Crescita +10% · Corretto per stagionalità (indice 2025)
-      </p>
+      <SectionTitle icon={Target} label={`Target Smart per Operatore — ${targets[0]?.target?.periodo || 'Prossimo Mese'}`} color={C.MA} />
+      <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-4">
+        <p className="text-xs text-blue-700">
+          <strong>Fonte:</strong> kpi_revenues (coperti reali da iPratico) ·
+          <strong> Base:</strong> media coperti ultimi 2 mesi ·
+          <strong> Formula:</strong> media × coeff. stagionale × +10% ·
+          <strong> CM:</strong> coperto medio reale da aprile 2026 ·
+          Nomi operatori normalizzati per match storico gen–apr
+        </p>
+      </div>
 
       <TabBar
-        tabs={[{ id: 'MAMELI', label: '🔵 Mameli' },{ id: 'PREDDA_NIEDDA', label: '🟢 Predda Niedda' }]}
+        tabs={[{ id: 'MAMELI', label: '🔵 Mameli' }, { id: 'PREDDA_NIEDDA', label: '🟢 Predda Niedda' }]}
         active={loc} onChange={setLoc}
       />
 
-      {/* Ranking chart */}
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 mb-4">
         <div className="flex items-center justify-between mb-3">
-          <p className="text-xs font-semibold text-gray-600">Coperti: Base vs Target</p>
+          <p className="text-xs font-semibold text-gray-600">Coperti: Media 2m vs Target</p>
           <div className="flex gap-1">
-            {[['coperti','Coperti'],['score','Score'],['quota','Quota%']].map(([id,l]) => (
+            {[['coperti','Coperti'],['cm','€/cop'],['score','Score']].map(([id, l]) => (
               <button key={id} onClick={() => setSortBy(id)}
-                className={`text-xs px-2 py-1 rounded ${sortBy===id ? 'bg-indigo-100 text-indigo-700 font-medium' : 'text-gray-400 hover:text-gray-600'}`}>
+                className={`text-xs px-2 py-1 rounded ${sortBy === id ? 'bg-indigo-100 text-indigo-700 font-medium' : 'text-gray-400 hover:text-gray-600'}`}>
                 {l}
               </button>
             ))}
           </div>
         </div>
-        <ResponsiveContainer width="100%" height={Math.max(180, sorted.length * 36)}>
+        <ResponsiveContainer width="100%" height={Math.max(160, sorted.length * 34)}>
           <BarChart data={chartData} layout="vertical" margin={{ left: 8, right: 8 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" horizontal={false} />
             <XAxis type="number" tick={{ fontSize: 10 }} />
             <YAxis dataKey="name" type="category" tick={{ fontSize: 11 }} width={72} />
             <Tooltip />
             <Legend wrapperStyle={{ fontSize: 11 }} />
-            <Bar dataKey="media_2m" name="Media 2m" fill={loc === 'MAMELI' ? C.MA + '80' : C.PN + '80'} radius={[0,3,3,0]} />
+            <Bar dataKey="media_2m" name="Media 2m coperti" fill={loc === 'MAMELI' ? C.MA + '80' : C.PN + '80'} radius={[0,3,3,0]} />
             <Bar dataKey="target" name="Target +10%" fill={loc === 'MAMELI' ? C.MA : C.PN} radius={[0,3,3,0]} />
           </BarChart>
         </ResponsiveContainer>
       </div>
 
-      {/* Schede operatori */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {sorted.map(op => {
           const trend = op.performance.trend
           const TrendIcon = trend === 'up' ? TrendingUp : trend === 'down' ? TrendingDown : Minus
           const trendColor = trend === 'up' ? C.up : trend === 'down' ? C.down : C.neutral
           const progresso = op.storico.media2m_coperti > 0
-            ? Math.min(100, Math.round((op.storico.media2m_coperti / op.target.coperti_target) * 100))
+            ? Math.min(100, Math.round(op.storico.media2m_coperti / op.target.coperti_target * 100))
             : 0
-
-          // Mese per mese
-          const mesiList = Object.entries(op.mesi).sort(([a],[b]) => a.localeCompare(b))
+          const mesiList = Object.entries(op.mesi).sort(([a], [b]) => a.localeCompare(b))
+          const hasCM = op.performance.upsell_rate && op.performance.upsell_rate > 0
 
           return (
             <div key={op.operatore} className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-              {/* Header */}
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
                   <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-bold"
@@ -448,7 +553,7 @@ function OperatorTargetsSection({ targets, loading }) {
                   </div>
                   <div>
                     <p className="font-semibold text-sm text-gray-900">{op.operatore}</p>
-                    <p className="text-xs text-gray-400">{op.performance.quota_mercato_pct}% quota mkt</p>
+                    <p className="text-xs text-gray-400">{op.performance.quota_mercato_pct}% quota · {op.storico.mesi_dispo} mesi dati</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
@@ -460,7 +565,7 @@ function OperatorTargetsSection({ targets, loading }) {
                 </div>
               </div>
 
-              {/* Progress bar: media2m vs target */}
+              {/* Progress bar coperti media vs target */}
               <div className="mb-3">
                 <div className="flex justify-between text-xs text-gray-500 mb-1">
                   <span>Media attuale: {op.storico.media2m_coperti} cop.</span>
@@ -468,56 +573,48 @@ function OperatorTargetsSection({ targets, loading }) {
                 </div>
                 <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
                   <div className="h-full rounded-full transition-all"
-                    style={{
-                      width: `${progresso}%`,
-                      backgroundColor: progresso >= 100 ? C.up : progresso >= 80 ? C.warn : C.down
-                    }} />
+                    style={{ width: `${progresso}%`, backgroundColor: progresso >= 100 ? C.up : progresso >= 80 ? C.warn : C.down }} />
                 </div>
                 <div className="text-right text-xs text-gray-400 mt-0.5">{progresso}% del target</div>
               </div>
 
-              {/* KPI row */}
               <div className="grid grid-cols-3 gap-2 text-center mb-3">
                 <div className="bg-gray-50 rounded-lg p-2">
-                  <div className="text-xs text-gray-500">Cop. Medio</div>
-                  <div className="font-bold text-sm">€{op.storico.media2m_cm}</div>
+                  <div className="text-xs text-gray-500">Cop./mese</div>
+                  <div className="font-bold text-sm">{op.storico.media2m_coperti}</div>
                 </div>
                 <div className="bg-indigo-50 rounded-lg p-2">
-                  <div className="text-xs text-indigo-600">Target +{op.target.target_fattore_pct}%</div>
-                  <div className="font-bold text-sm text-indigo-700">€{op.target.venduto_target.toLocaleString('it-IT')}</div>
+                  <div className="text-xs text-indigo-600">€/cop. (apr)</div>
+                  <div className="font-bold text-sm text-indigo-700">
+                    {hasCM ? `€${op.performance.upsell_rate}` : <span className="text-gray-400 text-xs">N/D</span>}
+                  </div>
                 </div>
-                <div className="bg-gray-50 rounded-lg p-2">
-                  <div className="text-xs text-gray-500">Up-sell rate</div>
-                  <div className="font-bold text-sm">{op.performance.upsell_rate}x</div>
+                <div className="bg-purple-50 rounded-lg p-2">
+                  <div className="text-xs text-purple-600">Target €</div>
+                  <div className="font-bold text-sm text-purple-700">
+                    {hasCM ? `€${op.target.venduto_target.toLocaleString('it-IT')}` : <span className="text-gray-400 text-xs">—</span>}
+                  </div>
                 </div>
               </div>
 
-              {/* Mini trend mesi */}
-              <div className="flex gap-1.5 items-end h-8">
+              {/* Mini sparkline coperti per mese */}
+              <div className="flex gap-1 items-end h-8 mb-1">
                 {mesiList.map(([m, d]) => {
-                  const maxCop = Math.max(...mesiList.map(([,dd]) => dd.coperti))
-                  const h = maxCop > 0 ? Math.round((d.coperti / maxCop) * 100) : 0
+                  const maxCop = Math.max(...mesiList.map(([, dd]) => dd.coperti), 1)
+                  const h = Math.round((d.coperti / maxCop) * 100)
                   return (
                     <div key={m} className="flex-1 flex flex-col items-center gap-0.5">
                       <div className="w-full rounded-t-sm" title={`${m}: ${d.coperti} cop.`}
-                        style={{ height: `${h}%`, backgroundColor: loc === 'MAMELI' ? C.MA + '80' : C.PN + '80', minHeight: 2 }} />
+                        style={{ height: `${h}%`, backgroundColor: loc === 'MAMELI' ? C.MA + '90' : C.PN + '90', minHeight: 2 }} />
                       <span className="text-[9px] text-gray-400">{m.slice(5)}</span>
                     </div>
                   )
                 })}
-                {/* Barra target */}
-                <div className="flex-1 flex flex-col items-center gap-0.5">
-                  <div className="w-full rounded-t-sm border-t-2 border-dashed"
-                    style={{ height: '100%', borderColor: loc === 'MAMELI' ? C.MA : C.PN, backgroundColor: 'transparent' }}
-                    title={`Target: ${op.target.coperti_target}`} />
-                  <span className="text-[9px] text-gray-400">🎯</span>
-                </div>
               </div>
 
-              {/* Stagionalità info */}
-              <div className="mt-2 pt-2 border-t border-gray-50 text-xs text-gray-400 flex justify-between">
+              <div className="pt-2 border-t border-gray-50 text-xs text-gray-400 flex justify-between">
                 <span>Stagionalità: ×{op.target.coeff_stagionale}</span>
-                <span>Target mese: {op.target.periodo}</span>
+                <span>{op.target.periodo}</span>
               </div>
             </div>
           )
@@ -529,43 +626,36 @@ function OperatorTargetsSection({ targets, loading }) {
 
 // ── Sezione: Heatmap Settimanale ─────────────────────────────────────────────
 function HeatmapSection({ heatmap, loading }) {
-  const [loc, setLoc] = useState(null) // null = entrambi
   if (loading) return <div className="animate-pulse bg-gray-100 rounded-xl h-48" />
   if (!heatmap) return null
 
   const { byDow, top5 } = heatmap
-  const dowBiz = [1,2,3,4,5,6,0].map(i => byDow[i]).filter(Boolean) // Lun-Dom
-
+  const dowBiz = [1,2,3,4,5,6,0].map(i => byDow[i]).filter(Boolean)
   const maxVenduto = Math.max(...dowBiz.map(d => d.avg_venduto || 0))
 
   return (
     <div>
       <SectionTitle icon={BarChart2} label="Pattern Settimanale — Performance per Giorno" color={C.PN} />
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-
-        {/* Heatmap giorni */}
         <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-          <p className="text-xs font-semibold text-gray-600 mb-3">Venduto Medio per Giorno della Settimana</p>
+          <p className="text-xs font-semibold text-gray-600 mb-3">Venduto Medio per Giorno della Settimana (MA+PN)</p>
           <div className="space-y-2">
             {dowBiz.map(d => {
-              const pct = maxVenduto > 0 ? (d.avg_venduto / maxVenduto) : 0
+              const pct = maxVenduto > 0 ? d.avg_venduto / maxVenduto : 0
               return (
                 <div key={d.dow} className="flex items-center gap-2">
                   <span className="text-xs font-medium text-gray-500 w-7">{d.label}</span>
                   <div className="flex-1 h-6 bg-gray-50 rounded overflow-hidden">
                     <div className="h-full rounded flex items-center px-2 transition-all"
-                      style={{ width: `${pct * 100}%`, backgroundColor: `hsl(${220 + pct * 60}, 70%, ${60 - pct * 20}%)` }}>
-                    </div>
+                      style={{ width: `${pct * 100}%`, backgroundColor: `hsl(${220 + pct * 60}, 70%, ${60 - pct * 20}%)` }} />
                   </div>
                   <span className="text-xs font-medium w-16 text-right">€{d.avg_venduto?.toLocaleString('it-IT')}</span>
-                  <span className="text-xs text-gray-400 w-16">~{d.avg_coperti} cop.</span>
+                  <span className="text-xs text-gray-400 w-14">~{d.avg_coperti} cop.</span>
                 </div>
               )
             })}
           </div>
         </div>
-
-        {/* Top 5 giorni */}
         <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
           <p className="text-xs font-semibold text-gray-600 mb-3">🏆 Top 5 Giorni — Record Assoluti</p>
           <div className="space-y-2">
@@ -593,9 +683,9 @@ function HeatmapSection({ heatmap, loading }) {
 
 // ── Main Component ───────────────────────────────────────────────────────────
 export default function AnalyticsBI() {
-  const [activeSection, setActiveSection] = useState('overview')
-  const [loading, setLoading] = useState({ overview: true, seasonality: true, forecast: true, targets: true, heatmap: true })
-  const [data, setData] = useState({ overview: null, seasonality: null, forecast: null, targets: null, heatmap: null })
+  const [activeSection, setActiveSection] = useState('be')
+  const [loading, setLoading] = useState({ overview: true, seasonality: true, forecast: true, targets: true, heatmap: true, be: true })
+  const [data, setData] = useState({ overview: null, seasonality: null, forecast: null, targets: null, heatmap: null, be: null })
   const [syncing, setSyncing] = useState(false)
   const [lastSync, setLastSync] = useState(null)
   const [error, setError] = useState(null)
@@ -603,18 +693,19 @@ export default function AnalyticsBI() {
   const loadAll = useCallback(async () => {
     setError(null)
     try {
-      const [overview, seasonality, forecast, targets, heatmap] = await Promise.all([
+      const [overview, seasonality, forecast, targets, heatmap, be] = await Promise.all([
         analyticsApi.overview().catch(() => null),
         analyticsApi.seasonality().catch(() => null),
         analyticsApi.forecast().catch(() => null),
         analyticsApi.operatorTargets().catch(() => null),
         analyticsApi.heatmap().catch(() => null),
+        analyticsApi.beMensile().catch(() => null),
       ])
-      setData({ overview, seasonality, forecast, targets, heatmap })
+      setData({ overview, seasonality, forecast, targets, heatmap, be })
     } catch (e) {
-      setError('Errore nel caricamento dati analytics. Premi Sincronizza per importare i dati.')
+      setError('Errore nel caricamento dati analytics.')
     } finally {
-      setLoading({ overview: false, seasonality: false, forecast: false, targets: false, heatmap: false })
+      setLoading({ overview: false, seasonality: false, forecast: false, targets: false, heatmap: false, be: false })
     }
   }, [])
 
@@ -625,40 +716,33 @@ export default function AnalyticsBI() {
     try {
       await dataApi.sync()
       setLastSync(new Date().toLocaleTimeString('it-IT'))
-      setLoading({ overview: true, seasonality: true, forecast: true, targets: true, heatmap: true })
+      setLoading({ overview: true, seasonality: true, forecast: true, targets: true, heatmap: true, be: true })
       await loadAll()
-    } finally {
-      setSyncing(false)
-    }
+    } finally { setSyncing(false) }
   }
 
   const sections = [
-    { id: 'overview',   label: 'Anno su Anno',  icon: TrendingUp  },
-    { id: 'seasonality',label: 'Stagionalità',  icon: Calendar    },
-    { id: 'forecast',   label: 'Previsioni',    icon: Zap         },
-    { id: 'targets',    label: 'Target Smart',  icon: Target      },
-    { id: 'heatmap',    label: 'Pattern',       icon: BarChart2   },
+    { id: 'be',         label: 'Costi & BE',    icon: DollarSign  },
+    { id: 'overview',   label: 'Anno su Anno',   icon: TrendingUp  },
+    { id: 'targets',    label: 'Target Smart',   icon: Target      },
+    { id: 'forecast',   label: 'Previsioni',     icon: Zap         },
+    { id: 'seasonality',label: 'Stagionalità',   icon: Calendar    },
+    { id: 'heatmap',    label: 'Pattern',        icon: BarChart2   },
   ]
 
-  // Calcola sommario veloce
   const kpi = data.overview?.kpiBox
-  const totalVendutoYTD = kpi
-    ? Math.round((kpi.MAMELI?.venduto_ytd || 0) + (kpi.PREDDA_NIEDDA?.venduto_ytd || 0))
-    : null
-  const periodoLabelGlobal = kpi?.MAMELI?.periodo_label || kpi?.PREDDA_NIEDDA?.periodo_label || 'YTD'
-  const annoCGlobal = kpi?.MAMELI?.anno_corrente || new Date().getFullYear()
+  const totalVendutoYTD = kpi ? Math.round((kpi.MAMELI?.venduto_ytd || 0) + (kpi.PREDDA_NIEDDA?.venduto_ytd || 0)) : null
 
   return (
     <>
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-            <span className="text-2xl">📡</span> Analytics & Business Intelligence
+            <span className="text-2xl">📊</span> Analytics & Business Intelligence
           </h1>
           <p className="text-sm text-gray-500 mt-1">
-            Analisi predittiva · Stagionalità · Target smart per operatore · {lastSync && `Ultimo aggiornamento: ${lastSync}`}
+            Costi reali · Stagionalità · Target smart per operatore{lastSync && ` · Aggiornato: ${lastSync}`}
           </p>
         </div>
         <button onClick={handleSync} disabled={syncing}
@@ -666,36 +750,33 @@ export default function AnalyticsBI() {
             syncing ? 'bg-gray-100 text-gray-400' : 'bg-indigo-600 text-white hover:bg-indigo-700'
           }`}>
           <RefreshCw size={14} className={syncing ? 'animate-spin' : ''} />
-          {syncing ? 'Sincronizzando...' : 'Sincronizza & Aggiorna'}
+          {syncing ? 'Sincronizzando...' : 'Aggiorna'}
         </button>
       </div>
 
-      {/* KPI veloci top */}
       {kpi && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <KPICard title={`Venduto totale ${periodoLabelGlobal} ${annoCGlobal}`}
-            value={`€${((totalVendutoYTD||0)/1000).toFixed(0)}k`}
+          <KPICard title="Venduto totale YTD" value={`€${((totalVendutoYTD||0)/1000).toFixed(0)}k`}
             sub="entrambi i locali" icon={TrendingUp} color="#6366f1" />
-          <KPICard title="Cop. Medio MA"
-            value={`€${(kpi.MAMELI?.cm_avg||0).toFixed(2)}`}
-            sub={`vs €${(kpi.MAMELI?.cm_avg_prec||0).toFixed(2)} anno fa`} icon={Target} color={C.MA} />
-          <KPICard title="Cop. Medio PN"
-            value={`€${(kpi.PREDDA_NIEDDA?.cm_avg||0).toFixed(2)}`}
-            sub={`vs €${(kpi.PREDDA_NIEDDA?.cm_avg_prec||0).toFixed(2)} anno fa`} icon={Target} color={C.PN} />
-          <KPICard title="Operatori monitorati"
-            value={data.targets?.length || '—'}
+          <KPICard title="Cop. Medio MA (YTD)" value={`€${(kpi.MAMELI?.cm_avg||0).toFixed(2)}`}
+            sub={`vs €${(kpi.MAMELI?.cm_avg_prec||0).toFixed(2)} anno fa`}
+            delta={kpi.MAMELI?.cm_avg_prec > 0 ? Math.round(((kpi.MAMELI.cm_avg - kpi.MAMELI.cm_avg_prec) / kpi.MAMELI.cm_avg_prec) * 1000) / 10 : null}
+            icon={Target} color={C.MA} />
+          <KPICard title="Cop. Medio PN (YTD)" value={`€${(kpi.PREDDA_NIEDDA?.cm_avg||0).toFixed(2)}`}
+            sub={`vs €${(kpi.PREDDA_NIEDDA?.cm_avg_prec||0).toFixed(2)} anno fa`}
+            delta={kpi.PREDDA_NIEDDA?.cm_avg_prec > 0 ? Math.round(((kpi.PREDDA_NIEDDA.cm_avg - kpi.PREDDA_NIEDDA.cm_avg_prec) / kpi.PREDDA_NIEDDA.cm_avg_prec) * 1000) / 10 : null}
+            icon={Target} color={C.PN} />
+          <KPICard title="Operatori monitorati" value={data.targets?.length || '—'}
             sub="con target automatici" icon={Users} color={C.warn} />
         </div>
       )}
 
       {error && (
         <div className="flex items-center gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
-          <AlertTriangle size={16} />
-          {error}
+          <AlertTriangle size={16} />{error}
         </div>
       )}
 
-      {/* Navigation */}
       <div className="flex gap-1 overflow-x-auto pb-1">
         {sections.map(s => {
           const Icon = s.icon
@@ -706,53 +787,29 @@ export default function AnalyticsBI() {
                   ? 'bg-indigo-600 text-white shadow-md'
                   : 'bg-white border border-gray-200 text-gray-600 hover:border-indigo-300 hover:text-indigo-600'
               }`}>
-              <Icon size={14} />
-              {s.label}
+              <Icon size={14} />{s.label}
             </button>
           )
         })}
       </div>
 
-      {/* Sezioni */}
       <div className="min-h-64">
-        {activeSection === 'overview' && (
-          <OverviewSection overview={data.overview} loading={loading.overview} />
-        )}
-        {activeSection === 'seasonality' && (
-          <SeasonalitySection seasonality={data.seasonality} loading={loading.seasonality} />
-        )}
-        {activeSection === 'forecast' && (
-          <ForecastSection forecast={data.forecast} loading={loading.forecast} />
-        )}
-        {activeSection === 'targets' && (
-          <OperatorTargetsSection targets={data.targets} loading={loading.targets} />
-        )}
-        {activeSection === 'heatmap' && (
-          <HeatmapSection heatmap={data.heatmap} loading={loading.heatmap} />
-        )}
-      </div>
-
-      {/* Footer info Academy */}
-      <div className="bg-gradient-to-r from-indigo-50 to-purple-50 rounded-xl p-4 border border-indigo-100">
-        <div className="flex items-start gap-3">
-          <Award size={18} className="text-indigo-600 mt-0.5 flex-shrink-0" />
-          <div className="text-xs text-gray-600 space-y-1">
-            <p className="font-semibold text-indigo-700">Framework Academy — Logica KPI Applicata</p>
-            <p><strong>Quantum</strong> = soglia minima contribuzione individuale (livello di contribuzione) · <strong>Target</strong> = obiettivo con extra risultato</p>
-            <p><strong>Target smart</strong> = media 2 mesi recenti × +10% × coefficiente stagionale (basato su 2025) · Aggiornato mensilmente</p>
-            <p>Un quantum non raggiunto crea <em>extra sforzo</em> per il team · Un target raggiunto crea <em>extra risultato</em> collettivo</p>
-          </div>
-        </div>
+        {activeSection === 'be'         && <BESection beMensile={data.be} loading={loading.be} />}
+        {activeSection === 'overview'   && <OverviewSection overview={data.overview} loading={loading.overview} />}
+        {activeSection === 'seasonality'&& <SeasonalitySection seasonality={data.seasonality} loading={loading.seasonality} />}
+        {activeSection === 'forecast'   && <ForecastSection forecast={data.forecast} loading={loading.forecast} />}
+        {activeSection === 'targets'    && <OperatorTargetsSection targets={data.targets} loading={loading.targets} />}
+        {activeSection === 'heatmap'    && <HeatmapSection heatmap={data.heatmap} loading={loading.heatmap} />}
       </div>
     </div>
-      <PageAssistant
-        pagina="Analytics & BI"
-        suggerimenti={[
-          "Tendenza vendite nei prossimi 3 mesi",
-          "Confronto anno su anno per sede MA",
-          "Quale mese ha avuto la crescita maggiore?",
-        ]}
-      />
+    <PageAssistant
+      pagina="Analytics & BI"
+      suggerimenti={[
+        "Quali sono i costi mensili a locale?",
+        "Target operatori per giugno 2026",
+        "Confronto vendite anno su anno",
+      ]}
+    />
     </>
   )
 }

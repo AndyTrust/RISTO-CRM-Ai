@@ -945,11 +945,18 @@ function TabPerformance({ sede, anno, mese, refresh }) {
   const [perf, setPerf]       = useState([])
   const [loading, setLoading] = useState(true)
 
+  const KPI_PSEUDO_OPS = ['pienissimo', 'extra', 'tecnico', 'antonio']
   const load = async () => {
     setLoading(true)
     try {
       const p = await kpiPerformanceApi.getIndividuale({ sede, anno, mese })
-      setPerf(p.sort((a, b) => (b.pezzi_totali || 0) - (a.pezzi_totali || 0)))
+      // Mostra solo operatori con mapping per questa sede (employee_id != null)
+      // ed escludi pseudo-operatori di sistema — evita cross-sede contamination
+      const filtered = p.filter(x =>
+        x.employee_id &&
+        !KPI_PSEUDO_OPS.includes(x.operatore?.toLowerCase())
+      )
+      setPerf(filtered.sort((a, b) => (b.pezzi_totali || 0) - (a.pezzi_totali || 0)))
     } finally { setLoading(false) }
   }
   useEffect(() => { load() }, [sede, anno, mese, refresh])
