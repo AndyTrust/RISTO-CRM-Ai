@@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard'
 import PersonalePage from './pages/PersonalePage'
 import KPIWaiters from './pages/KPIWaiters'
 import VendutoPage from './pages/VendutoPage'
+import PerformancePage from './pages/PerformancePage'
 import ChiusurePage from './pages/ChiusurePage'
 import ChatClaude from './pages/ChatClaude'
 import FornitoriPage from './pages/FornitoriPage'
@@ -93,6 +94,7 @@ export default function App() {
           <Route path="/setup" element={<SetupWizard onComplete={() => setSetupCompleted(true)} />} />
           <Route path="/dashboard" element={isEnabled('dashboard') ? <Dashboard /> : <DisabledModule name="Dashboard" />} />
           <Route path="/dipendenti" element={<Navigate to="/buste-paga?tab=dipendenti" replace />} />
+          <Route path="/performance" element={<PerformancePage />} />
           <Route path="/kpi" element={isEnabled('kpi_camerieri') ? <KPIWaiters /> : <DisabledModule name="KPI Camerieri" />} />
           <Route path="/kpi-config" element={<KPIConfig />} />
           <Route path="/kpi-team" element={<KpiTeamPage />} />

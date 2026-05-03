@@ -5,7 +5,7 @@ import {
   LayoutDashboard, Users, Target, TrendingUp, Receipt, Bot,
   Building2, Settings, ChevronLeft, ChevronRight, RefreshCw,
   BarChart2, Lock, Wallet, UtensilsCrossed, CalendarDays,
-  ChevronDown, ChefHat, Tag, MapPin, Archive, Brain, Cloud, Database, Award
+  ChevronDown, ChefHat, Tag, MapPin, Archive, Brain, Cloud, Database, Award, BarChart3
 } from 'lucide-react'
 import { data as dataApi } from '../api/client'
 
@@ -15,20 +15,21 @@ const NAV_GROUPS = [
     label: 'Operativo',
     defaultOpen: true,
     items: [
-      { id: 'dashboard',    path: '/dashboard',   icon: LayoutDashboard, label: 'Statistiche',        desc: 'KPI e andamento sedi' },
-      { id: 'chiusure',     path: '/chiusure',     icon: Receipt,         label: 'Chiusure Cassa',     desc: 'Corrispettivi giornalieri' },
-      { id: 'venduto',      path: '/venduto',      icon: TrendingUp,      label: 'Venduto',            desc: 'Venduto per cameriere' },
+      { id: 'dashboard',    path: '/dashboard',    icon: LayoutDashboard, label: 'Statistiche',      desc: 'KPI e andamento sedi' },
+      { id: 'chiusure',     path: '/chiusure',     icon: Receipt,         label: 'Chiusure Cassa',   desc: 'Corrispettivi giornalieri' },
+      { id: 'performance',  path: '/performance',  icon: BarChart3,       label: 'Performance',      desc: 'Venduto · Obiettivi · Team · Tavoli', alwaysEnabled: true },
+      { id: 'venduto',      path: '/venduto',      icon: TrendingUp,      label: 'Venduto BI',       desc: 'Analisi avanzata venduto + heatmap' },
     ]
   },
   {
     label: 'Personale',
     defaultOpen: false,
     items: [
-      { id: 'buste_paga',    path: '/buste-paga',          icon: Users,           label: 'Dipendenti & Paga',  desc: 'Anagrafica, cedolini e costi' },
-      { id: 'kpi_camerieri', path: '/kpi',                  icon: Target,          label: 'KPI Camerieri',      desc: 'Performance operatori' },
-      { id: 'kpi_config',    path: '/kpi-config',           icon: Target,          label: 'KPI Config',         desc: 'BE, target team, bonus, prodotti', alwaysEnabled: true },
-      { id: 'kpi_team',      path: '/kpi-team',             icon: Award,           label: 'KPI Team & Quantum', desc: 'BE, obiettivi prodotto, bonus', alwaysEnabled: true },
-      { id: 'turni',         path: '/turni',                icon: CalendarDays,    label: 'Turni',              desc: 'Pianificazione orari' },
+      { id: 'buste_paga',    path: '/buste-paga',  icon: Users,           label: 'Dipendenti & Paga',  desc: 'Anagrafica, cedolini e costi' },
+      { id: 'kpi_camerieri', path: '/kpi',          icon: Target,          label: 'KPI Camerieri',      desc: 'Performance operatori dettagliata' },
+      { id: 'kpi_config',    path: '/kpi-config',   icon: Target,          label: 'KPI Config',         desc: 'BE, target team, bonus, prodotti', alwaysEnabled: true },
+      { id: 'kpi_team',      path: '/kpi-team',     icon: Award,           label: 'KPI Team',           desc: 'BE, obiettivi prodotto, bonus', alwaysEnabled: true },
+      { id: 'turni',         path: '/turni',        icon: CalendarDays,    label: 'Turni',              desc: 'Pianificazione orari' },
     ]
   },
   {
