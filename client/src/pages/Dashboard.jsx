@@ -210,18 +210,18 @@ export default function Dashboard() {
   // Aggrega stats per locali selezionati
   const aggr = (list) => {
     const filtered = locFilter === 'ALL' ? list : list.filter(x => x.location === locFilter)
-    return filtered.reduce((acc, s) => ({
+    const raw = filtered.reduce((acc, s) => ({
       tot_venduto: (acc.tot_venduto || 0) + (s.tot_venduto || 0),
       tot_coperti: (acc.tot_coperti || 0) + (s.tot_coperti || 0),
-      avg_coperto_medio: (acc._cmCount || 0) === 0
-        ? s.avg_coperto_medio
-        : ((acc.avg_coperto_medio * (acc._cmCount || 0)) + s.avg_coperto_medio) / ((acc._cmCount || 0) + 1),
       avg_scontrino_medio: (acc._smCount || 0) === 0
         ? s.avg_scontrino_medio
         : ((acc.avg_scontrino_medio * (acc._smCount||0)) + s.avg_scontrino_medio) / ((acc._smCount||0)+1),
       n_giorni: (acc.n_giorni || 0) + (s.n_giorni || 0),
-      _cmCount: (acc._cmCount||0)+1, _smCount: (acc._smCount||0)+1,
+      _smCount: (acc._smCount||0)+1,
     }), {})
+    // coperto medio pesato: venduto totale / coperti totali (evita media semplice di sedi)
+    raw.avg_coperto_medio = raw.tot_coperti > 0 ? +(raw.tot_venduto / raw.tot_coperti).toFixed(2) : 0
+    return raw
   }
 
   const curr = aggr(currStats)

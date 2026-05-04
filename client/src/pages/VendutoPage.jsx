@@ -171,7 +171,9 @@ function CalendarioHeatmap({ dailyData }) {
       byMonth[key].days[d].venduto += parseFloat(r.totale_venduto_ipratico) || 0
       byMonth[key].days[d].coperti += parseInt(r.coperti) || 0
       byMonth[key].days[d].sedi.push(r.sede)
-      if (r.coperto_medio) byMonth[key].days[d].coperto_medio = (byMonth[key].days[d].coperto_medio + parseFloat(r.coperto_medio)) / 2
+      // coperto medio pesato: venduto / coperti (non media semplice tra sedi)
+      byMonth[key].days[d].coperto_medio = byMonth[key].days[d].coperti > 0
+        ? +(byMonth[key].days[d].venduto / byMonth[key].days[d].coperti).toFixed(2) : 0
     }
     return Object.values(byMonth).sort((a, b) => a.year !== b.year ? a.year - b.year : a.month - b.month)
   }, [dailyData])

@@ -288,7 +288,7 @@ export const chiusure = {
       location:           agg.location,
       tot_venduto:        Math.round(agg.tot_venduto * 100) / 100,
       tot_coperti:        agg.tot_coperti,
-      avg_coperto_medio:  agg._count > 0 ? Math.round(agg._cm_sum / agg._count * 100) / 100 : 0,
+      avg_coperto_medio:  agg.tot_coperti > 0 ? Math.round(agg.tot_venduto / agg.tot_coperti * 100) / 100 : 0,
       avg_scontrino_medio: agg._count > 0 ? Math.round(agg._sm_sum / agg._count * 100) / 100 : 0,
       n_giorni:           agg._count,
       prima_data:         agg.prima_data,
@@ -1172,23 +1172,23 @@ export const analytics = {
         const mese_num = parseInt(r.data.substring(5, 7))
         if (mese_num > mesiCompletati) continue
         const loc = r.sede === 'MA' ? 'MAMELI' : 'PREDDA_NIEDDA'
-        if (!kpiBox[loc]) kpiBox[loc] = { venduto_ytd: 0, venduto_ytd_prec: 0, cm_sum: 0, cm_sum_prec: 0, n: 0, n_prec: 0 }
+        if (!kpiBox[loc]) kpiBox[loc] = { venduto_ytd: 0, venduto_ytd_prec: 0, coperti: 0, coperti_prec: 0, n: 0, n_prec: 0 }
         const v = parseFloat(r.totale_venduto_ipratico) || 0
-        const cm = parseFloat(r.coperto_medio) || 0
-        if (anno === annoCorrente) { kpiBox[loc].venduto_ytd += v; kpiBox[loc].cm_sum += cm; kpiBox[loc].n++ }
-        else if (anno === annoPrec) { kpiBox[loc].venduto_ytd_prec += v; kpiBox[loc].cm_sum_prec += cm; kpiBox[loc].n_prec++ }
+        const c = parseInt(r.coperti) || 0
+        if (anno === annoCorrente) { kpiBox[loc].venduto_ytd += v; kpiBox[loc].coperti += c; kpiBox[loc].n++ }
+        else if (anno === annoPrec) { kpiBox[loc].venduto_ytd_prec += v; kpiBox[loc].coperti_prec += c; kpiBox[loc].n_prec++ }
       }
       for (const [loc, d] of Object.entries(kpiBox)) {
         kpiBox[loc] = {
           venduto_ytd: Math.round(d.venduto_ytd),
           venduto_ytd_prec: Math.round(d.venduto_ytd_prec),
-          cm_avg: d.n > 0 ? Math.round(d.cm_sum / d.n * 100) / 100 : 0,
-          cm_avg_prec: d.n_prec > 0 ? Math.round(d.cm_sum_prec / d.n_prec * 100) / 100 : 0,
+          cm_avg: d.coperti > 0 ? Math.round(d.venduto_ytd / d.coperti * 100) / 100 : 0,
+          cm_avg_prec: d.coperti_prec > 0 ? Math.round(d.venduto_ytd_prec / d.coperti_prec * 100) / 100 : 0,
           // compat alias per vecchio codice
           venduto_2m_2026: Math.round(d.venduto_ytd),
           venduto_2m_2025: Math.round(d.venduto_ytd_prec),
-          cm_avg_2026: d.n > 0 ? Math.round(d.cm_sum / d.n * 100) / 100 : 0,
-          cm_avg_2025: d.n_prec > 0 ? Math.round(d.cm_sum_prec / d.n_prec * 100) / 100 : 0,
+          cm_avg_2026: d.coperti > 0 ? Math.round(d.venduto_ytd / d.coperti * 100) / 100 : 0,
+          cm_avg_2025: d.coperti_prec > 0 ? Math.round(d.venduto_ytd_prec / d.coperti_prec * 100) / 100 : 0,
           periodo_label: mesiCompletati === 1 ? MESI_IT_SHORT[0] : `${MESI_IT_SHORT[0]}–${MESI_IT_SHORT[mesiCompletati-1]}`,
           anno_corrente: annoCorrente,
           anno_prec: annoPrec,
@@ -1259,13 +1259,13 @@ export const analytics = {
         const mn = parseInt(r.data.substring(5, 7))
         if (!byLoc[loc]) byLoc[loc] = {}
         if (!byLoc[loc][mn]) byLoc[loc][mn] = { mese_num: mn, cm_sum: 0, coperti: 0, n: 0 }
-        byLoc[loc][mn].cm_sum += parseFloat(r.coperto_medio)||0
+        byLoc[loc][mn].venduto_sum = (byLoc[loc][mn].venduto_sum||0) + (parseFloat(r.totale_venduto_ipratico)||0)
         byLoc[loc][mn].coperti += parseInt(r.coperti)||0; byLoc[loc][mn].n++
       }
       const byLocation = {}
       for (const [loc, byMnL] of Object.entries(byLoc)) {
         byLocation[loc] = Object.values(byMnL).sort((a,b)=>a.mese_num-b.mese_num).map(d => ({
-          mese_num: d.mese_num, avg_cm: d.n > 0 ? Math.round(d.cm_sum/d.n*100)/100 : 0, tot_coperti: d.coperti,
+          mese_num: d.mese_num, avg_cm: d.coperti > 0 ? Math.round((d.venduto_sum||0)/d.coperti*100)/100 : 0, tot_coperti: d.coperti,
         }))
       }
 
@@ -1866,7 +1866,7 @@ export const statistiche = {
       }
       return Object.values(bySede).map(s => ({
         ...s,
-        avg_coperto_medio:   s.n_giorni > 0 ? +(s._cm / s.n_giorni).toFixed(2) : 0,
+        avg_coperto_medio:   s.tot_coperti > 0 ? +(s.tot_venduto / s.tot_coperti).toFixed(2) : 0,
         avg_scontrino_medio: s.n_giorni > 0 ? +(s._sm / s.n_giorni).toFixed(2) : 0,
       }))
     } catch { return [] }
