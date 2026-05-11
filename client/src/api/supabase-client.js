@@ -260,6 +260,7 @@ export const chiusure = {
     const sede = locationToSede(p.location)
     if (sede) q = q.eq('sede', sede)
     q = applyDateRange(q, p.from, p.to)
+    q = q.range(0, 4999) // bypass limite default 1000 righe
     const rows = await sbFetch(q)
 
     // Aggrega per sede in JavaScript
@@ -949,6 +950,7 @@ export const prodottiCatalogo = {
     let q = supabase.from('prodotti_catalogo').select('*').eq('attivo', true).order('nome')
     if (p.search) q = q.ilike('nome', `%${p.search}%`)
     if (p.categoria) q = q.eq('categoria', p.categoria)
+    q = q.range(0, 4999) // bypass limite default 1000 righe (tabella ha >4500 righe)
     return sbFetch(q)
   },
 
@@ -960,6 +962,7 @@ export const prodottiCatalogo = {
         .select('*, prodotti_catalogo(*)')
         .eq('p_iva', piva)
         .order('ultimo_prezzo', { ascending: false })
+        .range(0, 4999) // bypass limite default 1000 righe
     )
   },
 
@@ -1128,7 +1131,7 @@ export const analytics = {
     try {
       const { data: rows } = await supabase.from('chiusure_giornaliere')
         .select('sede, data, totale_venduto_ipratico, coperti, coperto_medio')
-        .order('data')
+        .order('data').range(0, 4999) // bypass limite default 1000 righe
 
       const allRows = rows ?? []
 
@@ -1227,7 +1230,7 @@ export const analytics = {
     try {
       const { data: rows } = await supabase.from('chiusure_giornaliere')
         .select('sede, data, totale_venduto_ipratico, coperti, coperto_medio')
-        .order('data')
+        .order('data').range(0, 4999) // bypass limite default 1000 righe
 
       // Solo anno 2025 per indici stagionali
       const rows2025 = (rows ?? []).filter(r => r.data?.startsWith('2025'))
@@ -1277,7 +1280,7 @@ export const analytics = {
   forecast: async () => {
     try {
       const { data: rows } = await supabase.from('chiusure_giornaliere')
-        .select('sede, data, totale_venduto_ipratico, coperti').order('data')
+        .select('sede, data, totale_venduto_ipratico, coperti').order('data').range(0, 4999) // bypass limite 1000
 
       // Indici stagionali da 2025 (combinati MA+PN)
       const byMn2025 = {}
@@ -1411,7 +1414,7 @@ export const analytics = {
       // Indici stagionali dal 2025 (per sede)
       const { data: rows2025 } = await supabase.from('chiusure_giornaliere')
         .select('sede, data, totale_venduto_ipratico')
-        .gte('data', '2025-01-01').lte('data', '2025-12-31')
+        .gte('data', '2025-01-01').lte('data', '2025-12-31').range(0, 4999) // bypass limite 1000
 
       const bySedeM = { MA: {}, PN: {} }
       for (const r of rows2025 ?? []) {
@@ -1513,6 +1516,7 @@ export const analytics = {
     try {
       const { data: rows } = await supabase.from('chiusure_giornaliere')
         .select('sede, data, totale_venduto_ipratico, coperti, coperto_medio')
+        .range(0, 4999) // bypass limite default 1000 righe
 
       const DOW = ['Dom','Lun','Mar','Mer','Gio','Ven','Sab']
       const byDow = {}
@@ -1683,6 +1687,7 @@ export const bustePaga = {
     const busteRows = await sbFetch(
       supabase.from('buste_paga')
         .select('employee_id,employee_code,employee_name,sede,anno,mese,netto')
+        .range(0, 4999) // bypass limite default 1000 righe
     )
     // 1. Trova il periodo globale massimo (ultima busta paga caricata)
     let maxPeriod = 0
@@ -1853,6 +1858,7 @@ export const statistiche = {
       if (sede) q = q.eq('sede', sede)
       if (p.from) q = q.gte('data', p.from)
       if (p.to)   q = q.lte('data', p.to)
+      q = q.range(0, 4999) // bypass limite default 1000 righe
       const rows = await sbFetch(q)
       const bySede = {}
       for (const r of rows) {
@@ -1963,6 +1969,7 @@ export const statistiche = {
       // Overlap interval filter
       if (p.to)   q = q.lte('data_inizio', p.to)
       if (p.from) q = q.gte('data_fine', p.from)
+      q = q.range(0, 4999) // bypass limite default 1000 righe (tabella ha >1761 righe)
       const rows = await sbFetch(q)
       // Aggrega per tavolo (ci possono essere più periodi)
       const byTavolo = {}
@@ -2003,6 +2010,7 @@ export const statistiche = {
       if (p.from) q = q.gte('data', p.from)
       if (p.to)   q = q.lte('data', p.to)
       if (!p.from && !p.to) q = q.limit(60)
+      else q = q.range(0, 4999) // bypass limite 1000 quando si usa un range date
       return sbFetch(q)
     } catch { return [] }
   },
