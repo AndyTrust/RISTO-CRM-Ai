@@ -36,8 +36,178 @@ function KpiCard({ icon: Icon, label, value, sub, color = 'indigo', badge }) {
   )
 }
 
+// ── Coaching panel: opportunità di crescita ────────────────────────────
+function CoachingPanel({ pezzi, q, copertiGestiti, qAffidabile, quantumMedioTeam,
+                         teamCatData, opCatMap, totPezziCat, teamAggRate, aggiunte }) {
+
+  const aggiunteRate = pezzi > 0 ? (Number(aggiunte) / pezzi * 100) : 0
+  const aggiunteGap  = aggiunteRate - teamAggRate
+
+  // Revenue potenziale se raggiunge quantum medio team
+  const qGap       = (q != null && qAffidabile && quantumMedioTeam > 0) ? (quantumMedioTeam - q) : null
+  const potenziale  = (qGap != null && qGap > 0 && copertiGestiti != null) ? Math.round(qGap * copertiGestiti) : null
+
+  // Top 6 categorie del team per volume (per il comparison chart)
+  const topCats = Object.entries(teamCatData)
+    .sort(([, a], [, b]) => b.totale - a.totale)
+    .slice(0, 7)
+    .map(([cat, t]) => {
+      const teamShare = totPezziCat > 0 ? t.pezzi / totPezziCat * 100 : 0
+      const myShare   = pezzi > 0 ? ((opCatMap[cat]?.pezzi || 0) / pezzi * 100) : 0
+      return { cat, teamShare, myShare, gap: myShare - teamShare }
+    })
+
+  // Categorie carenti: sotto la media team di > 3pp
+  const carenti = topCats.filter(c => c.gap < -3 && c.teamShare > 5)
+    .sort((a, b) => a.gap - b.gap).slice(0, 3)
+
+  return (
+    <div className="mt-3 pt-3 border-t border-indigo-100">
+      <div className="text-[11px] font-bold text-indigo-700 uppercase tracking-wide mb-3 flex items-center gap-1.5">
+        🎯 Opportunità di crescita
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
+
+        {/* Quantum vs team */}
+        <div className="bg-white rounded-lg border border-gray-100 p-3">
+          <div className="text-[10px] text-gray-500 font-semibold uppercase mb-2">Quantum €/cop.</div>
+          <div className="flex items-end gap-3 mb-2">
+            <div>
+              <div className="text-[9px] text-gray-400 mb-0.5">Tuo</div>
+              <div className={`text-lg font-bold leading-none ${
+                q == null ? 'text-gray-300'
+                : !qAffidabile ? 'text-amber-500'
+                : q >= quantumMedioTeam ? 'text-emerald-600' : 'text-red-500'
+              }`}>
+                {q != null ? `€ ${Number(q).toFixed(0)}` : '—'}
+                {q != null && !qAffidabile && <span className="text-xs ml-0.5">⚠</span>}
+              </div>
+            </div>
+            <div className="text-gray-300 text-lg pb-0.5">→</div>
+            <div>
+              <div className="text-[9px] text-gray-400 mb-0.5">Media team</div>
+              <div className="text-lg font-bold text-indigo-600 leading-none">€ {quantumMedioTeam.toFixed(0)}</div>
+            </div>
+          </div>
+          {potenziale != null && potenziale > 0 && (
+            <div className="text-[10px] bg-amber-50 border border-amber-200 text-amber-700 rounded px-2 py-1.5 leading-snug">
+              <strong>+€ {potenziale.toLocaleString('it-IT')}/mese potenziale</strong>
+              <div className="text-gray-500 mt-0.5">Se raggiungessi €{quantumMedioTeam.toFixed(0)}/cop.</div>
+            </div>
+          )}
+          {q != null && qAffidabile && q >= quantumMedioTeam && (
+            <div className="text-[10px] bg-emerald-50 border border-emerald-200 text-emerald-700 rounded px-2 py-1.5">
+              ✓ Sopra la media del team!
+            </div>
+          )}
+          {!qAffidabile && copertiGestiti != null && (
+            <div className="text-[10px] text-amber-600 mt-1">
+              Solo {copertiGestiti} coperti registrati — accumula più dati
+            </div>
+          )}
+        </div>
+
+        {/* Aggiunte / upselling */}
+        <div className="bg-white rounded-lg border border-gray-100 p-3">
+          <div className="text-[10px] text-gray-500 font-semibold uppercase mb-2">Upselling (Aggiunte %)</div>
+          <div className="flex items-end gap-3 mb-2">
+            <div>
+              <div className="text-[9px] text-gray-400 mb-0.5">Tuo</div>
+              <div className={`text-lg font-bold leading-none ${aggiunteGap >= 0 ? 'text-emerald-600' : 'text-amber-600'}`}>
+                {aggiunteRate.toFixed(1)}%
+              </div>
+            </div>
+            <div className="text-gray-300 text-lg pb-0.5">→</div>
+            <div>
+              <div className="text-[9px] text-gray-400 mb-0.5">Media team</div>
+              <div className="text-lg font-bold text-indigo-600 leading-none">{teamAggRate.toFixed(1)}%</div>
+            </div>
+          </div>
+          <div className="h-2 bg-gray-100 rounded-full overflow-hidden mb-1.5">
+            <div
+              className={`h-full rounded-full transition-all ${aggiunteGap >= 0 ? 'bg-emerald-500' : 'bg-amber-400'}`}
+              style={{ width: `${Math.min(100, teamAggRate > 0 ? aggiunteRate / teamAggRate * 100 : 0)}%` }}
+            />
+          </div>
+          <div className={`text-[10px] ${aggiunteGap >= 0 ? 'text-emerald-600' : 'text-amber-600'}`}>
+            {aggiunteGap >= 0
+              ? `✓ +${aggiunteGap.toFixed(1)}pp sopra la media — ottimo!`
+              : `${Math.abs(aggiunteGap).toFixed(1)}pp sotto la media — proponi varianti premium`}
+          </div>
+        </div>
+
+        {/* Categorie carenti */}
+        <div className="bg-white rounded-lg border border-gray-100 p-3">
+          <div className="text-[10px] text-gray-500 font-semibold uppercase mb-2">Categorie da sviluppare</div>
+          {carenti.length === 0 ? (
+            <div className="text-[10px] text-emerald-600 bg-emerald-50 rounded px-2 py-1.5 border border-emerald-100">
+              ✓ Mix categorie equilibrato rispetto al team
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {carenti.map(c => (
+                <div key={c.cat}>
+                  <div className="flex justify-between text-[10px] mb-0.5">
+                    <span className="text-gray-700 font-medium truncate">{c.cat}</span>
+                    <span className="text-amber-600 font-bold ml-2 flex-shrink-0">
+                      {c.myShare.toFixed(0)}% vs {c.teamShare.toFixed(0)}% team
+                    </span>
+                  </div>
+                  <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                    <div className="h-full bg-amber-400 rounded-full" style={{ width: `${Math.min(100, c.myShare)}%` }} />
+                    <div className="h-full bg-indigo-200 rounded-full -mt-1.5" style={{ width: `${Math.min(100, c.teamShare)}%`, opacity: 0.5 }} />
+                  </div>
+                </div>
+              ))}
+              <div className="text-[9px] text-gray-400 mt-1">Proponi di più questi piatti ai tavoli</div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Mix categorie — grafico comparativo */}
+      {topCats.length > 0 && (
+        <div className="bg-white rounded-lg border border-gray-100 p-3">
+          <div className="text-[10px] text-gray-500 font-semibold uppercase mb-3">
+            Mix categorie — tu (■) vs team (░) per % pezzi venduti
+          </div>
+          <div className="space-y-2">
+            {topCats.map(({ cat, teamShare, myShare, gap }) => {
+              const maxShare = Math.max(...topCats.map(c => Math.max(c.teamShare, c.myShare)), 1)
+              return (
+                <div key={cat} className="flex items-center gap-2">
+                  <div className="text-[10px] text-gray-600 w-32 flex-shrink-0 truncate">{cat}</div>
+                  <div className="flex-1 flex flex-col gap-0.5">
+                    {/* Mia barra */}
+                    <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all ${gap >= 0 ? 'bg-indigo-500' : 'bg-amber-400'}`}
+                        style={{ width: `${(myShare / maxShare) * 100}%` }}
+                      />
+                    </div>
+                    {/* Barra team */}
+                    <div className="h-1 bg-gray-100 rounded-full overflow-hidden">
+                      <div className="h-full bg-indigo-200 rounded-full" style={{ width: `${(teamShare / maxShare) * 100}%` }} />
+                    </div>
+                  </div>
+                  <div className={`text-[10px] w-20 text-right font-semibold flex-shrink-0 ${gap >= 0 ? 'text-indigo-600' : 'text-amber-500'}`}>
+                    {myShare.toFixed(0)}% {gap > 0 ? `▲` : gap < -2 ? '▼' : ''}
+                    <div className="text-gray-400 font-normal">{teamShare.toFixed(0)}% team</div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Riga operatore espandibile ─────────────────────────────────────────
-function OperatoreRow({ op, rank, target, quantum, payout, expanded, onToggle }) {
+function OperatoreRow({ op, rank, target, quantum, payout, expanded, onToggle,
+                        teamCatData, opCatMap, totPezziCat, teamAggRate, quantumMedioTeam }) {
   const [prodotti, setProdotti]       = useState([])
   const [loadingProd, setLoadingProd] = useState(false)
 
@@ -79,6 +249,9 @@ function OperatoreRow({ op, rank, target, quantum, payout, expanded, onToggle })
   const aggiunte  = Number(op.tot_importo_aggiunte) || 0
   const pctTeam   = Number(op.pct_pezzi_team) || 0
   const q         = quantum?.quantum != null ? Number(quantum.quantum) : null
+  const copertiGestiti = quantum?.coperti_gestiti != null ? Number(quantum.coperti_gestiti) : null
+  // Quantum affidabile solo con ≥ 10 coperti
+  const qAffidabile = copertiGestiti != null && copertiGestiti >= 10
 
   const targetPezzi = target?.target  ? Number(target.target) : null
   const targetPct   = targetPezzi     ? Math.min(150, (pezzi / targetPezzi) * 100) : null
@@ -149,8 +322,14 @@ function OperatoreRow({ op, rank, target, quantum, payout, expanded, onToggle })
         </td>
 
         <td className="px-3 py-2.5 text-right">
-          {q != null
+          {q != null && qAffidabile
             ? <span className={`text-sm font-bold ${q >= 30 ? 'text-emerald-600' : q >= 15 ? 'text-amber-600' : 'text-gray-500'}`}>{fmtEur(q)}</span>
+            : q != null && !qAffidabile
+            ? (
+              <span className="text-[10px] text-amber-500 font-medium" title={`Quantum non affidabile: solo ${copertiGestiti} coperti registrati (min. 10 richiesti)`}>
+                ≈{fmtEur(q)} ⚠
+              </span>
+            )
             : <span className="text-[10px] text-gray-300">n/d</span>}
         </td>
 
@@ -180,7 +359,7 @@ function OperatoreRow({ op, rank, target, quantum, payout, expanded, onToggle })
                   ['Tot. pezzi venduti', fmt(pezzi, 0)],
                   ['Fatturato stimato', fmtEur(fatturato)],
                   ['Aggiunte (€)', fmtEur(aggiunte)],
-                  ...(q != null ? [['Quantum €/coperto', fmtEur(q)]] : []),
+                  ...(q != null ? [['Quantum €/coperto', qAffidabile ? fmtEur(q) : `≈${fmtEur(q)} (solo ${copertiGestiti} cop.)`]] : []),
                 ].map(([l, v]) => (
                   <div key={l} className="flex justify-between">
                     <span className="text-gray-500">{l}</span>
@@ -237,6 +416,20 @@ function OperatoreRow({ op, rank, target, quantum, payout, expanded, onToggle })
               </div>
 
             </div>
+
+            {/* ── Coaching panel ── */}
+            <CoachingPanel
+              pezzi={pezzi}
+              aggiunte={op.tot_aggiunte}
+              q={q}
+              copertiGestiti={copertiGestiti}
+              qAffidabile={qAffidabile}
+              quantumMedioTeam={quantumMedioTeam}
+              teamCatData={teamCatData}
+              opCatMap={opCatMap}
+              totPezziCat={totPezziCat}
+              teamAggRate={teamAggRate}
+            />
           </td>
         </tr>
       )}
@@ -323,12 +516,17 @@ export default function KPIWaiters() {
   const [quantumData, setQuantumData] = useState([])
   const [bonusTeam,   setBonusTeam]   = useState([])
   const [bonusOp,     setBonusOp]     = useState([])
+  const [isStima,     setIsStima]     = useState(false)
+  const [vendutoTeam, setVendutoTeam] = useState([])
 
   const load = useCallback(async () => {
     setLoading(true)
     setExpanded(null)
     try {
-      const [ops, beData, tt, ti, qtRes, bt, bo] = await Promise.all([
+      const iniStr  = `${anno}-${String(mese).padStart(2,'0')}-01`
+      const fineStr = new Date(anno, mese, 0).toISOString().slice(0, 10)
+
+      const [ops, beData, tt, ti, qtRes, bt, bo, bpCheck, vtRes] = await Promise.all([
         operatoreMeseApi.list({ sede, anno, mese }),
         beMensileApi.mese({ sede, anno, mese }),
         kpiTargetsApi.getTeam({ sede, anno, mese }),
@@ -338,6 +536,16 @@ export default function KPIWaiters() {
           .eq('sede', sede).eq('anno', anno).eq('mese', mese),
         bonusApi.team({ sede, anno, mese }),
         bonusApi.operatori({ sede, anno, mese }),
+        supabase.from('buste_paga')
+          .select('employee_code, note')
+          .eq('sede', sede).eq('anno', anno).eq('mese', mese),
+        supabase.from('venduto_camerieri')
+          .select('operatore, categoria, quantita, totale')
+          .eq('sede', sede)
+          .gte('data_inizio', iniStr)
+          .lte('data_fine', fineStr)
+          .not('prodotto', 'ilike', '%coperto%')
+          .range(0, 4999),
       ])
       setOperatori(ops  || [])
       setBe(beData)
@@ -346,6 +554,14 @@ export default function KPIWaiters() {
       setQuantumData(qtRes?.data || [])
       setBonusTeam(bt   || [])
       setBonusOp(bo     || [])
+      setVendutoTeam(vtRes?.data || [])
+      // Rileva se buste_paga del mese sono solo stime provvisorie
+      const bpRows = bpCheck?.data || []
+      const stimaDetected = bpRows.length > 0 && bpRows.every(r =>
+        (r.employee_code || '').toUpperCase().includes('STIMA') ||
+        (r.note || '').toUpperCase().includes('STIMA_PROVVISORIA')
+      )
+      setIsStima(stimaDetected)
     } catch (e) {
       console.error('[KPIWaiters] load error', e)
     } finally {
@@ -411,6 +627,30 @@ export default function KPIWaiters() {
   const totPezzi    = operatoriSorted.reduce((s, o) => s + (Number(o.tot_pezzi) || 0), 0)
   const totAggiunte = operatoriSorted.reduce((s, o) => s + (Number(o.tot_importo_aggiunte) || 0), 0)
   const totBonusOp  = (bonusOp || []).reduce((s, b) => s + (Number(b.payout_operatore) || 0), 0)
+
+  // ── Mappe categoria per coaching panel ───────────────────────────────
+  const { teamCatData, opCatData, totPezziCat, teamAggRate } = useMemo(() => {
+    const teamCat = {}
+    const opCat   = {}
+    let totPz = 0
+    for (const r of vendutoTeam) {
+      const cat   = r.categoria || 'Altro'
+      const opKey = (r.operatore || '').toUpperCase()
+      const qty   = Number(r.quantita) || 0
+      const tot   = Number(r.totale)   || 0
+      if (!teamCat[cat]) teamCat[cat] = { pezzi: 0, totale: 0 }
+      teamCat[cat].pezzi  += qty
+      teamCat[cat].totale += tot
+      totPz += qty
+      if (!opCat[opKey]) opCat[opKey] = {}
+      if (!opCat[opKey][cat]) opCat[opKey][cat] = { pezzi: 0, totale: 0 }
+      opCat[opKey][cat].pezzi  += qty
+      opCat[opKey][cat].totale += tot
+    }
+    const teamAgg = operatoriSorted.reduce((s, o) => s + (Number(o.tot_aggiunte)          || 0), 0)
+    const teamPz  = operatoriSorted.reduce((s, o) => s + (Number(o.tot_pezzi)             || 0), 0)
+    return { teamCatData: teamCat, opCatData: opCat, totPezziCat: totPz, teamAggRate: teamPz > 0 ? teamAgg / teamPz * 100 : 0 }
+  }, [vendutoTeam, operatoriSorted])
 
   const SortTh = ({ col, children }) => (
     <th className={`text-right px-3 py-2 font-semibold cursor-pointer select-none hover:text-indigo-600 transition-colors ${sortBy === col ? 'text-indigo-600' : ''}`}
@@ -502,6 +742,21 @@ export default function KPIWaiters() {
           color={margine >= 0 ? 'emerald' : 'red'}
         />
       </div>
+
+      {/* Banner STIMA buste paga */}
+      {isStima && (
+        <div className="bg-amber-50 border border-amber-300 rounded-xl px-4 py-3 flex items-start gap-3">
+          <span className="text-amber-500 text-lg flex-shrink-0 mt-0.5">⚠️</span>
+          <div>
+            <p className="text-sm font-semibold text-amber-800">Costi personale basati su stima provvisoria</p>
+            <p className="text-xs text-amber-700 mt-0.5">
+              I cedolini di {MESI[mese - 1]} {anno} non sono ancora stati caricati.
+              Il costo personale, il Margine e la % Personale mostrati sono calcolati su una <strong>stima media</strong> dei mesi precedenti.
+              I dati saranno precisi quando caricherai le buste paga reali.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Barra progresso team verso target */}
       {targetFatt > 0 && (
@@ -596,6 +851,11 @@ export default function KPIWaiters() {
                     payout={payout}
                     expanded={expanded === op.operatore}
                     onToggle={() => setExpanded(expanded === op.operatore ? null : op.operatore)}
+                    teamCatData={teamCatData}
+                    opCatMap={opCatData[key] || {}}
+                    totPezziCat={totPezziCat}
+                    teamAggRate={teamAggRate}
+                    quantumMedioTeam={quantumMedio}
                   />
                 )
               })}
@@ -629,9 +889,10 @@ export default function KPIWaiters() {
           <div><strong>Fatturato stimato</strong> — totale venduto dall'operatore nel mese (proporzionale ai pezzi × prezzo medio dal venduto iPratico)</div>
           <div><strong>% Team</strong> — quota pezzi dell'operatore sul totale pezzi del locale nel mese</div>
           <div><strong>Aggiunte €</strong> — valore varianti premium vendute (es. frutti di bosco, caramello salato)</div>
-          <div><strong>Quantum €/cop.</strong> — fatturato operatore ÷ coperti gestiti. Più alto = più valore per cliente servito</div>
+          <div><strong>Quantum €/cop.</strong> — fatturato operatore ÷ coperti gestiti. Più alto = più valore per cliente servito. Visualizzato con ⚠ se coperti &lt; 10 (dato inaffidabile)</div>
           <div><strong>Target Pezzi</strong> — obiettivo mensile individuale. Impostalo in KPI Config → Target Individuali</div>
           <div><strong>Bonus</strong> — payout maturato su obiettivi prodotto. Si calcola in KPI Team → Calcola Obiettivi Mese</div>
+          <div><strong>🎯 Opportunità di crescita</strong> — espandi ogni operatore per vedere: potenziale ricavo se raggiunge il quantum medio team, tasso upselling (aggiunte %) vs media, e categorie dove vende meno del team (da spingere)</div>
         </div>
       </div>
 

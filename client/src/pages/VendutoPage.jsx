@@ -34,6 +34,8 @@ async function loadOperatori(sede, from, to) {
   // Overlap interval filter: il record [data_inizio, data_fine] si sovrappone con [from, to]
   if (to)   q = q.lte('data_inizio', to)
   if (from) q = q.gte('data_fine', from)
+  q = q.not('operatore', 'ilike', 'pienissimo')  // escludi operatore di sistema
+  q = q.range(0, 4999)                            // bypass limite default 1000 righe
   const rows = await sbq(q)
   const byOp = {}
   for (const r of rows) {
@@ -52,6 +54,8 @@ async function loadCategorie(sede, from, to) {
   // Overlap interval filter: il record [data_inizio, data_fine] si sovrappone con [from, to]
   if (to)   q = q.lte('data_inizio', to)
   if (from) q = q.gte('data_fine', from)
+  q = q.not('operatore', 'ilike', 'pienissimo')  // escludi operatore di sistema
+  q = q.range(0, 4999)                            // bypass limite default 1000 righe
   const rows = await sbq(q)
   const byCat = {}
   for (const r of rows) {
@@ -69,6 +73,8 @@ async function loadProdotti(sede, from, to, limit = 20) {
   // Overlap interval filter: il record [data_inizio, data_fine] si sovrappone con [from, to]
   if (to)   q = q.lte('data_inizio', to)
   if (from) q = q.gte('data_fine', from)
+  q = q.not('operatore', 'ilike', 'pienissimo')  // escludi operatore di sistema
+  q = q.range(0, 4999)                            // bypass limite default 1000 righe
   const rows = await sbq(q)
   const byP = {}
   for (const r of rows) {
@@ -88,6 +94,8 @@ async function loadVarianti(sede, from, to) {
   // Overlap interval filter: il record [data_inizio, data_fine] si sovrappone con [from, to]
   if (to)   q = q.lte('data_inizio', to)
   if (from) q = q.gte('data_fine', from)
+  q = q.not('operatore', 'ilike', 'pienissimo')  // escludi operatore di sistema
+  q = q.range(0, 4999)                            // bypass limite default 1000 righe
   const rows = await sbq(q)
   const byVar = {}
   for (const r of rows) {
@@ -155,6 +163,156 @@ async function loadDailyChiusure(sede, from, to) {
 
 function eur(n) { return n != null ? `€ ${Number(n).toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—' }
 function fmt(n) { return n != null ? Number(n).toLocaleString('it-IT') : '—' }
+
+// ── Matrice Operatori × Categorie ─────────────────────────────────────────
+async function loadMatriceCategorie(sede, from, to) {
+  let q = supabase.from('venduto_camerieri')
+    .select('operatore, categoria, quantita')
+  if (sede) q = q.eq('sede', sede)
+  if (to)   q = q.lte('data_inizio', to)
+  if (from) q = q.gte('data_fine', from)
+  q = q.not('operatore', 'ilike', '%pienissimo%')
+  q = q.range(0, 9999)
+  const rows = await sbq(q)
+
+  // Aggrega per operatore + categoria
+  const matrix = {}   // { op: { cat: qty } }
+  const catTotals = {} // { cat: qty }
+  const opTotals  = {} // { op: qty }
+
+  for (const r of rows) {
+    if (!r.operatore || r.operatore.toLowerCase() === 'pienissimo') continue
+    const cat = (!r.categoria || r.categoria === 'nan') ? 'Altro' : r.categoria
+    const qty = parseFloat(r.quantita) || 0
+    if (!matrix[r.operatore])  matrix[r.operatore] = {}
+    matrix[r.operatore][cat] = (matrix[r.operatore][cat] || 0) + qty
+    catTotals[cat] = (catTotals[cat] || 0) + qty
+    opTotals[r.operatore] = (opTotals[r.operatore] || 0) + qty
+  }
+
+  // Top 10 categorie per totale
+  const topCats = Object.entries(catTotals)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([cat]) => cat)
+
+  // Operatori ordinati per totale
+  const ops = Object.entries(opTotals)
+    .sort((a, b) => b[1] - a[1])
+    .map(([op]) => op)
+
+  return { matrix, topCats, ops, catTotals, opTotals }
+}
+
+function MatriceCategorie({ sede, from, to }) {
+  const [data, setData] = React.useState(null)
+  const [loading, setLoading] = React.useState(true)
+
+  React.useEffect(() => {
+    setLoading(true)
+    loadMatriceCategorie(sede, from, to)
+      .then(setData)
+      .catch(console.error)
+      .finally(() => setLoading(false))
+  }, [sede, from, to])
+
+  if (loading) return <p className="text-center text-gray-400 py-10 text-sm animate-pulse">Caricamento matrice...</p>
+  if (!data || data.ops.length === 0) return <p className="text-center text-gray-400 py-10 text-sm">Nessun dato nel periodo</p>
+
+  const { matrix, topCats, ops, catTotals, opTotals } = data
+  const grandTotal = Object.values(opTotals).reduce((s, v) => s + v, 0)
+
+  // Valore massimo per heatmap
+  const allVals = ops.flatMap(op => topCats.map(cat => matrix[op]?.[cat] || 0))
+  const maxVal  = Math.max(...allVals, 1)
+
+  function getCellBg(qty) {
+    if (!qty) return 'bg-gray-50 text-gray-300'
+    const ratio = qty / maxVal
+    if (ratio > 0.75) return 'bg-indigo-600 text-white'
+    if (ratio > 0.5)  return 'bg-indigo-400 text-white'
+    if (ratio > 0.25) return 'bg-indigo-200 text-indigo-800'
+    return 'bg-indigo-50 text-indigo-600'
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-4 text-xs text-gray-500 flex-wrap">
+        <span className="font-medium">Heatmap intensità pezzi venduti per operatore × categoria</span>
+        <span className="flex items-center gap-1">
+          {['bg-indigo-50','bg-indigo-200','bg-indigo-400','bg-indigo-600'].map((cls, i) => (
+            <span key={i} className={`w-4 h-4 rounded inline-block ${cls}`} />
+          ))}
+          <span>basso → alto</span>
+        </span>
+      </div>
+
+      <div className="overflow-x-auto rounded-xl border border-gray-200">
+        <table className="min-w-full text-xs">
+          <thead>
+            <tr className="bg-gray-50 border-b border-gray-200">
+              <th className="px-3 py-2.5 text-left font-semibold text-gray-700 sticky left-0 bg-gray-50 z-10 min-w-[130px]">Operatore</th>
+              <th className="px-3 py-2.5 text-right font-semibold text-gray-700 min-w-[70px]">Totale</th>
+              <th className="px-3 py-2.5 text-right font-semibold text-gray-500 min-w-[60px]">% Team</th>
+              {topCats.map(cat => (
+                <th key={cat} className="px-3 py-2.5 text-center font-semibold text-gray-600 min-w-[90px] max-w-[120px]">
+                  <div className="truncate" title={cat}>{cat}</div>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {ops.map(op => {
+              const opTotal = Math.round(opTotals[op] || 0)
+              const opPct   = grandTotal > 0 ? (opTotal / grandTotal * 100).toFixed(1) : '0'
+              return (
+                <tr key={op} className="border-b hover:bg-gray-50/50">
+                  <td className="px-3 py-2.5 font-semibold text-gray-900 sticky left-0 bg-white">{op}</td>
+                  <td className="px-3 py-2.5 text-right font-mono font-semibold text-gray-800">{fmt(opTotal)}</td>
+                  <td className="px-3 py-2.5 text-right font-mono text-gray-500">{opPct}%</td>
+                  {topCats.map(cat => {
+                    const qty = Math.round(matrix[op]?.[cat] || 0)
+                    const catPct = opTotal > 0 && qty > 0 ? Math.round(qty / opTotal * 100) : 0
+                    return (
+                      <td key={cat} className={`px-2 py-2.5 text-center ${getCellBg(qty)}`}>
+                        {qty > 0 ? (
+                          <div>
+                            <div className="font-bold">{fmt(qty)}</div>
+                            <div className="text-[10px] opacity-75">{catPct}%</div>
+                          </div>
+                        ) : '—'}
+                      </td>
+                    )
+                  })}
+                </tr>
+              )
+            })}
+          </tbody>
+          <tfoot className="border-t-2 border-gray-300 bg-gray-50 font-semibold">
+            <tr>
+              <td className="px-3 py-2.5 text-gray-700 uppercase text-[11px]">Totale Team</td>
+              <td className="px-3 py-2.5 text-right font-mono text-gray-900">{fmt(Math.round(grandTotal))}</td>
+              <td className="px-3 py-2.5 text-right text-gray-500">100%</td>
+              {topCats.map(cat => {
+                const catTotal = Math.round(catTotals[cat] || 0)
+                const catPct   = grandTotal > 0 ? (catTotal / grandTotal * 100).toFixed(1) : '0'
+                return (
+                  <td key={cat} className="px-2 py-2.5 text-center text-indigo-700">
+                    <div className="font-bold">{fmt(catTotal)}</div>
+                    <div className="text-[10px] text-gray-500">{catPct}%</div>
+                  </td>
+                )
+              })}
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <p className="text-xs text-gray-400">
+        Visualizzate le top {topCats.length} categorie per volume. Fonte: Pienissimo iPratico.
+      </p>
+    </div>
+  )
+}
 
 // ─── Calendario Heatmap ──────────────────────────────────────────────────────
 function CalendarioHeatmap({ dailyData }) {
@@ -355,6 +513,7 @@ export default function VendutoPage() {
 
   const tabs = [
     { id: 'operatori', label: '👤 Operatori' },
+    { id: 'matrice',   label: '📊 Matrice Categorie' },
     { id: 'categorie', label: '🏷️ Categorie' },
     { id: 'prodotti',  label: '🍽️ Top Prodotti' },
     { id: 'upsell',    label: '⬆️ Up-sell & Varianti' },
@@ -608,6 +767,17 @@ export default function VendutoPage() {
             </div>
           )}
 
+        </div>
+      )}
+
+      {/* ─── MATRICE CATEGORIE ────────────────────────────────── */}
+      {tab === 'matrice' && (
+        <div className="space-y-4">
+          <div className="bg-indigo-50 border border-indigo-100 rounded-lg p-3 text-xs text-indigo-700">
+            📊 <strong>Matrice Categorie</strong> — pezzi venduti per ogni cameriere divisi per categoria.
+            Le celle sono colorate in base all'intensità: più scuro = più pezzi venduti.
+          </div>
+          <MatriceCategorie sede={sede} from={from} to={to} />
         </div>
       )}
 

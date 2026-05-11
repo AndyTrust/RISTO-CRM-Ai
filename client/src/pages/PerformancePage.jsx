@@ -12,7 +12,8 @@ import { useSearchParams, Link } from 'react-router-dom'
 import {
   TrendingUp, Target, Users, BarChart3, Table2,
   ChevronDown, ChevronUp, ArrowRight, RefreshCw,
-  Award, Zap, Euro, Utensils, Clock, CheckCircle, XCircle
+  Award, Zap, Euro, Utensils, Clock, CheckCircle, XCircle,
+  Gift, Sliders, Trophy, AlertCircle
 } from 'lucide-react'
 import { operatoreMeseApi, beMensileApi, kpiTargetsApi, bonusApi } from '../api/client'
 import supabase from '../supabase'
@@ -26,6 +27,7 @@ const TABS = [
   { id: 'obiettivi', label: 'Obiettivi',  icon: Target },
   { id: 'team',      label: 'Team',       icon: Users },
   { id: 'tavoli',    label: 'Tavoli',     icon: Table2 },
+  { id: 'incentivi', label: 'Incentivi',  icon: Gift },
 ]
 
 // ── Utils ──────────────────────────────────────────────────────────────────
@@ -549,6 +551,7 @@ function TabTavoli({ sede, anno, mese }) {
       .select('tavolo, n_coperti, n_ordini, incasso, scontrino_medio, durata_media_min')
       .eq('sede', sede)
       .gte('data_inizio', ini).lte('data_fine', fine)
+      .range(0, 4999) // bypass limite default 1000 righe (tabella ha >1761 righe)
       .then(({ data }) => {
         // Aggrega per tavolo (possono esserci più range)
         const byT = {}
@@ -670,6 +673,414 @@ function TabTavoli({ sede, anno, mese }) {
       <p className="text-xs text-gray-400">
         Dati periodo: {String(mese).padStart(2,'0')}/{anno} — {tavoli.length} tavoli attivi.{' '}
         <Link to="/statistiche" className="text-indigo-500 hover:underline">Vista completa sala →</Link>
+      </p>
+    </div>
+  )
+}
+
+// ── TAB 5: Incentivi ──────────────────────────────────────────────────────
+function TabIncentivi({ sede, anno, mese }) {
+  const [nMesi, setNMesi] = useState(3)
+  const [percIncremento, setPercIncremento] = useState(10)
+  const [viewMode, setViewMode] = useState('cards')   // 'cards' | 'matrix'
+  const [loading, setLoading] = useState(true)
+  const [quorumMap, setQuorumMap] = useState({})      // { op: { cat: { quorum, target, months } } }
+  const [currentMap, setCurrentMap] = useState({})    // { op: { cat: qty } }
+  const [operatori, setOperatori] = useState([])
+  const [categorie, setCategorie] = useState([])
+  const [variantiMap, setVariantiMap] = useState({})  // { op: tot_aggiunte }
+
+  const loadData = useCallback(async () => {
+    setLoading(true)
+    try {
+      // Quorum: N mesi PRIMA del mese corrente
+      const quorumEnd   = new Date(anno, mese - 1, 0)         // ultimo giorno mese precedente
+      const quorumStart = new Date(anno, mese - 1 - nMesi, 1) // N mesi fa
+      const qFrom = quorumStart.toISOString().slice(0, 10)
+      const qTo   = quorumEnd.toISOString().slice(0, 10)
+
+      // Mese corrente
+      const curFrom = `${anno}-${String(mese).padStart(2, '0')}-01`
+      const curTo   = new Date(anno, mese, 0).toISOString().slice(0, 10)
+
+      const [{ data: hist }, { data: curr }, { data: varCurr }] = await Promise.all([
+        supabase.from('venduto_camerieri')
+          .select('operatore, categoria, quantita, data_inizio')
+          .eq('sede', sede)
+          .not('operatore', 'ilike', '%pienissimo%')
+          .lte('data_inizio', qTo)
+          .gte('data_fine', qFrom)
+          .range(0, 9999),
+        supabase.from('venduto_camerieri')
+          .select('operatore, categoria, quantita')
+          .eq('sede', sede)
+          .not('operatore', 'ilike', '%pienissimo%')
+          .lte('data_inizio', curTo)
+          .gte('data_fine', curFrom)
+          .range(0, 9999),
+        supabase.from('varianti_camerieri')
+          .select('operatore, aggiunta_qty')
+          .eq('sede', sede)
+          .not('operatore', 'ilike', '%pienissimo%')
+          .lte('data_inizio', curTo)
+          .gte('data_fine', curFrom)
+          .range(0, 4999),
+      ])
+
+      // ── Storico: raggruppa per op + cat + mese ──────────────────────────
+      const monthlyByKey = {}
+      for (const r of hist || []) {
+        if (PSEUDO_OPS.includes(r.operatore?.toLowerCase())) continue
+        const cat   = (!r.categoria || r.categoria === 'nan') ? 'Altro' : r.categoria
+        const month = r.data_inizio?.slice(0, 7)
+        const key   = `${r.operatore}|${cat}|${month}`
+        if (!monthlyByKey[key]) monthlyByKey[key] = { op: r.operatore, cat, month, qty: 0 }
+        monthlyByKey[key].qty += parseFloat(r.quantita) || 0
+      }
+
+      // ── Calcola quorum: media mensile per op + cat ───────────────────────
+      const sumByOpCat = {}
+      for (const r of Object.values(monthlyByKey)) {
+        const key = `${r.op}|${r.cat}`
+        if (!sumByOpCat[key]) sumByOpCat[key] = { op: r.op, cat: r.cat, total: 0, monthSet: new Set() }
+        sumByOpCat[key].total += r.qty
+        sumByOpCat[key].monthSet.add(r.month)
+      }
+
+      const newQuorumMap = {}
+      const opsSet = new Set()
+      const catsCount = {}   // { cat: sum quorum } per ordinare categorie
+
+      for (const r of Object.values(sumByOpCat)) {
+        const months  = r.monthSet.size
+        const quorum  = months > 0 ? Math.round(r.total / months) : 0
+        const target  = Math.round(quorum * (1 + percIncremento / 100))
+        if (!newQuorumMap[r.op]) newQuorumMap[r.op] = {}
+        newQuorumMap[r.op][r.cat] = { quorum, target, months }
+        opsSet.add(r.op)
+        catsCount[r.cat] = (catsCount[r.cat] || 0) + quorum
+      }
+
+      // ── Mese corrente: aggrega per op + cat ─────────────────────────────
+      const newCurrentMap = {}
+      for (const r of curr || []) {
+        if (PSEUDO_OPS.includes(r.operatore?.toLowerCase())) continue
+        const cat = (!r.categoria || r.categoria === 'nan') ? 'Altro' : r.categoria
+        if (!newCurrentMap[r.operatore]) newCurrentMap[r.operatore] = {}
+        newCurrentMap[r.operatore][cat] = (newCurrentMap[r.operatore][cat] || 0) + (parseFloat(r.quantita) || 0)
+        opsSet.add(r.operatore)
+      }
+
+      // ── Varianti mese corrente ───────────────────────────────────────────
+      const newVariantiMap = {}
+      for (const r of varCurr || []) {
+        if (PSEUDO_OPS.includes(r.operatore?.toLowerCase())) continue
+        newVariantiMap[r.operatore] = (newVariantiMap[r.operatore] || 0) + (parseFloat(r.aggiunta_qty) || 0)
+      }
+
+      // ── Top categorie per matrice (max 8) ───────────────────────────────
+      const topCats = Object.entries(catsCount)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 8)
+        .map(([cat]) => cat)
+
+      const opsArr = [...opsSet]
+        .filter(op => !PSEUDO_OPS.includes(op.toLowerCase()))
+        .sort()
+
+      setQuorumMap(newQuorumMap)
+      setCurrentMap(newCurrentMap)
+      setVariantiMap(newVariantiMap)
+      setOperatori(opsArr)
+      setCategorie(topCats)
+    } catch (e) {
+      console.error('Errore caricamento incentivi:', e)
+    } finally {
+      setLoading(false)
+    }
+  }, [sede, anno, mese, nMesi, percIncremento])
+
+  useEffect(() => { loadData() }, [loadData])
+
+  // ── Helpers ──────────────────────────────────────────────────────────────
+  const getColor = pct => pct >= 100 ? 'emerald' : pct >= 75 ? 'indigo' : pct >= 45 ? 'amber' : 'red'
+  const getClsText = color =>
+    color === 'emerald' ? 'text-emerald-600' :
+    color === 'indigo'  ? 'text-indigo-600'  :
+    color === 'amber'   ? 'text-amber-600'   : 'text-red-500'
+  const getClsBg = color =>
+    color === 'emerald' ? 'bg-emerald-50'    :
+    color === 'indigo'  ? 'bg-indigo-50'     :
+    color === 'amber'   ? 'bg-amber-50'      : 'bg-red-50'
+  const getClsBar = color =>
+    color === 'emerald' ? 'bg-emerald-400'   :
+    color === 'indigo'  ? 'bg-indigo-400'    :
+    color === 'amber'   ? 'bg-amber-400'     : 'bg-red-400'
+
+  // Stats generali
+  const opsOnTrack = operatori.filter(op => {
+    const q = quorumMap[op] || {}
+    const c = currentMap[op] || {}
+    const totalTarget = Object.values(q).reduce((s, v) => s + v.target, 0)
+    const totalCurr   = Object.values(c).reduce((s, v) => s + v, 0)
+    return totalTarget > 0 && totalCurr >= totalTarget
+  }).length
+
+  if (loading) return <Spinner />
+
+  if (operatori.length === 0) return (
+    <div className="text-center py-12 text-gray-400">
+      <AlertCircle size={32} className="mx-auto mb-3 opacity-30" />
+      <p className="text-sm">Nessun dato venduto nei {nMesi} mesi precedenti per {sede} — {MESI[mese-1]} {anno}</p>
+      <p className="text-xs mt-1">Verifica che i dati siano stati importati nel CRM</p>
+    </div>
+  )
+
+  return (
+    <div className="space-y-5">
+
+      {/* ── Configurazione ───────────────────────────────────────── */}
+      <div className="bg-gradient-to-r from-indigo-50 to-violet-50 rounded-xl border border-indigo-100 p-4">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+          <div className="flex-1">
+            <h3 className="font-semibold text-indigo-900 flex items-center gap-2 text-sm">
+              <Sliders size={15} className="text-indigo-600" /> Configurazione Obiettivi
+            </h3>
+            <p className="text-xs text-indigo-600 mt-0.5">
+              Target = media pezzi/mese degli ultimi <strong>{nMesi}</strong> {nMesi === 1 ? 'mese' : 'mesi'}
+              {' '}× <strong>{(100 + percIncremento).toFixed(0)}%</strong>
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            {/* N mesi */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-indigo-700 whitespace-nowrap">Media su</span>
+              <div className="flex rounded-lg border border-indigo-200 overflow-hidden text-sm">
+                {[1, 2, 3].map(n => (
+                  <button key={n} onClick={() => setNMesi(n)}
+                    className={`px-3 py-1 font-medium transition-colors ${nMesi === n ? 'bg-indigo-600 text-white' : 'bg-white text-indigo-700 hover:bg-indigo-50'}`}>
+                    {n}m
+                  </button>
+                ))}
+              </div>
+            </div>
+            {/* % incremento */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-indigo-700 whitespace-nowrap">Incremento</span>
+              <div className="flex rounded-lg border border-indigo-200 overflow-hidden text-sm">
+                {[5, 10, 15, 20].map(p => (
+                  <button key={p} onClick={() => setPercIncremento(p)}
+                    className={`px-3 py-1 font-medium transition-colors ${percIncremento === p ? 'bg-indigo-600 text-white' : 'bg-white text-indigo-700 hover:bg-indigo-50'}`}>
+                    +{p}%
+                  </button>
+                ))}
+              </div>
+            </div>
+            {/* Vista */}
+            <div className="flex rounded-lg border border-indigo-200 overflow-hidden text-sm">
+              {[{ id: 'cards', label: '☰ Carte' }, { id: 'matrix', label: '⊞ Matrice' }].map(v => (
+                <button key={v.id} onClick={() => setViewMode(v.id)}
+                  className={`px-3 py-1 font-medium transition-colors ${viewMode === v.id ? 'bg-indigo-600 text-white' : 'bg-white text-indigo-700 hover:bg-indigo-50'}`}>
+                  {v.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Overview ─────────────────────────────────────────────── */}
+      <div className="grid grid-cols-3 gap-3">
+        <div className="bg-white rounded-xl border border-gray-200 p-4 text-center">
+          <div className="text-2xl font-bold text-indigo-600">{operatori.length}</div>
+          <div className="text-xs text-gray-500 mt-0.5">Operatori tracciati</div>
+        </div>
+        <div className="bg-white rounded-xl border border-gray-200 p-4 text-center">
+          <div className="text-2xl font-bold text-emerald-600">{opsOnTrack}</div>
+          <div className="text-xs text-gray-500 mt-0.5">Obiettivo raggiunto ✓</div>
+        </div>
+        <div className="bg-white rounded-xl border border-gray-200 p-4 text-center">
+          <div className="text-2xl font-bold text-gray-900">{nMesi}m · +{percIncremento}%</div>
+          <div className="text-xs text-gray-500 mt-0.5">Quorum · Incremento target</div>
+        </div>
+      </div>
+
+      {/* ── VISTA CARTE ───────────────────────────────────────────── */}
+      {viewMode === 'cards' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {operatori.map(op => {
+            const q = quorumMap[op] || {}
+            const c = currentMap[op] || {}
+            const totalQuorum = Object.values(q).reduce((s, v) => s + v.quorum, 0)
+            const totalTarget = Object.values(q).reduce((s, v) => s + v.target, 0)
+            const totalCurr   = Object.values(c).reduce((s, v) => s + v, 0)
+            const pctTotal    = totalTarget > 0 ? Math.min(200, Math.round(totalCurr / totalTarget * 100)) : 0
+            const colorTotal  = getColor(pctTotal)
+            const varTot      = Math.round(variantiMap[op] || 0)
+
+            return (
+              <div key={op} className={`bg-white rounded-xl border p-4 space-y-3 ${pctTotal >= 100 ? 'border-emerald-200' : 'border-gray-200'}`}>
+                {/* Header */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className={`w-9 h-9 rounded-full flex items-center justify-center text-white font-bold text-sm ${
+                      COLORS[operatori.indexOf(op) % COLORS.length] ? '' : 'bg-indigo-600'
+                    }`} style={{ backgroundColor: COLORS[operatori.indexOf(op) % COLORS.length] }}>
+                      {op.charAt(0)}
+                    </div>
+                    <div>
+                      <div className="font-semibold text-gray-900 text-sm">{op}</div>
+                      <div className="text-xs text-gray-400">{fmt(totalCurr)} / {fmt(totalTarget)} pz</div>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className={`text-lg font-bold ${getClsText(colorTotal)}`}>{pctTotal}%</div>
+                    {pctTotal >= 100 && <Trophy size={12} className="text-emerald-500 mx-auto" />}
+                  </div>
+                </div>
+
+                <ProgressBar value={totalCurr} max={Math.max(totalTarget, 1)} color={colorTotal} />
+
+                {/* Categorie */}
+                <div className="space-y-1.5">
+                  {categorie.filter(cat => (q[cat]?.target || 0) > 0 || (c[cat] || 0) > 0).slice(0, 6).map(cat => {
+                    const qData = q[cat] || { quorum: 0, target: 0 }
+                    const curr  = Math.round(c[cat] || 0)
+                    const pct   = qData.target > 0 ? Math.min(200, Math.round(curr / qData.target * 100)) : (curr > 0 ? 100 : 0)
+                    const col   = getColor(pct)
+                    return (
+                      <div key={cat} className="flex items-center gap-2">
+                        <span className="text-[10px] text-gray-500 w-24 truncate" title={cat}>{cat}</span>
+                        <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                          <div className={`h-full rounded-full ${getClsBar(col)}`} style={{ width: `${Math.min(100, pct)}%` }} />
+                        </div>
+                        <span className="text-[10px] font-mono text-gray-600 w-12 text-right">{curr}/{fmt(qData.target)}</span>
+                        <span className={`text-[10px] font-bold w-8 text-right ${getClsText(col)}`}>{pct}%</span>
+                      </div>
+                    )
+                  })}
+                </div>
+
+                {/* Footer */}
+                <div className="pt-2 border-t border-gray-100 flex justify-between text-[10px] text-gray-400">
+                  <span>Quorum {nMesi}m: ~{fmt(totalQuorum)} pz/m</span>
+                  {varTot > 0 && <span className="text-emerald-600 font-medium">+{fmt(varTot)} aggiunte ↑</span>}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* ── VISTA MATRICE ─────────────────────────────────────────── */}
+      {viewMode === 'matrix' && (
+        <div className="overflow-x-auto rounded-xl border border-gray-200">
+          <table className="min-w-full text-xs">
+            <thead>
+              <tr className="bg-gray-50 border-b border-gray-200">
+                <th className="px-3 py-2.5 text-left font-semibold text-gray-700 min-w-[130px]">Operatore</th>
+                <th className="px-3 py-2.5 text-center font-semibold text-indigo-700 min-w-[90px]">Totale</th>
+                {categorie.map(cat => (
+                  <th key={cat} className="px-3 py-2.5 text-center font-semibold text-gray-600 min-w-[100px] max-w-[130px]">
+                    <div className="truncate" title={cat}>{cat}</div>
+                  </th>
+                ))}
+                <th className="px-3 py-2.5 text-center font-semibold text-emerald-700 min-w-[80px]">Aggiunte</th>
+              </tr>
+              {/* Riga Quorum */}
+              <tr className="bg-indigo-50/60 border-b border-indigo-100">
+                <td className="px-3 py-1.5 text-indigo-700 font-medium italic text-[11px]">Quorum (media {nMesi}m)</td>
+                <td className="px-3 py-1.5 text-center text-indigo-500 font-mono">—</td>
+                {categorie.map(cat => {
+                  const avgQ = operatori.length > 0
+                    ? Math.round(operatori.reduce((s, op) => s + (quorumMap[op]?.[cat]?.quorum || 0), 0) / operatori.length)
+                    : 0
+                  return (
+                    <td key={cat} className="px-3 py-1.5 text-center font-mono text-indigo-700 font-semibold">
+                      {avgQ > 0 ? fmt(avgQ) : '—'}
+                    </td>
+                  )
+                })}
+                <td className="px-3 py-1.5 text-center text-indigo-400 font-mono">—</td>
+              </tr>
+              {/* Riga Target */}
+              <tr className="bg-violet-50/60 border-b border-violet-100">
+                <td className="px-3 py-1.5 text-violet-700 font-medium italic text-[11px]">Target (+{percIncremento}%)</td>
+                <td className="px-3 py-1.5 text-center text-violet-500 font-mono">—</td>
+                {categorie.map(cat => {
+                  const avgT = operatori.length > 0
+                    ? Math.round(operatori.reduce((s, op) => s + (quorumMap[op]?.[cat]?.target || 0), 0) / operatori.length)
+                    : 0
+                  return (
+                    <td key={cat} className="px-3 py-1.5 text-center font-mono text-violet-700 font-bold">
+                      {avgT > 0 ? fmt(avgT) : '—'}
+                    </td>
+                  )
+                })}
+                <td className="px-3 py-1.5 text-center text-violet-400 font-mono">—</td>
+              </tr>
+            </thead>
+            <tbody>
+              {operatori.map(op => {
+                const q = quorumMap[op] || {}
+                const c = currentMap[op] || {}
+                const totalTarget = Object.values(q).reduce((s, v) => s + v.target, 0)
+                const totalCurr   = Object.values(c).reduce((s, v) => s + v, 0)
+                const pctTotal    = totalTarget > 0 ? Math.min(200, Math.round(totalCurr / totalTarget * 100)) : 0
+                const colTotal    = getColor(pctTotal)
+                const varTot      = Math.round(variantiMap[op] || 0)
+
+                return (
+                  <tr key={op} className="border-b hover:bg-gray-50/50">
+                    <td className="px-3 py-2.5 font-semibold text-gray-900">{op}</td>
+                    <td className={`px-3 py-2.5 text-center ${getClsBg(colTotal)}`}>
+                      <div className={`font-bold ${getClsText(colTotal)}`}>{pctTotal}%</div>
+                      <div className="text-gray-400 text-[10px]">{fmt(totalCurr)}/{fmt(totalTarget)}</div>
+                    </td>
+                    {categorie.map(cat => {
+                      const qData = q[cat] || { quorum: 0, target: 0 }
+                      const curr  = Math.round(c[cat] || 0)
+                      const pct   = qData.target > 0
+                        ? Math.min(200, Math.round(curr / qData.target * 100))
+                        : (curr > 0 ? 100 : -1)
+                      if (pct === -1) return <td key={cat} className="px-3 py-2.5 text-center text-gray-200">—</td>
+                      const col = getColor(pct)
+                      return (
+                        <td key={cat} className={`px-3 py-2.5 text-center ${getClsBg(col)}`}>
+                          <div className={`font-bold ${getClsText(col)}`}>{Math.min(pct, 999)}%</div>
+                          <div className="text-gray-400 text-[10px]">{curr}/{fmt(Math.round(qData.target))}</div>
+                        </td>
+                      )
+                    })}
+                    <td className="px-3 py-2.5 text-center text-emerald-600 font-semibold">
+                      {varTot > 0 ? `+${fmt(varTot)}` : '—'}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* ── Legenda ──────────────────────────────────────────────── */}
+      <div className="flex flex-wrap items-center gap-4 text-xs text-gray-500">
+        <span className="font-medium">Legenda:</span>
+        {[
+          { label: '≥100% raggiunto', cls: 'bg-emerald-400' },
+          { label: '75-99%',          cls: 'bg-indigo-400' },
+          { label: '45-74%',          cls: 'bg-amber-400' },
+          { label: '<45%',            cls: 'bg-red-400' },
+        ].map(l => (
+          <span key={l.label} className="flex items-center gap-1.5">
+            <span className={`w-3 h-3 rounded inline-block ${l.cls}`} /> {l.label}
+          </span>
+        ))}
+      </div>
+
+      <p className="text-xs text-gray-400 italic">
+        Quorum = media pezzi/mese nei {nMesi} {nMesi === 1 ? 'mese' : 'mesi'} precedenti il {MESI[mese-1]} {anno}.
+        Target = Quorum × {(100 + percIncremento)}%. Aggiunte = varianti up-sell del mese corrente.
       </p>
     </div>
   )
@@ -805,6 +1216,7 @@ export default function PerformancePage() {
         {tab === 'obiettivi' && <TabObiettivi sede={sede} anno={anno} mese={mese} />}
         {tab === 'team'      && <TabTeam      sede={sede} anno={anno} mese={mese} />}
         {tab === 'tavoli'    && <TabTavoli    sede={sede} anno={anno} mese={mese} />}
+        {tab === 'incentivi' && <TabIncentivi sede={sede} anno={anno} mese={mese} />}
       </div>
 
       {/* ─── Quick links ──────────────────────────────────────────────── */}
