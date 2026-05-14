@@ -43,8 +43,9 @@ function TabTurni({ location, fromDate, toDate }) {
   const [paxPerCameriere, setPaxPerCameriere] = useState(30)
   const [minSala, setMinSala]   = useState(2)
   const [maxSala, setMaxSala]   = useState(5)
-  const [splitPranzo, setSplitPranzo] = useState(40) // % coperti giornalieri al pranzo
-  const [splitCena,   setSplitCena]   = useState(60) // rimanente
+  // Split pranzo per giorno (Dom=60%,Lun=30%,Mar=35%,Mer=35%,Gio=40%,Ven=40%,Sab=50%)
+  // Domenica e weekend il pranzo è servizio principale in Italia
+  const [splitByDow, setSplitByDow] = useState([60, 30, 35, 35, 40, 40, 50])
   // Config cucina
   const [paxPrimi,   setPaxPrimi]   = useState(30) // coperti per cuoco ai primi
   const [paxSecondi, setPaxSecondi] = useState(30) // coperti per cuoco ai secondi
@@ -91,9 +92,10 @@ function TabTurni({ location, fromDate, toDate }) {
   // Calcola organico consigliato per fascia e giorno
   const turni = useMemo(() => {
     return byDow.map(d => {
-      const totCop   = d.avg_coperti
-      const copPranzo = Math.round(totCop * splitPranzo / 100)
-      const copCena   = Math.round(totCop * splitCena   / 100)
+      const totCop    = d.avg_coperti
+      const pctPranzo = splitByDow[d.dow] ?? 40
+      const copPranzo = Math.round(totCop * pctPranzo / 100)
+      const copCena   = totCop - copPranzo
 
       // Sala
       const camerierePranzo = totCop === 0 ? 0 : Math.min(maxSala, Math.max(minSala, Math.ceil(copPranzo / paxPerCameriere)))
@@ -119,7 +121,7 @@ function TabTurni({ location, fromDate, toDate }) {
         totPersonaleCena:   cameriereCena   + cuochiPrimiC + cuochiSecondiC + Math.max(1, plongeC),
       }
     })
-  }, [byDow, paxPerCameriere, minSala, maxSala, splitPranzo, splitCena, paxPrimi, paxSecondi, maxPrimi, maxSecondi, maxPlonge])
+  }, [byDow, paxPerCameriere, minSala, maxSala, splitByDow, paxPrimi, paxSecondi, maxPrimi, maxSecondi, maxPlonge])
 
   function StaffBadge({ n, color = 'indigo', label }) {
     if (n === 0) return <span className="text-gray-300 text-xs">—</span>
@@ -165,8 +167,8 @@ function TabTurni({ location, fromDate, toDate }) {
             <div className="font-bold text-violet-700 text-base">{minSala} – {maxSala}</div>
           </div>
           <div className="bg-white rounded-lg p-2.5 border border-violet-100">
-            <div className="text-gray-500 mb-1">Split pranzo / cena</div>
-            <div className="font-bold text-violet-700 text-base">{splitPranzo}% / {splitCena}%</div>
+            <div className="text-gray-500 mb-1">Split pranzo (per giorno)</div>
+            <div className="font-bold text-violet-700 text-base">Dom {splitByDow[0]}% · Sab {splitByDow[6]}%</div>
           </div>
           <div className="bg-white rounded-lg p-2.5 border border-violet-100">
             <div className="text-gray-500 mb-1">Pax/cuoco cucina</div>
@@ -195,21 +197,22 @@ function TabTurni({ location, fromDate, toDate }) {
               ))}
             </div>
 
-            {/* Split */}
+            {/* Split per giorno */}
             <div className="bg-white rounded-lg p-3 border border-violet-100 space-y-2">
               <div className="text-xs font-semibold text-violet-700 flex items-center gap-1.5">
-                <CalendarDays size={12} /> Distribuzione coperti
+                <CalendarDays size={12} /> % Pranzo per giorno (cena = resto)
               </div>
-              {[
-                { label: '% coperti Pranzo (12-15)', val: splitPranzo, set: (v) => { setSplitPranzo(v); setSplitCena(100-v) }, min: 20, max: 70, step: 5 },
-                { label: '% coperti Cena (19-23)',   val: splitCena,   set: () => {}, min: 30, max: 80, step: 5, disabled: true },
-              ].map(({ label, val, set, min, max, step, disabled }) => (
-                <div key={label} className="flex items-center justify-between gap-2">
-                  <span className="text-xs text-gray-600">{label}</span>
-                  <input type="number" value={val} min={min} max={max} step={step}
-                    disabled={disabled}
-                    onChange={e => set(parseInt(e.target.value))}
-                    className={`w-16 text-xs text-right border rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-violet-400 ${disabled ? 'bg-gray-50 text-gray-400 border-gray-100' : 'border-gray-200'}`} />
+              {GIORNI.map((g, i) => (
+                <div key={g} className="flex items-center justify-between gap-2">
+                  <span className="text-xs text-gray-600 w-20">{g}</span>
+                  <div className="flex items-center gap-1.5">
+                    <input type="range" min={10} max={80} step={5} value={splitByDow[i]}
+                      onChange={e => setSplitByDow(prev => { const n=[...prev]; n[i]=parseInt(e.target.value); return n })}
+                      className="w-20 accent-violet-600" />
+                    <span className="text-xs font-semibold text-violet-700 w-12">
+                      {splitByDow[i]}% / {100 - splitByDow[i]}%
+                    </span>
+                  </div>
                 </div>
               ))}
             </div>
@@ -279,9 +282,12 @@ function TabTurni({ location, fromDate, toDate }) {
                   <td className="px-3 py-3 text-center">
                     <div className="font-bold text-gray-900 text-sm">{t.avg_coperti || '—'}</div>
                     {t.avg_coperti > 0 && (
-                      <div className="w-16 h-1.5 bg-gray-100 rounded-full mx-auto mt-1 overflow-hidden">
-                        <div className="h-full bg-violet-400 rounded-full" style={{ width: `${barPct}%` }} />
-                      </div>
+                      <>
+                        <div className="w-16 h-1.5 bg-gray-100 rounded-full mx-auto mt-1 overflow-hidden">
+                          <div className="h-full bg-violet-400 rounded-full" style={{ width: `${barPct}%` }} />
+                        </div>
+                        <div className="text-[9px] text-gray-400 mt-0.5">{splitByDow[t.dow]}%P / {100-splitByDow[t.dow]}%C</div>
+                      </>
                     )}
                   </td>
 

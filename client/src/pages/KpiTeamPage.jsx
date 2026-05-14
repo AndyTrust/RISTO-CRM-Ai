@@ -223,20 +223,31 @@ export default function KpiTeamPage() {
     // 1) Proiezione fatturato fine mese (pro-rata)
     if (isCurMonth && fatturato > 0 && giorniPassati > 0) {
       const proiezione = (fatturato / giorniPassati) * giorniTotali
-      const gap = quantumTeam - proiezione
-      if (gap > 0) {
-        out.push({
-          type: 'warn',
-          icon: TrendingDown,
-          title: `Proiezione fine mese: ${fmtEur(proiezione)}`,
-          text: `A questo ritmo chiudi sotto Quantum di ${fmtEur(gap)}. Servono ${fmtEur((quantumTeam - fatturato) / Math.max(giorniTotali - giorniPassati, 1))}/giorno nei prossimi ${giorniTotali - giorniPassati} giorni per centrare il target.`,
-        })
+      const ritmoPG = fatturato / giorniPassati
+      if (quantumTeam > 0) {
+        const gap = quantumTeam - proiezione
+        if (gap > 0) {
+          out.push({
+            type: 'warn',
+            icon: TrendingDown,
+            title: `Proiezione fine mese: ${fmtEur(proiezione)}`,
+            text: `A questo ritmo chiudi sotto Quantum di ${fmtEur(gap)}. Servono ${fmtEur((quantumTeam - fatturato) / Math.max(giorniTotali - giorniPassati, 1))}/giorno nei prossimi ${giorniTotali - giorniPassati} giorni per centrare il target.`,
+          })
+        } else {
+          out.push({
+            type: 'ok',
+            icon: TrendingUp,
+            title: `Proiezione fine mese: ${fmtEur(proiezione)}`,
+            text: `Superi Quantum di ${fmtEur(-gap)}. Tieni il ritmo attuale di ${fmtEur(ritmoPG)}/giorno.`,
+          })
+        }
       } else {
+        // Quantum non ancora calcolato — mostra proiezione neutra
         out.push({
           type: 'ok',
           icon: TrendingUp,
           title: `Proiezione fine mese: ${fmtEur(proiezione)}`,
-          text: `Superi Quantum di ${fmtEur(-gap)}. Tieni il ritmo attuale di ${fmtEur(fatturato / giorniPassati)}/giorno.`,
+          text: `Ritmo attuale: ${fmtEur(ritmoPG)}/giorno (${giorniPassati} giorni su ${giorniTotali}). Clicca "Calcola Obiettivi Mese" per confrontare con il Quantum.`,
         })
       }
     }
@@ -260,7 +271,13 @@ export default function KpiTeamPage() {
     }
 
     // 3) Costi fuori range benchmark
-    if (be.pct_personale > 35) out.push({ type: 'warn', icon: AlertCircle, title: 'Personale sopra soglia', text: `% personale ${fmtPct(be.pct_personale)} (benchmark 28–33%). Valuta riduzione ore in giorni bassi o riallocazione turni.` })
+    if (be.pct_personale > 35) out.push({
+      type: 'warn', icon: AlertCircle, title: 'Personale sopra soglia',
+      text: `% personale ${fmtPct(be.pct_personale)} (benchmark 28–33%).${
+        isCurMonth ? ' ⚠️ Dato su buste paga stimate mese intero vs fatturato parziale — si normalizzerà a fine mese.' :
+        ' Valuta riduzione ore in giorni bassi o riallocazione turni.'
+      }`,
+    })
     if (be.pct_food > 32) out.push({ type: 'warn', icon: AlertCircle, title: 'Food cost elevato', text: `% food ${fmtPct(be.pct_food)} (benchmark 26–30%). Controlla prezzi ingredienti, scarti, porzionature e ricette.` })
 
     // 4) Obiettivi a rischio

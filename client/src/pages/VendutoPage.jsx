@@ -108,6 +108,54 @@ async function loadVarianti(sede, from, to) {
   return Object.values(byVar).sort((a, b) => b.tot_aggiunte - a.tot_aggiunte).slice(0, 50)
 }
 
+// ── Carica aggregati mensili per operatore (tutti i mesi, per tab Obiettivi) ─
+async function loadMensileOperatori(sede) {
+  let q = supabase.from('venduto_camerieri')
+    .select('sede, operatore, data_inizio, quantita, totale')
+    .not('operatore', 'ilike', '%pienissimo%')
+    .range(0, 19999)
+  if (sede) q = q.eq('sede', sede)
+  const rows = await sbq(q)
+  const byMese = {}
+  for (const r of rows) {
+    if (!r.data_inizio) continue
+    const [y, m] = r.data_inizio.split('-')
+    const key = `${r.sede}||${r.operatore}||${y}-${m}`
+    if (!byMese[key]) byMese[key] = {
+      sede: r.sede, operatore: r.operatore,
+      anno: parseInt(y), mese: parseInt(m),
+      pezzi: 0, pezzi_valorizzati: 0
+    }
+    const qty = parseFloat(r.quantita) || 0
+    const tot = parseFloat(r.totale) || 0
+    byMese[key].pezzi += qty
+    // Solo prodotti con prezzo medio > €0.01 per pezzo
+    if (qty > 0 && (tot / qty) > 0.01) byMese[key].pezzi_valorizzati += qty
+  }
+  return Object.values(byMese)
+}
+
+// ── Carica target salvati ────────────────────────────────────────────────────
+async function loadTargetSalvati(sede) {
+  let q = supabase.from('target_venduto_operatori').select('*')
+  if (sede) q = q.eq('sede', sede)
+  const rows = await sbq(q)
+  const map = {}
+  for (const r of rows) {
+    map[`${r.sede}||${r.operatore}||${r.anno}-${String(r.mese).padStart(2,'0')}`] = r
+  }
+  return map
+}
+
+// ── Salva/aggiorna target ─────────────────────────────────────────────────────
+async function saveTarget(sede, operatore, anno, mese, field, value) {
+  const existing = { sede, operatore, anno, mese, updated_at: new Date().toISOString() }
+  existing[field] = parseFloat(value) || null
+  const { error } = await supabase.from('target_venduto_operatori')
+    .upsert(existing, { onConflict: 'sede,operatore,anno,mese' })
+  if (error) throw error
+}
+
 // Carica fatturato valorizzato per operatore (da listino_prodotti × venduto_camerieri)
 async function loadFatturatoOperatori(sede, from, to) {
   try {
@@ -163,6 +211,600 @@ async function loadDailyChiusure(sede, from, to) {
 
 function eur(n) { return n != null ? `€ ${Number(n).toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—' }
 function fmt(n) { return n != null ? Number(n).toLocaleString('it-IT') : '—' }
+
+// ── Tab Obiettivi Team ────────────────────────────────────────────────────
+function TabTarget({ sede, from, to }) {
+  // Deriva il mese di riferimento dal date picker (usa `to`, fallback a oggi)
+  const { refAnno, refMese } = React.useMemo(() => {
+    const d = to ? new Date(to + 'T00:00:00') : new Date()
+    return { refAnno: d.getFullYear(), refMese: d.getMonth() + 1 }
+  }, [to])
+
+  const [mensile, setMensile] = React.useState([])
+  const [targets, setTargets] = React.useState({})
+  const [loading, setLoading] = React.useState(true)
+  const [viewMode, setViewMode] = React.useState('pezzi') // 'pezzi' | 'valorizzati'
+  const [editKey, setEditKey] = React.useState(null) // `${sede}||${op}` being edited
+  const [editVal, setEditVal] = React.useState('')
+  const [saving, setSaving] = React.useState(false)
+
+  React.useEffect(() => {
+    setLoading(true)
+    Promise.all([loadMensileOperatori(sede), loadTargetSalvati(sede)])
+      .then(([rows, tgt]) => { setMensile(rows); setTargets(tgt) })
+      .catch(console.error)
+      .finally(() => setLoading(false))
+  }, [sede])
+
+  // Tutti i mesi disponibili ordinati
+  const tuttiMesi = React.useMemo(() => {
+    const set = new Set(mensile.map(r => `${r.anno}-${String(r.mese).padStart(2,'0')}`))
+    return [...set].sort()
+  }, [mensile])
+
+  // Mesi completi (escluso mese corrente in corso)
+  const mesiCompleti = React.useMemo(() =>
+    tuttiMesi.filter(m => {
+      const [y, mo] = m.split('-').map(Number)
+      return y < refAnno || (y === refAnno && mo < refMese)
+    }), [tuttiMesi, refAnno, refMese])
+
+  const mesiMostrati = mesiCompleti.slice(-4) // ultimi 4 completi in tabella
+  const mesiPerMedia = mesiCompleti.slice(-3) // ultimi 3 per calcolo media
+  const meseCorrenteKey = `${refAnno}-${String(refMese).padStart(2,'0')}`
+
+  // Matrice: { 'sede||op||anno-mese' → val }
+  const matrix = React.useMemo(() => {
+    const m = {}
+    for (const r of mensile) {
+      const k = `${r.sede}||${r.operatore}||${r.anno}-${String(r.mese).padStart(2,'0')}`
+      m[k] = viewMode === 'pezzi' ? r.pezzi : r.pezzi_valorizzati
+    }
+    return m
+  }, [mensile, viewMode])
+
+  function getVal(s, op, meseKey) {
+    return Math.round(matrix[`${s}||${op}||${meseKey}`] || 0)
+  }
+  function getMedia(s, op) {
+    const vals = mesiPerMedia.map(m => getVal(s, op, m)).filter(v => v > 0)
+    return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0
+  }
+  function getTargetKey(s, op) {
+    return `${s}||${op}||${refAnno}-${String(refMese).padStart(2,'0')}`
+  }
+  function getTargetSaved(s, op) {
+    const t = targets[getTargetKey(s, op)]
+    if (!t) return null
+    return viewMode === 'pezzi' ? t.target_pezzi : t.target_pezzi_valorizzati
+  }
+  function getTarget(s, op) {
+    const saved = getTargetSaved(s, op)
+    if (saved != null && parseFloat(saved) > 0) return Math.round(parseFloat(saved))
+    return Math.round(getMedia(s, op) * 1.10)
+  }
+
+  async function handleSave(s, op) {
+    setSaving(true)
+    const field = viewMode === 'pezzi' ? 'target_pezzi' : 'target_pezzi_valorizzati'
+    try {
+      await saveTarget(s, op, refAnno, refMese, field, editVal)
+      const newT = await loadTargetSalvati(sede)
+      setTargets(newT)
+    } catch(e) { console.error(e) }
+    setSaving(false)
+    setEditKey(null)
+  }
+
+  if (loading) return <p className="text-center text-gray-400 py-10 text-sm animate-pulse">Caricamento dati storici...</p>
+
+  const sedi = sede ? [sede] : ['MA', 'PN']
+  const mesiLabel = mesiPerMedia.map(m => { const [,mo] = m.split('-'); return MESI_IT[parseInt(mo)-1] })
+
+  return (
+    <div className="space-y-5">
+      {/* Toggle pezzi / valorizzati */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex gap-2">
+          <button onClick={() => setViewMode('pezzi')}
+            className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${viewMode === 'pezzi' ? 'bg-violet-600 text-white shadow-sm' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+            📦 Tutti i pezzi
+          </button>
+          <button onClick={() => setViewMode('valorizzati')}
+            className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${viewMode === 'valorizzati' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+            💰 Solo valorizzati (&gt;€0.01)
+          </button>
+        </div>
+        <div className="text-xs text-gray-400 bg-gray-50 rounded-lg px-3 py-1.5 border border-gray-100">
+          🎯 Target = media {mesiLabel.join('+')} × 1.10 — click ✏️ per modificare
+        </div>
+      </div>
+
+      {viewMode === 'valorizzati' && (
+        <MatriceCategorieMedia sede={sede} from={from} to={to} />
+      )}
+
+      {viewMode === 'pezzi' && sedi.map(s => {
+        // Operatori per questa sede, ordinati per media decrescente
+        const opsRaw = [...new Set(mensile.filter(r => r.sede === s).map(r => r.operatore))]
+        const ops = opsRaw.sort((a, b) => getMedia(s, b) - getMedia(s, a))
+        if (!ops.length) return null
+
+        // Totali team
+        const teamPerMese = mesiMostrati.map(m => ({ mese: m, val: ops.reduce((sum, op) => sum + getVal(s, op, m), 0) }))
+        const teamMedia   = mesiPerMedia.length ? Math.round(ops.reduce((sum, op) => sum + getMedia(s, op), 0)) : 0
+        const teamTarget  = ops.reduce((sum, op) => sum + getTarget(s, op), 0)
+        const teamCorrenti= ops.reduce((sum, op) => sum + getVal(s, op, meseCorrenteKey), 0)
+        const teamPct     = teamTarget > 0 ? Math.round(teamCorrenti / teamTarget * 100) : 0
+
+        return (
+          <div key={s} className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+            {/* Header sede */}
+            <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
+              <div className={`w-2 h-5 rounded-full ${s === 'MA' ? 'bg-indigo-500' : 'bg-green-500'}`} />
+              <span className="font-semibold text-sm text-gray-800">
+                {s === 'MA' ? '📍 Mameli (Cagliari)' : '📍 Predda Niedda (Sassari)'}
+              </span>
+              <span className="ml-auto text-xs text-gray-400">{ops.length} operatori</span>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
+                  <tr>
+                    <th className="px-3 py-2.5 text-left sticky left-0 bg-gray-50 min-w-[130px]">Operatore</th>
+                    {mesiMostrati.map(m => {
+                      const [y, mo] = m.split('-')
+                      return <th key={m} className="px-3 py-2.5 text-right min-w-[72px] text-gray-400 font-normal">
+                        {MESI_IT[parseInt(mo)-1]} '{y.slice(2)}
+                      </th>
+                    })}
+                    <th className="px-3 py-2.5 text-right min-w-[80px] bg-blue-50/80 text-blue-600">Media</th>
+                    <th className="px-3 py-2.5 text-right min-w-[100px] bg-violet-50/80 text-violet-700">
+                      🎯 Target {MESI_IT[refMese-1]}
+                    </th>
+                    <th className="px-3 py-2.5 text-right min-w-[85px] bg-green-50/80 text-green-700">
+                      ▶ {MESI_IT[refMese-1]} '{String(refAnno).slice(2)}
+                    </th>
+                    <th className="px-3 py-2.5 text-center min-w-[90px]">Progresso</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-50">
+                  {ops.map((op, idx) => {
+                    const media    = getMedia(s, op)
+                    const target   = getTarget(s, op)
+                    const corrente = getVal(s, op, meseCorrenteKey)
+                    const pct      = target > 0 ? Math.round(corrente / target * 100) : 0
+                    const isEditing= editKey === `${s}||${op}`
+                    const hasSaved = getTargetSaved(s, op) != null
+
+                    return (
+                      <tr key={op} className="hover:bg-gray-50/50 transition-colors">
+                        <td className="px-3 py-2.5 sticky left-0 bg-white">
+                          <div className="flex items-center gap-2">
+                            <div className="w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] font-bold flex-shrink-0"
+                              style={{ backgroundColor: COLORS[idx % COLORS.length] }}>
+                              {op?.charAt(0)}
+                            </div>
+                            <span className="font-medium text-gray-800 text-xs">{op}</span>
+                          </div>
+                        </td>
+                        {mesiMostrati.map(m => (
+                          <td key={m} className="px-3 py-2.5 text-right text-xs text-gray-500 font-mono">
+                            {getVal(s, op, m) > 0 ? getVal(s, op, m).toLocaleString('it-IT') : '—'}
+                          </td>
+                        ))}
+                        {/* Media */}
+                        <td className="px-3 py-2.5 text-right text-xs font-semibold text-blue-700 bg-blue-50/40 font-mono">
+                          {media > 0 ? media.toLocaleString('it-IT') : '—'}
+                        </td>
+                        {/* Target editabile */}
+                        <td className="px-3 py-2.5 bg-violet-50/40">
+                          {isEditing ? (
+                            <div className="flex items-center gap-1 justify-end">
+                              <input type="number" value={editVal}
+                                onChange={e => setEditVal(e.target.value)}
+                                onKeyDown={e => { if (e.key === 'Enter') handleSave(s, op); if (e.key === 'Escape') setEditKey(null) }}
+                                className="w-20 text-right text-xs border border-violet-300 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-violet-500"
+                                autoFocus />
+                              <button onClick={() => handleSave(s, op)} disabled={saving}
+                                className="text-violet-600 hover:text-violet-800 text-sm font-bold">✓</button>
+                              <button onClick={() => setEditKey(null)} className="text-gray-400 hover:text-gray-600 text-sm">✕</button>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-1 justify-end group">
+                              <span className={`font-mono text-xs font-semibold ${hasSaved ? 'text-violet-800' : 'text-violet-500'}`}>
+                                {target > 0 ? target.toLocaleString('it-IT') : '—'}
+                                {hasSaved && <span className="ml-0.5 text-[9px] text-violet-400">✓</span>}
+                              </span>
+                              <button
+                                onClick={() => { setEditKey(`${s}||${op}`); setEditVal(target > 0 ? String(target) : '') }}
+                                className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-violet-500 transition-opacity ml-1 text-xs">
+                                ✏️
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                        {/* Corrente */}
+                        <td className="px-3 py-2.5 text-right text-xs font-mono font-semibold text-green-700 bg-green-50/40">
+                          {corrente > 0 ? corrente.toLocaleString('it-IT') : '—'}
+                        </td>
+                        {/* Progresso */}
+                        <td className="px-3 py-2.5">
+                          <div className="flex items-center gap-1.5 justify-center">
+                            <div className="w-14 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                              <div className={`h-full rounded-full transition-all ${pct >= 100 ? 'bg-green-500' : pct >= 70 ? 'bg-amber-400' : 'bg-red-400'}`}
+                                style={{ width: `${Math.min(pct, 100)}%` }} />
+                            </div>
+                            <span className={`text-xs font-semibold w-8 text-right ${pct >= 100 ? 'text-green-600' : pct >= 70 ? 'text-amber-600' : 'text-red-500'}`}>
+                              {corrente > 0 || target > 0 ? `${pct}%` : '—'}
+                            </span>
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+                {/* Footer team */}
+                <tfoot className="border-t-2 border-gray-200 bg-gray-50/80 font-semibold">
+                  <tr>
+                    <td className="px-3 py-2.5 text-xs text-gray-600 uppercase tracking-wide sticky left-0 bg-gray-50">🏆 Team</td>
+                    {teamPerMese.map(({ mese: m, val }) => (
+                      <td key={m} className="px-3 py-2.5 text-right text-xs text-gray-700 font-mono">
+                        {val > 0 ? val.toLocaleString('it-IT') : '—'}
+                      </td>
+                    ))}
+                    <td className="px-3 py-2.5 text-right text-xs font-bold text-blue-700 bg-blue-50/60 font-mono">
+                      {teamMedia > 0 ? teamMedia.toLocaleString('it-IT') : '—'}
+                    </td>
+                    <td className="px-3 py-2.5 text-right text-xs font-bold text-violet-700 bg-violet-50/60 font-mono">
+                      {teamTarget > 0 ? teamTarget.toLocaleString('it-IT') : '—'}
+                    </td>
+                    <td className="px-3 py-2.5 text-right text-xs font-bold text-green-700 bg-green-50/60 font-mono">
+                      {teamCorrenti > 0 ? teamCorrenti.toLocaleString('it-IT') : '—'}
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <div className="flex items-center gap-1.5 justify-center">
+                        <div className="w-14 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                          <div className={`h-full rounded-full ${teamPct >= 100 ? 'bg-green-500' : teamPct >= 70 ? 'bg-amber-400' : 'bg-red-400'}`}
+                            style={{ width: `${Math.min(teamPct, 100)}%` }} />
+                        </div>
+                        <span className={`text-xs font-bold w-8 text-right ${teamPct >= 100 ? 'text-green-600' : teamPct >= 70 ? 'text-amber-600' : 'text-red-500'}`}>
+                          {teamCorrenti > 0 || teamTarget > 0 ? `${teamPct}%` : '—'}
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+            <p className="text-xs text-gray-400 px-4 py-2 border-t border-gray-50">
+              Media su {mesiPerMedia.length} mesi{mesiLabel.length > 0 ? ` (${mesiLabel.join(', ')})` : ''}.
+              Target suggerito = media × 1.10. I valori con ✓ sono stati personalizzati.
+            </p>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ── Matrice Categorie Media (storico ultimi 3 mesi, solo valorizzati) ───────
+async function loadMatriceCategorieMedia(sede, refAnno, refMese) {
+  let q = supabase.from('venduto_camerieri')
+    .select('sede, operatore, data_inizio, categoria, quantita, totale')
+    .not('operatore', 'ilike', '%pienissimo%')
+    .range(0, 19999)
+  if (sede) q = q.eq('sede', sede)
+  const rows = await sbq(q)
+
+  const meseCorrenteKey = `${refAnno}-${String(refMese).padStart(2,'0')}`
+
+  // Tutti i mesi completi disponibili
+  const allMesi = new Set()
+  const mesiCorrenteRows = []
+  for (const r of rows) {
+    if (!r.data_inizio) continue
+    const [y, m] = r.data_inizio.split('-')
+    const meseKey = `${y}-${m}`
+    const anno = parseInt(y), mese = parseInt(m)
+    if (anno < refAnno || (anno === refAnno && mese < refMese)) allMesi.add(meseKey)
+    if (meseKey === meseCorrenteKey) mesiCorrenteRows.push(r)
+  }
+  const mesiCompleti = [...allMesi].sort().slice(-3) // ultimi 3 mesi completi
+  const nMesi = mesiCompleti.length || 1
+
+  // Aggrega pezzi per (sede, operatore, categoria) solo per prodotti valorizzati
+  function buildMatrix(sourceRows, filterMesi) {
+    const m = {}        // { 'sede||op' → { cat → pezzi, _sede, _op } }
+    const catTot = {}   // { cat → pezzi }
+    const opTot  = {}   // { 'sede||op' → pezzi }
+    for (const r of sourceRows) {
+      if (!r.data_inizio) continue
+      const [y, mo] = r.data_inizio.split('-')
+      if (filterMesi && !filterMesi.includes(`${y}-${mo}`)) continue
+      const qty = parseFloat(r.quantita) || 0
+      const tot = parseFloat(r.totale) || 0
+      if (qty <= 0 || (tot / qty) <= 0.01) continue // solo valorizzati
+      const cat = (r.categoria && r.categoria !== 'nan') ? r.categoria : 'Altro'
+      const opKey = `${r.sede}||${r.operatore}`
+      if (!m[opKey]) m[opKey] = { _sede: r.sede, _op: r.operatore }
+      m[opKey][cat] = (m[opKey][cat] || 0) + qty
+      catTot[cat]   = (catTot[cat] || 0) + qty
+      opTot[opKey]  = (opTot[opKey] || 0) + qty
+    }
+    return { m, catTot, opTot }
+  }
+
+  const { m: mxStoR, catTot: catTotSto, opTot: opTotSto } = buildMatrix(rows, mesiCompleti)
+  const { m: mxCorr, opTot: opTotCorr } = buildMatrix(mesiCorrenteRows, null)
+
+  // Dividi per nMesi → medie mensili
+  const matrix = {}
+  for (const [k, v] of Object.entries(mxStoR)) {
+    matrix[k] = { _sede: v._sede, _op: v._op }
+    for (const [cat, pezzi] of Object.entries(v)) {
+      if (cat.startsWith('_')) { matrix[k][cat] = v[cat]; continue }
+      matrix[k][cat] = Math.round(pezzi / nMesi)
+    }
+  }
+  const catMedia = {}
+  for (const [cat, tot] of Object.entries(catTotSto)) catMedia[cat] = Math.round(tot / nMesi)
+  const opMedia  = {}
+  for (const [k, tot] of Object.entries(opTotSto)) opMedia[k] = Math.round(tot / nMesi)
+  const opCorr   = {}
+  for (const [k, tot] of Object.entries(opTotCorr)) opCorr[k] = Math.round(tot)
+
+  // Top 10 categorie per media
+  const topCats = Object.entries(catMedia).sort((a,b) => b[1]-a[1]).slice(0,10).map(([c])=>c)
+  const ops = Object.keys(opMedia).sort((a,b) => (opMedia[b]||0)-(opMedia[a]||0))
+
+  return { matrix, topCats, ops, catMedia, opMedia, opCorr, mesiCompleti, nMesi }
+}
+
+function MatriceCategorieMedia({ sede, from, to }) {
+  const { refAnno, refMese } = React.useMemo(() => {
+    const d = to ? new Date(to + 'T00:00:00') : new Date()
+    return { refAnno: d.getFullYear(), refMese: d.getMonth() + 1 }
+  }, [to])
+
+  const [data, setData] = React.useState(null)
+  const [targets, setTargets] = React.useState({})
+  const [loading, setLoading] = React.useState(true)
+  const [editKey, setEditKey] = React.useState(null)
+  const [editVal, setEditVal] = React.useState('')
+  const [saving, setSaving] = React.useState(false)
+
+  React.useEffect(() => {
+    setLoading(true)
+    Promise.all([loadMatriceCategorieMedia(sede, refAnno, refMese), loadTargetSalvati(sede)])
+      .then(([d, t]) => { setData(d); setTargets(t) })
+      .catch(console.error)
+      .finally(() => setLoading(false))
+  }, [sede, refAnno, refMese])
+
+  if (loading) return <p className="text-center text-gray-400 py-10 text-sm animate-pulse">Calcolo medie storiche...</p>
+  if (!data || !data.ops.length) return <p className="text-center text-gray-400 py-10 text-sm">Nessun dato disponibile</p>
+
+  const { matrix, topCats, ops, catMedia, opMedia, opCorr, mesiCompleti, nMesi } = data
+  const grandMediaTeam = Object.values(opMedia).reduce((s,v)=>s+v,0)
+  const grandCorr = Object.values(opCorr).reduce((s,v)=>s+v,0)
+
+  const mesiLabel = mesiCompleti.map(m => { const [,mo] = m.split('-'); return MESI_IT[parseInt(mo)-1] })
+
+  // Colori heatmap (basato sul max per categoria)
+  const catMax = {}
+  for (const cat of topCats) {
+    catMax[cat] = Math.max(...ops.map(k => matrix[k]?.[cat] || 0), 1)
+  }
+  function getCellBg(qty, cat) {
+    if (!qty) return 'bg-gray-50 text-gray-300'
+    const ratio = qty / (catMax[cat] || 1)
+    if (ratio > 0.75) return 'bg-indigo-600 text-white'
+    if (ratio > 0.5)  return 'bg-indigo-400 text-white'
+    if (ratio > 0.25) return 'bg-indigo-200 text-indigo-800'
+    return 'bg-indigo-50 text-indigo-600'
+  }
+
+  function getTargetKey(opKey) {
+    const { _sede: s, _op: op } = matrix[opKey] || {}
+    return `${s}||${op}||${refAnno}-${String(refMese).padStart(2,'0')}`
+  }
+  function getTargetSaved(opKey) {
+    const t = targets[getTargetKey(opKey)]
+    return t?.target_pezzi_valorizzati ? Math.round(parseFloat(t.target_pezzi_valorizzati)) : null
+  }
+  function getTarget(opKey) {
+    const saved = getTargetSaved(opKey)
+    if (saved) return saved
+    return Math.round((opMedia[opKey] || 0) * 1.10)
+  }
+  async function handleSave(opKey) {
+    setSaving(true)
+    const { _sede: s, _op: op } = matrix[opKey] || {}
+    try {
+      await saveTarget(s, op, refAnno, refMese, 'target_pezzi_valorizzati', editVal)
+      const t = await loadTargetSalvati(sede)
+      setTargets(t)
+    } catch(e) { console.error(e) }
+    setSaving(false); setEditKey(null)
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Legenda */}
+      <div className="flex items-center gap-4 text-xs text-gray-500 flex-wrap">
+        <span className="font-medium">
+          Media mensile per operatore × categoria — ultimi {nMesi} mesi ({mesiLabel.join(', ')})
+        </span>
+        <span className="flex items-center gap-1">
+          {['bg-indigo-50','bg-indigo-200','bg-indigo-400','bg-indigo-600'].map((cls,i) => (
+            <span key={i} className={`w-4 h-4 rounded inline-block ${cls}`}/>
+          ))}
+          <span>basso → alto</span>
+        </span>
+        <span className="text-gray-400 ml-2">Target = media × 1.10 (✏️ modificabile)</span>
+      </div>
+
+      <div className="overflow-x-auto rounded-xl border border-gray-200">
+        <table className="min-w-full text-xs">
+          <thead>
+            <tr className="bg-gray-50 border-b border-gray-200">
+              <th className="px-3 py-2.5 text-left font-semibold text-gray-700 sticky left-0 bg-gray-50 z-10 min-w-[130px]">Operatore</th>
+              <th className="px-3 py-2.5 text-right font-semibold text-blue-600 bg-blue-50/60 min-w-[72px]">Media/mese</th>
+              <th className="px-3 py-2.5 text-right font-semibold text-gray-400 min-w-[55px]">% Team</th>
+              {topCats.map(cat => (
+                <th key={cat} className="px-2 py-2.5 text-center font-semibold text-gray-600 min-w-[90px] max-w-[120px]">
+                  <div className="truncate" title={cat}>{cat}</div>
+                </th>
+              ))}
+              <th className="px-3 py-2.5 text-right font-semibold text-violet-700 bg-violet-50/60 min-w-[100px]">
+                🎯 Target {MESI_IT[refMese-1]}
+              </th>
+              <th className="px-3 py-2.5 text-right font-semibold text-green-700 bg-green-50/60 min-w-[80px]">
+                ▶ {MESI_IT[refMese-1]}
+              </th>
+              <th className="px-3 py-2.5 text-center font-semibold text-gray-500 min-w-[80px]">%</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ops.map(opKey => {
+              const media   = opMedia[opKey] || 0
+              const target  = getTarget(opKey)
+              const corrente= opCorr[opKey] || 0
+              const pct     = target > 0 ? Math.round(corrente/target*100) : 0
+              const pctTeam = grandMediaTeam > 0 ? (media/grandMediaTeam*100).toFixed(1) : '0'
+              const hasSaved= getTargetSaved(opKey) != null
+              const isEdit  = editKey === opKey
+              const { _op: opName } = matrix[opKey] || {}
+              const opIdx = ops.indexOf(opKey)
+
+              return (
+                <tr key={opKey} className="border-b hover:bg-gray-50/50 transition-colors">
+                  <td className="px-3 py-2.5 font-semibold text-gray-900 sticky left-0 bg-white">
+                    <div className="flex items-center gap-2">
+                      <div className="w-5 h-5 rounded-full flex items-center justify-center text-white text-[9px] font-bold flex-shrink-0"
+                        style={{ backgroundColor: COLORS[opIdx % COLORS.length] }}>
+                        {opName?.charAt(0)}
+                      </div>
+                      {opName}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2.5 text-right font-mono font-semibold text-blue-700 bg-blue-50/40">
+                    {media > 0 ? media.toLocaleString('it-IT') : '—'}
+                  </td>
+                  <td className="px-3 py-2.5 text-right text-gray-400">{pctTeam}%</td>
+                  {topCats.map(cat => {
+                    const qty = matrix[opKey]?.[cat] || 0
+                    const catPct = media > 0 && qty > 0 ? Math.round(qty/media*100) : 0
+                    return (
+                      <td key={cat} className={`px-2 py-2.5 text-center ${getCellBg(qty, cat)}`}>
+                        {qty > 0 ? (
+                          <div>
+                            <div className="font-bold">{qty.toLocaleString('it-IT')}</div>
+                            <div className="text-[10px] opacity-75">{catPct}%</div>
+                          </div>
+                        ) : '—'}
+                      </td>
+                    )
+                  })}
+                  {/* Target editabile */}
+                  <td className="px-3 py-2.5 bg-violet-50/40">
+                    {isEdit ? (
+                      <div className="flex items-center gap-1 justify-end">
+                        <input type="number" value={editVal}
+                          onChange={e => setEditVal(e.target.value)}
+                          onKeyDown={e => { if (e.key==='Enter') handleSave(opKey); if (e.key==='Escape') setEditKey(null) }}
+                          className="w-20 text-right text-xs border border-violet-300 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-violet-500"
+                          autoFocus />
+                        <button onClick={() => handleSave(opKey)} disabled={saving}
+                          className="text-violet-600 hover:text-violet-800 font-bold">✓</button>
+                        <button onClick={() => setEditKey(null)} className="text-gray-400 hover:text-gray-600">✕</button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1 justify-end group">
+                        <span className={`font-mono font-semibold ${hasSaved ? 'text-violet-800' : 'text-violet-500'}`}>
+                          {target > 0 ? target.toLocaleString('it-IT') : '—'}
+                          {hasSaved && <span className="ml-0.5 text-[9px] text-violet-400">✓</span>}
+                        </span>
+                        <button
+                          onClick={() => { setEditKey(opKey); setEditVal(target > 0 ? String(target) : '') }}
+                          className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-violet-500 transition-opacity ml-1">
+                          ✏️
+                        </button>
+                      </div>
+                    )}
+                  </td>
+                  {/* Corrente */}
+                  <td className="px-3 py-2.5 text-right font-mono font-semibold text-green-700 bg-green-50/40">
+                    {corrente > 0 ? corrente.toLocaleString('it-IT') : '—'}
+                  </td>
+                  {/* % progresso */}
+                  <td className="px-3 py-2.5">
+                    <div className="flex items-center gap-1 justify-center">
+                      <div className="w-10 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full ${pct>=100?'bg-green-500':pct>=70?'bg-amber-400':'bg-red-400'}`}
+                          style={{ width: `${Math.min(pct,100)}%` }}/>
+                      </div>
+                      <span className={`text-xs font-semibold w-8 text-right ${pct>=100?'text-green-600':pct>=70?'text-amber-600':'text-red-500'}`}>
+                        {(corrente > 0 || target > 0) ? `${pct}%` : '—'}
+                      </span>
+                    </div>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+          <tfoot className="border-t-2 border-gray-300 bg-gray-50 font-semibold">
+            <tr>
+              <td className="px-3 py-2.5 text-gray-700 uppercase text-[11px] sticky left-0 bg-gray-50">Totale Team</td>
+              <td className="px-3 py-2.5 text-right font-mono text-blue-700 bg-blue-50/40">
+                {grandMediaTeam > 0 ? grandMediaTeam.toLocaleString('it-IT') : '—'}
+              </td>
+              <td className="px-3 py-2.5 text-right text-gray-500">100%</td>
+              {topCats.map(cat => {
+                const catAvg = catMedia[cat] || 0
+                const catPct = grandMediaTeam > 0 ? (catAvg/grandMediaTeam*100).toFixed(1) : '0'
+                return (
+                  <td key={cat} className="px-2 py-2.5 text-center text-indigo-700">
+                    <div className="font-bold">{catAvg > 0 ? catAvg.toLocaleString('it-IT') : '—'}</div>
+                    <div className="text-[10px] text-gray-500">{catPct}%</div>
+                  </td>
+                )
+              })}
+              <td className="px-3 py-2.5 text-right font-mono text-violet-700 bg-violet-50/40">
+                {ops.reduce((s,k) => s+getTarget(k), 0).toLocaleString('it-IT')}
+              </td>
+              <td className="px-3 py-2.5 text-right font-mono text-green-700 bg-green-50/40">
+                {grandCorr > 0 ? grandCorr.toLocaleString('it-IT') : '—'}
+              </td>
+              <td className="px-3 py-2.5">
+                {(() => {
+                  const teamTarget = ops.reduce((s,k) => s+getTarget(k), 0)
+                  const pct = teamTarget > 0 ? Math.round(grandCorr/teamTarget*100) : 0
+                  return (
+                    <div className="flex items-center gap-1 justify-center">
+                      <div className="w-10 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full ${pct>=100?'bg-green-500':pct>=70?'bg-amber-400':'bg-red-400'}`}
+                          style={{ width: `${Math.min(pct,100)}%` }}/>
+                      </div>
+                      <span className={`text-xs font-bold w-8 text-right ${pct>=100?'text-green-600':pct>=70?'text-amber-600':'text-red-500'}`}>
+                        {pct}%
+                      </span>
+                    </div>
+                  )
+                })()}
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <p className="text-xs text-gray-400">
+        Solo prodotti con valore &gt;€0.01/pezzo (esclude omaggi). Fonte: Pienissimo iPratico. Media su {nMesi} mes{nMesi === 1 ? 'e' : 'i'}{mesiLabel.length ? ` (${mesiLabel.join(', ')})` : ''}.
+      </p>
+    </div>
+  )
+}
 
 // ── Matrice Operatori × Categorie ─────────────────────────────────────────
 async function loadMatriceCategorie(sede, from, to) {
@@ -454,7 +1096,7 @@ export default function VendutoPage() {
   const [varianti, setVarianti] = useState([])
   const [dailyData, setDailyData] = useState([])
   const [selOp, setSelOp] = useState(null)
-  const [tab, setTab] = useState('operatori')
+  const [tab, setTab] = useState('obiettivi')
   const [period, setPeriod] = useState('month')
   const [dates, setDates] = useState(periodToDates('month'))
   const [loading, setLoading] = useState(true)
@@ -512,6 +1154,7 @@ export default function VendutoPage() {
   const fatPN = fatturatoOp.filter(op => op.sede === 'PN').reduce((s, op) => s + op.fatturato, 0)
 
   const tabs = [
+    { id: 'obiettivi', label: '🎯 Obiettivi Team' },
     { id: 'operatori', label: '👤 Operatori' },
     { id: 'matrice',   label: '📊 Matrice Categorie' },
     { id: 'categorie', label: '🏷️ Categorie' },
@@ -705,6 +1348,17 @@ export default function VendutoPage() {
           </button>
         ))}
       </div>
+
+      {/* ─── OBIETTIVI TEAM ───────────────────────────────────── */}
+      {tab === 'obiettivi' && (
+        <div className="space-y-4">
+          <div className="bg-violet-50 border border-violet-100 rounded-lg px-4 py-2.5 text-xs text-violet-700">
+            🎯 <strong>Obiettivi Team</strong> — media pezzi venduti negli ultimi 3 mesi per ogni operatore, con target +10%.
+            Il target è modificabile direttamente: passa con il mouse sopra un valore e clicca ✏️.
+          </div>
+          <TabTarget sede={sede} from={from} to={to} />
+        </div>
+      )}
 
       {/* ─── OPERATORI ─────────────────────────────────────────── */}
       {tab === 'operatori' && (

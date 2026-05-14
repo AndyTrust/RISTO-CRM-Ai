@@ -486,7 +486,11 @@ function TabTeam({ sede, anno, mese }) {
           <div className={`text-xl font-bold ${(parseFloat(be.pct_personale)||0) > 35 ? 'text-amber-600' : 'text-gray-900'}`}>
             {fmtPct(be.pct_personale)}
           </div>
-          <div className="text-xs text-gray-400 mt-0.5">standard &lt; 35%</div>
+          <div className="text-xs text-gray-400 mt-0.5">
+            {new Date().getFullYear() === anno && (new Date().getMonth() + 1) === mese
+              ? 'stima mensile / ricavo parziale'
+              : 'standard < 35%'}
+          </div>
         </div>
         <div className="bg-white rounded-xl border border-gray-200 p-4">
           <div className="text-xs text-gray-500 uppercase tracking-wider mb-1">Coperti</div>
@@ -593,10 +597,12 @@ function TabTavoli({ sede, anno, mese }) {
 
   function SortBtn({ id, label }) {
     return (
-      <button onClick={() => setSortBy(id)}
-        className={`text-right text-xs font-semibold uppercase tracking-wider cursor-pointer select-none px-3 py-2 ${sortBy === id ? 'text-indigo-700' : 'text-gray-500 hover:text-gray-800'}`}>
-        {label} {sortBy === id ? '↓' : ''}
-      </button>
+      <th className="text-right p-0">
+        <button onClick={() => setSortBy(id)}
+          className={`w-full text-right text-xs font-semibold uppercase tracking-wider cursor-pointer select-none px-3 py-2 ${sortBy === id ? 'text-indigo-700' : 'text-gray-500 hover:text-gray-800'}`}>
+          {label} {sortBy === id ? '↓' : ''}
+        </button>
+      </th>
     )
   }
 
