@@ -33,12 +33,20 @@ function pct(n, den) {
   return `${((Number(n) || 0) / den * 100).toFixed(1)}%`
 }
 
+const NMESI_OPTS = [
+  { value: 1, label: '1 mese' },
+  { value: 2, label: 'Media 2 mesi' },
+  { value: 3, label: 'Media 3 mesi' },
+  { value: 6, label: 'Media 6 mesi' },
+]
+
 export default function KPIConfig() {
   const [tab, setTab]       = useState('costi')
   const today               = new Date()
   const [sede, setSede]     = useState('MA')
   const [anno, setAnno]     = useState(today.getFullYear())
   const [mese, setMese]     = useState(today.getMonth() + 1)
+  const [nMesi, setNMesi]   = useState(3)
   const [refresh, setRefresh] = useState(0)
 
   // Reactivity: ricarica se altre pagine cambiano dati KPI
@@ -72,6 +80,11 @@ export default function KPIConfig() {
             )}
           </select>
         </Field>
+        <Field label="Analisi vs">
+          <select className="input w-36" value={nMesi} onChange={e => setNMesi(parseInt(e.target.value))}>
+            {NMESI_OPTS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </Field>
         <div className="ml-auto flex gap-2">
           <button className="btn btn-ghost text-sm" onClick={() => setRefresh(r => r + 1)}>🔄 Aggiorna</button>
         </div>
@@ -92,8 +105,8 @@ export default function KPIConfig() {
 
       {/* Content */}
       {tab === 'costi'       && <TabCostiFissi sede={sede} anno={anno} mese={mese} refresh={refresh} />}
-      {tab === 'team'        && <TabTeamTarget sede={sede} anno={anno} mese={mese} refresh={refresh} />}
-      {tab === 'individuali' && <TabIndividuali sede={sede} anno={anno} mese={mese} refresh={refresh} />}
+      {tab === 'team'        && <TabTeamTarget sede={sede} anno={anno} mese={mese} nMesi={nMesi} refresh={refresh} />}
+      {tab === 'individuali' && <TabIndividuali sede={sede} anno={anno} mese={mese} nMesi={nMesi} refresh={refresh} />}
       {tab === 'prodotti'    && <TabProdotti sede={sede} anno={anno} mese={mese} refresh={refresh} />}
       {tab === 'performance' && <TabPerformance sede={sede} anno={anno} mese={mese} refresh={refresh} />}
       {tab === 'standard'    && <TabStandardNazionali refresh={refresh} />}
@@ -258,7 +271,7 @@ function CostoFissoForm({ sede, anno, mese, categorie, onClose, onSaved }) {
 // ═══════════════════════════════════════════════════════════════════════════
 // TAB 2 — BE & Target Team
 // ═══════════════════════════════════════════════════════════════════════════
-function TabTeamTarget({ sede, anno, mese, refresh }) {
+function TabTeamTarget({ sede, anno, mese, nMesi = 3, refresh }) {
   const [costi, setCosti]           = useState(null)
   const [target, setTarget]         = useState(null)
   const [quorum, setQuorum]         = useState(0)
@@ -274,7 +287,7 @@ function TabTeamTarget({ sede, anno, mese, refresh }) {
       const [c, t, q, ap, cm] = await Promise.all([
         kpiPerformanceApi.getCosti({ sede, anno, mese }),
         kpiTargetsApi.getTeam({ sede, anno, mese }),
-        kpiPerformanceApi.getQuorum({ sede, anno, mese }),
+        kpiPerformanceApi.getQuorum({ sede, anno, mese, mesiLookback: nMesi }),
         kpiPerformanceApi.getStessoMeseAnnoPrec({ sede, anno, mese }),
         kpiPerformanceApi.getCopertoMedio({ sede, anno, mese }),
       ])
@@ -291,7 +304,7 @@ function TabTeamTarget({ sede, anno, mese, refresh }) {
       })
     } finally { setLoading(false) }
   }
-  useEffect(() => { load() }, [sede, anno, mese, refresh])
+  useEffect(() => { load() }, [sede, anno, mese, nMesi, refresh])
 
   const save = async () => {
     setSaving(true); setErr(null)
@@ -304,6 +317,7 @@ function TabTeamTarget({ sede, anno, mese, refresh }) {
   if (loading || !target || !costi) return <Spinner />
 
   const beCalc = Number(costi.be_totale) || 0
+  const quorumLabel = nMesi === 1 ? 'Mese prec.' : `Media ${nMesi}m`
   const targetDisplay = Number(target.target_fatturato) || 0
   const premio = Number(target.premio_team_euro) || 0
   const mesiLabel = new Date(2000, mese - 1).toLocaleString('it', { month: 'long' })
@@ -379,7 +393,7 @@ function TabTeamTarget({ sede, anno, mese, refresh }) {
               <div className="text-xs text-gray-400">≈ {Math.ceil(copertiMinTarget / giorniMese)}/giorno</div>
             </div>
             <div className="bg-white border rounded p-3 text-center">
-              <div className="text-xs text-gray-500">Quorum (media 2m)</div>
+              <div className="text-xs text-gray-500">Quorum ({quorumLabel})</div>
               <div className={`text-2xl font-bold ${quorum >= beCalc ? 'text-green-600' : 'text-red-600'}`}>{euro(quorum)}</div>
               <div className="text-xs text-gray-400">{quorum >= beCalc ? '✅ sopra BE' : '⚠️ sotto BE'}</div>
             </div>
@@ -396,7 +410,7 @@ function TabTeamTarget({ sede, anno, mese, refresh }) {
       <div className="p-4 bg-indigo-50 border-l-4 border-indigo-400 rounded">
         <div className="text-sm font-semibold text-indigo-900">📊 Suggerimenti automatici — {mesiLabel} {anno}</div>
         <div className="text-sm text-indigo-800 mt-1 space-y-1">
-          <div>Quorum (media ultimi 2 mesi da chiusure): <b>{euro(quorum)}</b></div>
+          <div>Quorum ({quorumLabel} da chiusure): <b>{euro(quorum)}</b></div>
           <div>Stesso mese anno scorso ({mesiLabel} {anno-1}): <b>{euro(annoPrec)}</b></div>
           <div>Target minimo consigliato <b>(BE × 1.10)</b>: <b>{euro(beCalc * 1.10)}</b></div>
           <div className="text-xs text-indigo-600 pt-1">
@@ -482,7 +496,7 @@ function BonusSimulator({ be, target, premio }) {
 // ═══════════════════════════════════════════════════════════════════════════
 // TAB 3 — Target Individuali
 // ═══════════════════════════════════════════════════════════════════════════
-function TabIndividuali({ sede, anno, mese, refresh }) {
+function TabIndividuali({ sede, anno, mese, nMesi = 3, refresh }) {
   const [emps, setEmps]           = useState([])
   const [targets, setTargets]     = useState({})
   const [perf, setPerf]           = useState({})
@@ -518,7 +532,7 @@ function TabIndividuali({ sede, anno, mese, refresh }) {
       setPrevPerf(ppMap)
     } catch (er) { setErr(er.message) } finally { setLoading(false) }
   }
-  useEffect(() => { load() }, [sede, anno, mese, refresh])
+  useEffect(() => { load() }, [sede, anno, mese, nMesi, refresh])
 
   const updateField = (empId, field, value) => {
     setTargets(prev => {
@@ -561,7 +575,7 @@ function TabIndividuali({ sede, anno, mese, refresh }) {
   const autoGeneraTutti = async () => {
     setGenerando(true); setMsg(null); setErr(null)
     try {
-      const results = await kpiPerformanceApi.autoTargetAllOperatori({ sede, anno, mese })
+      const results = await kpiPerformanceApi.autoTargetAllOperatori({ sede, anno, mese, mesiLookback: nMesi })
       const newStorico = {}
       const newTargets = { ...targets }
       let count = 0
@@ -583,7 +597,8 @@ function TabIndividuali({ sede, anno, mese, refresh }) {
       }
       setStoricoMap(newStorico)
       setTargets(newTargets)
-      setMsg(`✓ Generati ${count} target — Formula: MAX(media 3m, ${anno-1}/${String(mese).padStart(2,'0')}) × 1.10. Verifica e salva.`)
+      const baseLabel = nMesi === 1 ? 'mese prec.' : `media ${nMesi}m`
+      setMsg(`✓ Generati ${count} target — Formula: MAX(${baseLabel}, ${anno-1}/${String(mese).padStart(2,'0')}) × 1.10. Verifica e salva.`)
     } catch (e) { setErr(e.message) } finally { setGenerando(false) }
   }
 
@@ -637,10 +652,11 @@ function TabIndividuali({ sede, anno, mese, refresh }) {
       {/* Nota formula */}
       <div className="p-3 bg-blue-50 border border-blue-200 rounded text-xs text-blue-800">
         <b>ℹ️ Formula Auto-genera:</b> per ogni operatore legge <code>v_fatturato_operatore_mensile</code>
-        → calcola <b>media ultimi 3 mesi</b> e <b>stesso mese {anno-1}</b>
+        → calcola <b>{nMesi === 1 ? 'mese precedente' : `media ultimi ${nMesi} mesi`}</b> e <b>stesso mese {anno-1}</b>
         → usa il <b>MAX dei due</b> come Quantum → Target = Quantum × 1.10.<br/>
+        Cambia la finestra da <b>Analisi vs</b> nei filtri in alto per usare 1/2/3/6 mesi.
         Link operatore→dipendente tramite tabella <code>employee_operator_mapping</code>.
-        Premi 🔍 su una riga per vedere il dettaglio storico.
+        Premi ▼ su una riga per vedere il dettaglio storico.
       </div>
 
       {msg && <div className="p-3 bg-green-50 border border-green-200 rounded text-sm text-green-800">{msg}</div>}
@@ -652,7 +668,7 @@ function TabIndividuali({ sede, anno, mese, refresh }) {
               <th className="text-left p-2 w-6"></th>
               <th className="text-left p-2">Dipendente</th>
               <th className="text-left p-2">Metrica</th>
-              <th className="text-right p-2">Mese prec.</th>
+              <th className="text-right p-2">{nMesi === 1 ? 'Mese prec.' : `Media ${nMesi}m`}</th>
               <th className="text-right p-2 text-indigo-700">Quantum</th>
               <th className="text-right p-2 text-indigo-700">Target×1.10</th>
               <th className="text-right p-2">Premio Max €</th>
@@ -750,7 +766,7 @@ function TabIndividuali({ sede, anno, mese, refresh }) {
                               )}
                             </div>
                             <div className="text-xs text-indigo-700 bg-white border border-indigo-200 rounded px-3 py-2 inline-block">
-                              <b>Formula applicata:</b> media 3m = <b>{s.media3m_pezzi.toLocaleString('it')} pz</b>
+                              <b>Formula applicata:</b> {nMesi === 1 ? 'mese prec.' : `media ${nMesi}m`} = <b>{s.media3m_pezzi.toLocaleString('it')} pz</b>
                               {' | '} anno prec {String(mese).padStart(2,'0')}/{anno-1} = <b>{s.prevYearPezzi.toLocaleString('it')} pz</b>
                               {' | '} <b>Base = MAX = {s.quantum_pezzi.toLocaleString('it')}</b>
                               {' → '} <b className="text-green-700">Target = {s.target_pezzi.toLocaleString('it')} pz</b>
