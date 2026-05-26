@@ -14,7 +14,7 @@ import PageStatsWidget from '../components/PageStatsWidget'
 
 const COLORS = ['#6366f1','#3b82f6','#10b981','#f59e0b','#ec4899','#8b5cf6','#ef4444','#14b8a6','#f97316','#06b6d4']
 const MESI_IT = ['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic']
-const GIORNI_IT = ['Dom','Lun','Mar','Mer','Gio','Ven','Sab']
+const GIORNI_IT = ['Lun','Mar','Mer','Gio','Ven','Sab','Dom']
 
 async function sbq(q) {
   const { data, error } = await q
@@ -1067,7 +1067,7 @@ function CalendarioHeatmap({ dailyData }) {
 
       {grouped.map(({ year, month, days }) => {
         const daysInMonth = new Date(year, month, 0).getDate()
-        const firstDow = new Date(year, month - 1, 1).getDay() // 0=Dom
+        const firstDow = (new Date(year, month - 1, 1).getDay() + 6) % 7 // 0=Lun
         const cells = Array.from({ length: firstDow }, () => null).concat(
           Array.from({ length: daysInMonth }, (_, i) => i + 1)
         )
