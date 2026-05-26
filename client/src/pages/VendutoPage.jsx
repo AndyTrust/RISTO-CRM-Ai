@@ -1025,24 +1025,19 @@ function CalendarioHeatmap({ dailyData }) {
   const avgV = allVenduto.length ? allVenduto.reduce((s, v) => s + v, 0) / allVenduto.length : 0
 
   function getColor(venduto) {
-    if (!venduto) return '#f9fafb'
+    if (!venduto) return '#f3f4f6'       // grigio = chiuso
     const ratio = venduto / maxV
-    // Scala 7 colori: verde chiaro → giallo → arancio → rosso → bordeaux
-    if (ratio > 0.85) return '#7f1d1d'  // bordeaux = giornata record
-    if (ratio > 0.70) return '#b91c1c'  // rosso scuro = molto alto
-    if (ratio > 0.55) return '#f97316'  // arancio = alto
-    if (ratio > 0.40) return '#fbbf24'  // giallo ambra = medio-alto
-    if (ratio > 0.25) return '#4ade80'  // verde chiaro = medio
-    if (ratio > 0.10) return '#86efac'  // verde pallido = basso
-    return '#d1fae5'                    // verde acqua = minimo
+    if (ratio > 0.70) return '#ef4444'  // rosso = giornata alta
+    if (ratio > 0.40) return '#f97316'  // arancio = media
+    if (ratio > 0.15) return '#22c55e'  // verde = bassa
+    return '#93c5fd'                    // azzurro = minima
   }
 
   function getTextColor(venduto) {
     if (!venduto) return 'text-gray-400'
     const ratio = venduto / maxV
-    if (ratio > 0.55) return 'text-white'
-    if (ratio > 0.25) return 'text-gray-800'
-    return 'text-gray-600'
+    if (ratio > 0.40) return 'text-white'
+    return 'text-gray-700'
   }
 
   if (grouped.length === 0) {
@@ -1055,16 +1050,14 @@ function CalendarioHeatmap({ dailyData }) {
       <div className="flex items-center gap-3 flex-wrap">
         <span className="text-xs text-gray-500">Intensità venduto:</span>
         {[
-          { lbl: 'Min',    ratio: 0.05  },
-          { lbl: 'Basso',  ratio: 0.18  },
-          { lbl: 'Medio',  ratio: 0.33  },
-          { lbl: 'Med-Alt',ratio: 0.48  },
-          { lbl: 'Alto',   ratio: 0.63  },
-          { lbl: 'Molto',  ratio: 0.78  },
-          { lbl: 'Record', ratio: 0.92  },
+          { lbl: 'Chiuso', ratio: 0     },
+          { lbl: 'Basso',  ratio: 0.08  },
+          { lbl: 'Medio',  ratio: 0.30  },
+          { lbl: 'Alto',   ratio: 0.55  },
+          { lbl: 'Top',    ratio: 0.85  },
         ].map(({ lbl, ratio }) => (
           <div key={lbl} className="flex items-center gap-1">
-            <div className="w-4 h-4 rounded-sm" style={{ backgroundColor: getColor(maxV * ratio) }} />
+            <div className="w-4 h-4 rounded-sm" style={{ backgroundColor: getColor(ratio === 0 ? 0 : maxV * ratio) }} />
             <span className="text-xs text-gray-400">{lbl}</span>
           </div>
         ))}

@@ -261,7 +261,7 @@ function TabVenduto({ sede, anno, mese }) {
                         {!prodotti[op.operatore]
                           ? <span className="text-xs text-gray-400">Caricamento…</span>
                           : prodotti[op.operatore].length === 0
-                            ? <span className="text-xs text-gray-400">Nessun prodotto con valore > €0.01 nel periodo</span>
+                            ? <span className="text-xs text-gray-400">Nessun prodotto con valore &gt; €0.01 nel periodo</span>
                             : (
                               <div className="space-y-2">
                                 <p className="text-[10px] text-indigo-400 uppercase font-semibold tracking-wider mb-1">
