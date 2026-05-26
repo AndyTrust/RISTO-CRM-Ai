@@ -28,6 +28,10 @@ function DeltaBadge({ value }) {
   )
 }
 
+const CUR_YEAR  = new Date().getFullYear()
+const PREV_YEAR = CUR_YEAR - 1
+const PREV2_YEAR = CUR_YEAR - 2
+
 export default function ChiusurePage() {
   const [tab, setTab] = useState('andamento')
   const [location, setLocation] = useState('all')
@@ -288,36 +292,36 @@ export default function ChiusurePage() {
           {/* Tabella confronto con delta % */}
           {confronto.length > 0 && (
             <div className="card overflow-hidden">
-              <div className="card-header"><h2 className="font-semibold">Tabella confronto — delta 2026 vs 2025</h2></div>
+              <div className="card-header"><h2 className="font-semibold">Tabella confronto — delta {CUR_YEAR} vs {PREV_YEAR}</h2></div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="bg-gray-50 text-xs text-gray-500">
                     <tr>
                       <th className="text-left px-4 py-3">Mese</th>
-                      <th className="text-right px-4 py-3">MA 2024</th>
-                      <th className="text-right px-4 py-3">MA 2025</th>
-                      <th className="text-right px-4 py-3">MA 2026 △</th>
-                      <th className="text-right px-4 py-3">PN 2024</th>
-                      <th className="text-right px-4 py-3">PN 2025</th>
-                      <th className="text-right px-4 py-3">PN 2026 △</th>
+                      <th className="text-right px-4 py-3">MA {PREV2_YEAR}</th>
+                      <th className="text-right px-4 py-3">MA {PREV_YEAR}</th>
+                      <th className="text-right px-4 py-3">MA {CUR_YEAR} △</th>
+                      <th className="text-right px-4 py-3">PN {PREV2_YEAR}</th>
+                      <th className="text-right px-4 py-3">PN {PREV_YEAR}</th>
+                      <th className="text-right px-4 py-3">PN {CUR_YEAR} △</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
                     {confronto.map((c, i) => {
-                      const deltaMA = pctDelta(c['2026_MAMELI'], c['2025_MAMELI'])
-                      const deltaPN = pctDelta(c['2026_PREDDA_NIEDDA'], c['2025_PREDDA_NIEDDA'])
+                      const deltaMA = pctDelta(c[`${CUR_YEAR}_MAMELI`], c[`${PREV_YEAR}_MAMELI`])
+                      const deltaPN = pctDelta(c[`${CUR_YEAR}_PREDDA_NIEDDA`], c[`${PREV_YEAR}_PREDDA_NIEDDA`])
                       return (
                         <tr key={i} className="hover:bg-gray-50">
                           <td className="px-4 py-2.5 font-medium">{c.mese}</td>
-                          <td className="px-4 py-2.5 text-right text-gray-400">{eur(c['2024_MAMELI'])}</td>
-                          <td className="px-4 py-2.5 text-right">{eur(c['2025_MAMELI'])}</td>
+                          <td className="px-4 py-2.5 text-right text-gray-400">{eur(c[`${PREV2_YEAR}_MAMELI`])}</td>
+                          <td className="px-4 py-2.5 text-right">{eur(c[`${PREV_YEAR}_MAMELI`])}</td>
                           <td className="px-4 py-2.5 text-right font-semibold">
-                            {eur(c['2026_MAMELI'])}<DeltaBadge value={deltaMA}/>
+                            {eur(c[`${CUR_YEAR}_MAMELI`])}<DeltaBadge value={deltaMA}/>
                           </td>
-                          <td className="px-4 py-2.5 text-right text-gray-400">{eur(c['2024_PREDDA_NIEDDA'])}</td>
-                          <td className="px-4 py-2.5 text-right">{eur(c['2025_PREDDA_NIEDDA'])}</td>
+                          <td className="px-4 py-2.5 text-right text-gray-400">{eur(c[`${PREV2_YEAR}_PREDDA_NIEDDA`])}</td>
+                          <td className="px-4 py-2.5 text-right">{eur(c[`${PREV_YEAR}_PREDDA_NIEDDA`])}</td>
                           <td className="px-4 py-2.5 text-right font-semibold">
-                            {eur(c['2026_PREDDA_NIEDDA'])}<DeltaBadge value={deltaPN}/>
+                            {eur(c[`${CUR_YEAR}_PREDDA_NIEDDA`])}<DeltaBadge value={deltaPN}/>
                           </td>
                         </tr>
                       )

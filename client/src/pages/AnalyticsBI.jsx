@@ -130,14 +130,14 @@ function BESection({ beMensile, loading }) {
 
   return (
     <div>
-      <SectionTitle icon={DollarSign} label="Costi & Break-Even Mensile 2026" color={C.MA} />
+      <SectionTitle icon={DollarSign} label={`Costi & Break-Even Mensile ${new Date().getFullYear()}`} color={C.MA} />
 
       <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-4 flex items-start gap-2">
         <Info size={14} className="text-blue-600 mt-0.5 flex-shrink-0" />
         <p className="text-xs text-blue-700">
           <strong>Metodo di calcolo:</strong> Buste paga e fatture acquisto sono costi condivisi tra i due locali
           → ogni sede mostra il <strong>50% del totale mensile</strong> (media equa). I costi fissi (affitto, indennizzi)
-          rimangono specifici per sede. Gen–Feb 2026 segnalati con ⚠ per attribuzione fatture non affidabile.
+          rimangono specifici per sede. Gen–Feb segnalati con ⚠ per attribuzione fatture non affidabile.
           I costi fissi registrati sono parziali — mancano utenze, commercialista, assicurazioni.
         </p>
       </div>
@@ -373,7 +373,7 @@ function SeasonalitySection({ seasonality, loading }) {
 
   return (
     <div>
-      <SectionTitle icon={Calendar} label="Stagionalità — Indici Mensili 2025" color={C.warn} />
+      <SectionTitle icon={Calendar} label={`Stagionalità — Indici Mensili ${new Date().getFullYear() - 1}`} color={C.warn} />
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 mb-4">
         <p className="text-xs text-gray-500 mb-3">Indice &gt;1 = mese sopra la media annuale · &lt;1 = sotto media (usato per correggere le previsioni)</p>
         <div className="grid grid-cols-6 md:grid-cols-12 gap-2">
@@ -398,7 +398,7 @@ function SeasonalitySection({ seasonality, loading }) {
       </div>
 
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-        <p className="text-xs font-semibold text-gray-600 mb-3">Coperto Medio per Mese — 2025</p>
+        <p className="text-xs font-semibold text-gray-600 mb-3">Coperto Medio per Mese — {new Date().getFullYear() - 1}</p>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {['MAMELI','PREDDA_NIEDDA'].map(loc => {
             const rows = (seasonality.byLocation?.[loc] || []).map(r => ({
@@ -447,7 +447,7 @@ function ForecastSection({ forecast, loading }) {
   const reg = data.regressione || {}
   return (
     <div>
-      <SectionTitle icon={Zap} label="Previsioni — Prossimi 3 Mesi (con stagionalità 2025)" color={C.forecast} />
+      <SectionTitle icon={Zap} label={`Previsioni — Prossimi 3 Mesi (con stagionalità ${new Date().getFullYear() - 1})`} color={C.forecast} />
       <TabBar
         tabs={[{ id: 'MAMELI', label: 'Sede MA' }, { id: 'PREDDA_NIEDDA', label: '🟢 Sede PN' }]}
         active={loc} onChange={setLoc}
@@ -529,8 +529,8 @@ function OperatorTargetsSection({ targets, loading }) {
           <strong>Fonte:</strong> kpi_revenues (coperti reali da iPratico) ·
           <strong> Base:</strong> media coperti ultimi 2 mesi ·
           <strong> Formula:</strong> media × coeff. stagionale × +10% ·
-          <strong> CM:</strong> coperto medio reale da aprile 2026 ·
-          Nomi operatori normalizzati per match storico gen–apr
+          <strong> CM:</strong> coperto medio reale da aprile {new Date().getFullYear()} ·
+          Nomi operatori normalizzati per match storico
         </p>
       </div>
 
