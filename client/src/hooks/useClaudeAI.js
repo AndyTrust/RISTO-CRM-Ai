@@ -37,21 +37,58 @@ export async function buildCrmContext(options = {}) {
       const from30 = new Date(); from30.setDate(from30.getDate() - 30)
       const { data: ch } = await supabase
         .from('chiusure_giornaliere')
-        .select('sede,data_competenza,dgfe,n_doc,coperti')
-        .gte('data_competenza', from30.toISOString().substring(0, 10))
-        .order('data_competenza', { ascending: false })
+        .select('sede,data,totale_venduto_dgfe,n_doc_fiscali_emessi,coperti')
+        .gte('data', from30.toISOString().substring(0, 10))
+        .order('data', { ascending: false })
         .limit(60)
       if (ch?.length) {
         const bySede = {}
         for (const r of ch) {
           if (!bySede[r.sede]) bySede[r.sede] = { dgfe: 0, coperti: 0, n: 0 }
-          bySede[r.sede].dgfe    += parseFloat(r.dgfe) || 0
+          bySede[r.sede].dgfe    += parseFloat(r.totale_venduto_dgfe) || 0
           bySede[r.sede].coperti += parseInt(r.coperti) || 0
           bySede[r.sede].n++
         }
         parts.push(`\n## Chiusure ultimi 30 giorni`)
         for (const [s, v] of Object.entries(bySede)) {
           parts.push(`${s}: €${v.dgfe.toFixed(0)} fatturato, ${v.coperti} coperti, ${v.n} giorni`)
+        }
+      }
+    }
+
+    // Coperti per turno (pranzo/cena) — media per giorno settimana — ultimi 6 mesi
+    if (includeTurni) {
+      const from6m = new Date(); from6m.setMonth(from6m.getMonth() - 6)
+      const { data: turniData } = await supabase
+        .from('chiusure_turni')
+        .select('sede, data, turno, quantita')
+        .gte('data', from6m.toISOString().substring(0, 10))
+        .in('turno', ['pranzo', 'cena'])
+        .order('data', { ascending: false })
+      if (turniData?.length) {
+        const GIORNI = ['Dom','Lun','Mar','Mer','Gio','Ven','Sab']
+        // {sede: {dow: {pranzo: [sum,n], cena: [sum,n]}}}
+        const agg = {}
+        for (const r of turniData) {
+          const dow = new Date(r.data + 'T12:00:00').getDay()
+          if (!agg[r.sede]) agg[r.sede] = {}
+          if (!agg[r.sede][dow]) agg[r.sede][dow] = { pranzo: [0,0], cena: [0,0] }
+          const t = r.turno === 'pranzo' ? 'pranzo' : 'cena'
+          agg[r.sede][dow][t][0] += parseInt(r.quantita) || 0
+          agg[r.sede][dow][t][1]++
+        }
+        parts.push(`\n## Media coperti per turno (ultimi 6 mesi) — dati reali iPratico`)
+        parts.push(`Giorno | Sede | Pranzo avg | Cena avg`)
+        for (const sede of Object.keys(agg).sort()) {
+          for (let dow = 1; dow <= 7; dow++) {
+            const d = dow % 7  // 1=Lun→1 ... 6=Sab→6, 7=Dom→0
+            const row = agg[sede][d]
+            if (!row) continue
+            const pAvg = row.pranzo[1] > 0 ? Math.round(row.pranzo[0] / row.pranzo[1]) : 0
+            const cAvg = row.cena[1] > 0   ? Math.round(row.cena[0]   / row.cena[1])   : 0
+            if (pAvg > 0 || cAvg > 0)
+              parts.push(`${GIORNI[d]} | ${sede} | ${pAvg} | ${cAvg}`)
+          }
         }
       }
     }

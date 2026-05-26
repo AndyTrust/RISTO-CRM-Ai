@@ -24,6 +24,10 @@ const SYSTEM_BASE = `Sei l'assistente AI del Risto CRM — ristorante italiano c
 Hai accesso completo ai dati del CRM: chiusure cassa, venduto per operatore, fatture acquisto,
 buste paga, turni, KPI camerieri.
 
+Il contesto include la tabella "Media coperti per turno" con i dati REALI da iPratico:
+coperti pranzo e cena distinti, per giorno della settimana e per sede (MA=Mameli, PN=Predda Niedda).
+Usa sempre questi dati quando ti chiedono di coperti per turno, media pranzo/cena, split giornaliero.
+
 Puoi SALVARE informazioni nella memoria del CRM usando questa sintassi ESATTA nella tua risposta:
 SALVA_MEMORIA[sezione/chiave]=valore
 
