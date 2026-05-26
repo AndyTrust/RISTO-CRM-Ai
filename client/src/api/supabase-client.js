@@ -2010,6 +2010,8 @@ export const statistiche = {
         .map(o => ({
           ...o,
           totale_incasso: +o.tot_importo.toFixed(2),
+          n_tavoli:       Math.round(o.tot_coperti),   // pezzi venduti come proxy coperti
+          media_permanenza: null,                        // non disponibile da v_fatturato_operatore_mensile
           coperto_medio: o.tot_coperti > 0 && o.tot_importo > 0 ? +(o.tot_importo / o.tot_coperti).toFixed(2) : 0,
         }))
         .sort((a, b) => b.totale_incasso - a.totale_incasso)
@@ -2068,7 +2070,15 @@ export const statistiche = {
       if (p.to)   q = q.lte('data', p.to)
       if (!p.from && !p.to) q = q.limit(60)
       else q = q.range(0, 4999) // bypass limite 1000 quando si usa un range date
-      return sbFetch(q)
+      const rows = await sbFetch(q)
+      // Normalizza nomi campo per compatibilità frontend
+      return rows.map(r => ({
+        ...r,
+        n_coperti:     parseInt(r.coperti) || 0,
+        incasso_totale: parseFloat(r.totale_venduto_ipratico) || 0,
+        n_tavoli:      null,
+        media_permanenza: null,
+      }))
     } catch { return [] }
   },
 

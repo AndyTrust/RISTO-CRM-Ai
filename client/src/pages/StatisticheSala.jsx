@@ -44,9 +44,9 @@ function TabTurni({ location, fromDate, toDate }) {
   const [paxPerCameriere, setPaxPerCameriere] = useState(30)
   const [minSala, setMinSala]   = useState(2)
   const [maxSala, setMaxSala]   = useState(5)
-  // Split pranzo per giorno (Dom=60%,Lun=30%,Mar=35%,Mer=35%,Gio=40%,Ven=40%,Sab=50%)
-  // Domenica e weekend il pranzo è servizio principale in Italia
-  const [splitByDow, setSplitByDow] = useState([60, 30, 35, 35, 40, 40, 50])
+  // Split pranzo per giorno — domenica e sabato sono giornate a forte predominanza pranzo
+  // Dom=80%, Sab=65%, Ven=45%, altri giorni = prevalenza cena
+  const [splitByDow, setSplitByDow] = useState([80, 30, 35, 35, 40, 45, 65])
   // Config cucina
   const [paxPrimi,   setPaxPrimi]   = useState(30) // coperti per cuoco ai primi
   const [paxSecondi, setPaxSecondi] = useState(30) // coperti per cuoco ai secondi
@@ -623,6 +623,14 @@ export default function StatisticheSala() {
       {/* Fasce Orarie Tab */}
       {tab === 'fasce-orarie' && (
         <div className="space-y-4">
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800 flex items-start gap-2">
+            <span className="text-amber-500 mt-0.5 flex-shrink-0">⚠️</span>
+            <span>
+              <strong>Dati stimati</strong> — iPratico non esporta le fasce orarie effettive.
+              Questi valori sono <em>distribuzioni simulate</em> basate sui totali giornalieri (12:00–15:00 pranzo, 19:30–23:30 cena).
+              Per dati reali per fascia oraria usa il report <strong>Statistiche Tavoli</strong> su iPratico.
+            </span>
+          </div>
           {fasceBag.length > 0 && (
             <>
               <div className="card">
@@ -744,19 +752,19 @@ export default function StatisticheSala() {
                       </div>
                       <div className="space-y-2 text-sm">
                         <div className="flex justify-between">
-                          <span className="text-gray-500">Tavoli serviti</span>
-                          <span className="font-semibold">{op.n_tavoli || '—'}</span>
+                          <span className="text-gray-500">Pezzi venduti</span>
+                          <span className="font-semibold">{op.n_tavoli ? op.n_tavoli.toLocaleString('it-IT') : '—'}</span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-gray-500">Media permanenza</span>
-                          <span className="font-semibold">{op.media_permanenza ? `${Math.round(op.media_permanenza)} min` : '—'}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-500">Coperto medio</span>
+                          <span className="text-gray-500">Valore medio/pz</span>
                           <span className="font-semibold">{op.coperto_medio ? eur(op.coperto_medio) : '—'}</span>
                         </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">Periodi analizzati</span>
+                          <span className="font-semibold">{op.n_periodi || '—'}</span>
+                        </div>
                         <div className="pt-2 border-t border-gray-200 mt-2 flex justify-between">
-                          <span className="text-gray-500">Incasso totale</span>
+                          <span className="text-gray-500">Fatturato totale</span>
                           <span className="font-bold text-violet-600">{eur(op.totale_incasso)}</span>
                         </div>
                       </div>

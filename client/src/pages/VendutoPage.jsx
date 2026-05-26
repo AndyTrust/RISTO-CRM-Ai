@@ -515,11 +515,14 @@ async function loadMatriceCategorieMedia(sede, refAnno, refMese) {
   const mesiCompleti = [...allMesi].sort().slice(-3) // ultimi 3 mesi completi
   const nMesi = mesiCompleti.length || 1
 
-  // Aggrega pezzi per (sede, operatore, categoria) solo per prodotti valorizzati
+  // Aggrega pezzi E valore € per (sede, operatore, categoria) — solo prodotti valorizzati
   function buildMatrix(sourceRows, filterMesi) {
-    const m = {}        // { 'sede||op' → { cat → pezzi, _sede, _op } }
-    const catTot = {}   // { cat → pezzi }
-    const opTot  = {}   // { 'sede||op' → pezzi }
+    const m    = {}   // { 'sede||op' → { cat → pezzi, _sede, _op } }
+    const mVal = {}   // { 'sede||op' → { cat → valore€, _sede, _op } }
+    const catTot    = {}   // { cat → pezzi }
+    const catTotVal = {}   // { cat → valore€ }
+    const opTot     = {}   // { 'sede||op' → pezzi }
+    const opTotVal  = {}   // { 'sede||op' → valore€ }
     for (const r of sourceRows) {
       if (!r.data_inizio) continue
       const [y, mo] = r.data_inizio.split('-')
@@ -529,18 +532,22 @@ async function loadMatriceCategorieMedia(sede, refAnno, refMese) {
       if (qty <= 0 || (tot / qty) <= 0.01) continue // solo valorizzati
       const cat = (r.categoria && r.categoria !== 'nan') ? r.categoria : 'Altro'
       const opKey = `${r.sede}||${r.operatore}`
-      if (!m[opKey]) m[opKey] = { _sede: r.sede, _op: r.operatore }
-      m[opKey][cat] = (m[opKey][cat] || 0) + qty
-      catTot[cat]   = (catTot[cat] || 0) + qty
-      opTot[opKey]  = (opTot[opKey] || 0) + qty
+      if (!m[opKey])    m[opKey]    = { _sede: r.sede, _op: r.operatore }
+      if (!mVal[opKey]) mVal[opKey] = { _sede: r.sede, _op: r.operatore }
+      m[opKey][cat]    = (m[opKey][cat]    || 0) + qty
+      mVal[opKey][cat] = (mVal[opKey][cat] || 0) + tot
+      catTot[cat]      = (catTot[cat]      || 0) + qty
+      catTotVal[cat]   = (catTotVal[cat]   || 0) + tot
+      opTot[opKey]     = (opTot[opKey]     || 0) + qty
+      opTotVal[opKey]  = (opTotVal[opKey]  || 0) + tot
     }
-    return { m, catTot, opTot }
+    return { m, mVal, catTot, catTotVal, opTot, opTotVal }
   }
 
-  const { m: mxStoR, catTot: catTotSto, opTot: opTotSto } = buildMatrix(rows, mesiCompleti)
-  const { m: mxCorr, opTot: opTotCorr } = buildMatrix(mesiCorrenteRows, null)
+  const { m: mxStoR, mVal: mxStoRVal, catTot: catTotSto, catTotVal: catTotStoVal, opTot: opTotSto, opTotVal: opTotStoVal } = buildMatrix(rows, mesiCompleti)
+  const { m: mxCorr, mVal: mxCorrVal, opTot: opTotCorr, opTotVal: opTotCorrVal } = buildMatrix(mesiCorrenteRows, null)
 
-  // Dividi per nMesi → medie mensili
+  // Dividi per nMesi → medie mensili (pezzi)
   const matrix = {}
   for (const [k, v] of Object.entries(mxStoR)) {
     matrix[k] = { _sede: v._sede, _op: v._op }
@@ -549,18 +556,33 @@ async function loadMatriceCategorieMedia(sede, refAnno, refMese) {
       matrix[k][cat] = Math.round(pezzi / nMesi)
     }
   }
+  // Medie mensili (valore €)
+  const matrixVal = {}
+  for (const [k, v] of Object.entries(mxStoRVal)) {
+    matrixVal[k] = { _sede: v._sede, _op: v._op }
+    for (const [cat, val] of Object.entries(v)) {
+      if (cat.startsWith('_')) { matrixVal[k][cat] = v[cat]; continue }
+      matrixVal[k][cat] = Math.round(val / nMesi * 100) / 100
+    }
+  }
   const catMedia = {}
   for (const [cat, tot] of Object.entries(catTotSto)) catMedia[cat] = Math.round(tot / nMesi)
+  const catMediaVal = {}
+  for (const [cat, tot] of Object.entries(catTotStoVal)) catMediaVal[cat] = Math.round(tot / nMesi * 100) / 100
   const opMedia  = {}
   for (const [k, tot] of Object.entries(opTotSto)) opMedia[k] = Math.round(tot / nMesi)
+  const opMediaVal = {}
+  for (const [k, tot] of Object.entries(opTotStoVal)) opMediaVal[k] = Math.round(tot / nMesi * 100) / 100
   const opCorr   = {}
   for (const [k, tot] of Object.entries(opTotCorr)) opCorr[k] = Math.round(tot)
+  const opCorrVal = {}
+  for (const [k, tot] of Object.entries(opTotCorrVal)) opCorrVal[k] = Math.round(tot * 100) / 100
 
-  // Top 10 categorie per media
-  const topCats = Object.entries(catMedia).sort((a,b) => b[1]-a[1]).slice(0,10).map(([c])=>c)
-  const ops = Object.keys(opMedia).sort((a,b) => (opMedia[b]||0)-(opMedia[a]||0))
+  // Top 10 categorie per media valore € (ordinate per fatturato)
+  const topCats = Object.entries(catMediaVal).sort((a,b) => b[1]-a[1]).slice(0,10).map(([c])=>c)
+  const ops = Object.keys(opMedia).sort((a,b) => (opMediaVal[b]||0)-(opMediaVal[a]||0))
 
-  return { matrix, topCats, ops, catMedia, opMedia, opCorr, mesiCompleti, nMesi }
+  return { matrix, matrixVal, topCats, ops, catMedia, catMediaVal, opMedia, opMediaVal, opCorr, opCorrVal, mesiCompleti, nMesi }
 }
 
 function MatriceCategorieMedia({ sede, from, to }) {
@@ -575,6 +597,7 @@ function MatriceCategorieMedia({ sede, from, to }) {
   const [editKey, setEditKey] = React.useState(null)
   const [editVal, setEditVal] = React.useState('')
   const [saving, setSaving] = React.useState(false)
+  const [viewMode, setViewMode] = React.useState('pezzi') // 'pezzi' | 'euro'
 
   React.useEffect(() => {
     setLoading(true)
@@ -587,20 +610,26 @@ function MatriceCategorieMedia({ sede, from, to }) {
   if (loading) return <p className="text-center text-gray-400 py-10 text-sm animate-pulse">Calcolo medie storiche...</p>
   if (!data || !data.ops.length) return <p className="text-center text-gray-400 py-10 text-sm">Nessun dato disponibile</p>
 
-  const { matrix, topCats, ops, catMedia, opMedia, opCorr, mesiCompleti, nMesi } = data
-  const grandMediaTeam = Object.values(opMedia).reduce((s,v)=>s+v,0)
-  const grandCorr = Object.values(opCorr).reduce((s,v)=>s+v,0)
+  const { matrix, matrixVal, topCats, ops, catMedia, catMediaVal, opMedia, opMediaVal, opCorr, opCorrVal, mesiCompleti, nMesi } = data
+  const isEuro = viewMode === 'euro'
+  const activeMatrix   = isEuro ? matrixVal  : matrix
+  const activeOpMedia  = isEuro ? opMediaVal : opMedia
+  const activeCatMedia = isEuro ? catMediaVal: catMedia
+  const activeOpCorr   = isEuro ? opCorrVal  : opCorr
+  const grandMediaTeam = Object.values(activeOpMedia).reduce((s,v)=>s+v,0)
+  const grandCorr      = Object.values(activeOpCorr).reduce((s,v)=>s+v,0)
+  function fmtVal(v) { return isEuro ? (v > 0 ? `€${v.toLocaleString('it-IT',{maximumFractionDigits:0})}` : '—') : (v > 0 ? v.toLocaleString('it-IT') : '—') }
 
   const mesiLabel = mesiCompleti.map(m => { const [,mo] = m.split('-'); return MESI_IT[parseInt(mo)-1] })
 
-  // Colori heatmap (basato sul max per categoria)
+  // Colori heatmap (basato sul max per categoria del modo attivo)
   const catMax = {}
   for (const cat of topCats) {
-    catMax[cat] = Math.max(...ops.map(k => matrix[k]?.[cat] || 0), 1)
+    catMax[cat] = Math.max(...ops.map(k => activeMatrix[k]?.[cat] || 0), 1)
   }
-  function getCellBg(qty, cat) {
-    if (!qty) return 'bg-gray-50 text-gray-300'
-    const ratio = qty / (catMax[cat] || 1)
+  function getCellBg(val, cat) {
+    if (!val) return 'bg-gray-50 text-gray-300'
+    const ratio = val / (catMax[cat] || 1)
     if (ratio > 0.75) return 'bg-indigo-600 text-white'
     if (ratio > 0.5)  return 'bg-indigo-400 text-white'
     if (ratio > 0.25) return 'bg-indigo-200 text-indigo-800'
@@ -617,8 +646,9 @@ function MatriceCategorieMedia({ sede, from, to }) {
   }
   function getTarget(opKey) {
     const saved = getTargetSaved(opKey)
-    if (saved) return saved
-    return Math.round((opMedia[opKey] || 0) * 1.10)
+    if (saved) return isEuro ? Math.round(saved * (opMediaVal[opKey] || 0) / Math.max(opMedia[opKey] || 1, 1)) : saved
+    const base = isEuro ? (opMediaVal[opKey] || 0) : (opMedia[opKey] || 0)
+    return isEuro ? Math.round(base * 1.10 * 100) / 100 : Math.round(base * 1.10)
   }
   async function handleSave(opKey) {
     setSaving(true)
@@ -633,11 +663,22 @@ function MatriceCategorieMedia({ sede, from, to }) {
 
   return (
     <div className="space-y-4">
-      {/* Legenda */}
+      {/* Header con toggle pezzi/€ */}
       <div className="flex items-center gap-4 text-xs text-gray-500 flex-wrap">
         <span className="font-medium">
           Media mensile per operatore × categoria — ultimi {nMesi} mesi ({mesiLabel.join(', ')})
         </span>
+        {/* Toggle Pezzi / Valore € */}
+        <div className="flex items-center rounded-lg border border-gray-200 overflow-hidden">
+          <button
+            onClick={() => setViewMode('pezzi')}
+            className={`px-3 py-1.5 text-xs font-medium transition-colors ${viewMode==='pezzi' ? 'bg-indigo-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+          >📦 Pezzi</button>
+          <button
+            onClick={() => setViewMode('euro')}
+            className={`px-3 py-1.5 text-xs font-medium transition-colors ${viewMode==='euro' ? 'bg-emerald-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+          >💶 Valore €</button>
+        </div>
         <span className="flex items-center gap-1">
           {['bg-indigo-50','bg-indigo-200','bg-indigo-400','bg-indigo-600'].map((cls,i) => (
             <span key={i} className={`w-4 h-4 rounded inline-block ${cls}`}/>
@@ -670,9 +711,9 @@ function MatriceCategorieMedia({ sede, from, to }) {
           </thead>
           <tbody>
             {ops.map(opKey => {
-              const media   = opMedia[opKey] || 0
+              const media   = activeOpMedia[opKey] || 0
               const target  = getTarget(opKey)
-              const corrente= opCorr[opKey] || 0
+              const corrente= activeOpCorr[opKey] || 0
               const pct     = target > 0 ? Math.round(corrente/target*100) : 0
               const pctTeam = grandMediaTeam > 0 ? (media/grandMediaTeam*100).toFixed(1) : '0'
               const hasSaved= getTargetSaved(opKey) != null
@@ -692,17 +733,17 @@ function MatriceCategorieMedia({ sede, from, to }) {
                     </div>
                   </td>
                   <td className="px-3 py-2.5 text-right font-mono font-semibold text-blue-700 bg-blue-50/40">
-                    {media > 0 ? media.toLocaleString('it-IT') : '—'}
+                    {fmtVal(media)}
                   </td>
                   <td className="px-3 py-2.5 text-right text-gray-400">{pctTeam}%</td>
                   {topCats.map(cat => {
-                    const qty = matrix[opKey]?.[cat] || 0
-                    const catPct = media > 0 && qty > 0 ? Math.round(qty/media*100) : 0
+                    const val = activeMatrix[opKey]?.[cat] || 0
+                    const catPct = media > 0 && val > 0 ? Math.round(val/media*100) : 0
                     return (
-                      <td key={cat} className={`px-2 py-2.5 text-center ${getCellBg(qty, cat)}`}>
-                        {qty > 0 ? (
+                      <td key={cat} className={`px-2 py-2.5 text-center ${getCellBg(val, cat)}`}>
+                        {val > 0 ? (
                           <div>
-                            <div className="font-bold">{qty.toLocaleString('it-IT')}</div>
+                            <div className="font-bold">{fmtVal(val)}</div>
                             <div className="text-[10px] opacity-75">{catPct}%</div>
                           </div>
                         ) : '—'}
@@ -760,24 +801,24 @@ function MatriceCategorieMedia({ sede, from, to }) {
             <tr>
               <td className="px-3 py-2.5 text-gray-700 uppercase text-[11px] sticky left-0 bg-gray-50">Totale Team</td>
               <td className="px-3 py-2.5 text-right font-mono text-blue-700 bg-blue-50/40">
-                {grandMediaTeam > 0 ? grandMediaTeam.toLocaleString('it-IT') : '—'}
+                {fmtVal(grandMediaTeam)}
               </td>
               <td className="px-3 py-2.5 text-right text-gray-500">100%</td>
               {topCats.map(cat => {
-                const catAvg = catMedia[cat] || 0
+                const catAvg = activeCatMedia[cat] || 0
                 const catPct = grandMediaTeam > 0 ? (catAvg/grandMediaTeam*100).toFixed(1) : '0'
                 return (
                   <td key={cat} className="px-2 py-2.5 text-center text-indigo-700">
-                    <div className="font-bold">{catAvg > 0 ? catAvg.toLocaleString('it-IT') : '—'}</div>
+                    <div className="font-bold">{fmtVal(catAvg)}</div>
                     <div className="text-[10px] text-gray-500">{catPct}%</div>
                   </td>
                 )
               })}
               <td className="px-3 py-2.5 text-right font-mono text-violet-700 bg-violet-50/40">
-                {ops.reduce((s,k) => s+getTarget(k), 0).toLocaleString('it-IT')}
+                {fmtVal(ops.reduce((s,k) => s+getTarget(k), 0))}
               </td>
               <td className="px-3 py-2.5 text-right font-mono text-green-700 bg-green-50/40">
-                {grandCorr > 0 ? grandCorr.toLocaleString('it-IT') : '—'}
+                {fmtVal(grandCorr)}
               </td>
               <td className="px-3 py-2.5">
                 {(() => {
@@ -986,11 +1027,22 @@ function CalendarioHeatmap({ dailyData }) {
   function getColor(venduto) {
     if (!venduto) return '#f9fafb'
     const ratio = venduto / maxV
-    if (ratio > 0.8) return '#1d4ed8'
-    if (ratio > 0.6) return '#3b82f6'
-    if (ratio > 0.4) return '#93c5fd'
-    if (ratio > 0.2) return '#bfdbfe'
-    return '#dbeafe'
+    // Scala 7 colori: verde chiaro → giallo → arancio → rosso → bordeaux
+    if (ratio > 0.85) return '#7f1d1d'  // bordeaux = giornata record
+    if (ratio > 0.70) return '#b91c1c'  // rosso scuro = molto alto
+    if (ratio > 0.55) return '#f97316'  // arancio = alto
+    if (ratio > 0.40) return '#fbbf24'  // giallo ambra = medio-alto
+    if (ratio > 0.25) return '#4ade80'  // verde chiaro = medio
+    if (ratio > 0.10) return '#86efac'  // verde pallido = basso
+    return '#d1fae5'                    // verde acqua = minimo
+  }
+
+  function getTextColor(venduto) {
+    if (!venduto) return 'text-gray-400'
+    const ratio = venduto / maxV
+    if (ratio > 0.55) return 'text-white'
+    if (ratio > 0.25) return 'text-gray-800'
+    return 'text-gray-600'
   }
 
   if (grouped.length === 0) {
@@ -1002,10 +1054,18 @@ function CalendarioHeatmap({ dailyData }) {
       {/* Legenda */}
       <div className="flex items-center gap-3 flex-wrap">
         <span className="text-xs text-gray-500">Intensità venduto:</span>
-        {['Basso','','Medio','','Alto'].map((lbl, i) => (
-          <div key={i} className="flex items-center gap-1">
-            <div className="w-4 h-4 rounded-sm" style={{ backgroundColor: getColor(maxV * (i * 0.25)) }} />
-            {lbl && <span className="text-xs text-gray-400">{lbl}</span>}
+        {[
+          { lbl: 'Min',    ratio: 0.05  },
+          { lbl: 'Basso',  ratio: 0.18  },
+          { lbl: 'Medio',  ratio: 0.33  },
+          { lbl: 'Med-Alt',ratio: 0.48  },
+          { lbl: 'Alto',   ratio: 0.63  },
+          { lbl: 'Molto',  ratio: 0.78  },
+          { lbl: 'Record', ratio: 0.92  },
+        ].map(({ lbl, ratio }) => (
+          <div key={lbl} className="flex items-center gap-1">
+            <div className="w-4 h-4 rounded-sm" style={{ backgroundColor: getColor(maxV * ratio) }} />
+            <span className="text-xs text-gray-400">{lbl}</span>
           </div>
         ))}
         <span className="ml-4 text-xs text-gray-400">Media giornaliera: <strong>{eur(avgV)}</strong></span>
@@ -1053,12 +1113,12 @@ function CalendarioHeatmap({ dailyData }) {
                       ? `${d}/${month}/${year}\nVenduto: ${eur(info.venduto)}\nCoperti: ${fmt(info.coperti)}\nCop. medio: ${eur(info.coperto_medio)}`
                       : `${d}/${month}/${year} — Chiuso`}
                   >
-                    <span className={`text-xs font-medium ${info?.venduto > maxV * 0.5 ? 'text-white' : 'text-gray-600'}`}>
+                    <span className={`text-xs font-medium ${info ? getTextColor(info.venduto) : 'text-gray-400'}`}>
                       {d}
                     </span>
                     {info && (
-                      <span className={`text-xs ${info.venduto > maxV * 0.5 ? 'text-blue-100' : 'text-blue-400'} leading-none`}>
-                        {isAboveAvg ? '★' : ''}
+                      <span className={`text-[9px] leading-none ${info.venduto > maxV * 0.85 ? 'text-yellow-200' : info.venduto > maxV * 0.55 ? 'text-white' : 'text-gray-500'}`}>
+                        {info.venduto > maxV * 0.85 ? '🔥' : isAboveAvg ? '★' : ''}
                       </span>
                     )}
                   </div>
