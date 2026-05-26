@@ -44,8 +44,8 @@ function TabTurni({ location, fromDate, toDate }) {
   const [paxPerCameriere, setPaxPerCameriere] = useState(30)
   const [minSala, setMinSala]   = useState(2)
   const [maxSala, setMaxSala]   = useState(5)
-  // Split pranzo per giorno — domenica e sabato sono giornate a forte predominanza pranzo
-  // Dom=80%, Sab=65%, Ven=45%, altri giorni = prevalenza cena
+  // Split pranzo per giorno — calcolato dai dati reali chiusure_turni (iPratico)
+  // Valori iniziali come fallback se i dati non sono ancora disponibili
   const [splitByDow, setSplitByDow] = useState([80, 30, 35, 35, 40, 45, 65])
   // Config cucina
   const [paxPrimi,   setPaxPrimi]   = useState(30) // coperti per cuoco ai primi
@@ -62,31 +62,53 @@ function TabTurni({ location, fromDate, toDate }) {
     if (!fromDate || !toDate) return
     setLoading(true)
     const sede = location === 'MA' ? 'MA' : location === 'PN' ? 'PN' : null
-    let q = supabase.from('chiusure_giornaliere')
-      .select('data, sede, coperti')
-      .gte('data', fromDate)
-      .lte('data', toDate)
-    if (sede) q = q.eq('sede', sede)
-    q.range(0, 9999).then(({ data }) => {
-      // Aggrega: per ogni giorno della settimana, media coperti
+
+    // Query 1: coperti totali per DOW da chiusure_giornaliere
+    let qCiusure = supabase.from('chiusure_giornaliere')
+      .select('data, coperti')
+      .gte('data', fromDate).lte('data', toDate)
+    if (sede) qCiusure = qCiusure.eq('sede', sede)
+
+    // Query 2: split pranzo/cena reale da chiusure_turni (dati iPratico)
+    let qTurni = supabase.from('chiusure_turni')
+      .select('data, turno, quantita')
+      .gte('data', fromDate).lte('data', toDate)
+      .in('turno', ['pranzo', 'cena'])
+    if (sede) qTurni = qTurni.eq('sede', sede)
+
+    Promise.all([
+      qCiusure.range(0, 9999),
+      qTurni.range(0, 9999),
+    ]).then(([{ data: chiusureData }, { data: turniData }]) => {
+      // Aggrega coperti per DOW
       const dowSum   = Array(7).fill(0)
       const dowCount = Array(7).fill(0)
-      for (const r of data || []) {
-        const dow = new Date(r.data + 'T00:00:00').getDay()
+      for (const r of chiusureData || []) {
+        const dow     = new Date(r.data + 'T00:00:00').getDay()
         const coperti = parseInt(r.coperti) || 0
-        if (coperti > 0) {
-          dowSum[dow]   += coperti
-          dowCount[dow] += 1
-        }
+        if (coperti > 0) { dowSum[dow] += coperti; dowCount[dow] += 1 }
       }
-      const result = GIORNI.map((g, i) => ({
-        giorno:        g,
-        giornoShort:   GIORNI_SHORT[i],
-        dow:           i,
-        avg_coperti:   dowCount[i] > 0 ? Math.round(dowSum[i] / dowCount[i]) : 0,
-        n_giorni:      dowCount[i],
-      }))
-      setByDow(result)
+      setByDow(GIORNI.map((g, i) => ({
+        giorno: g, giornoShort: GIORNI_SHORT[i], dow: i,
+        avg_coperti: dowCount[i] > 0 ? Math.round(dowSum[i] / dowCount[i]) : 0,
+        n_giorni:    dowCount[i],
+      })))
+
+      // Calcola split pranzo % reale per DOW da chiusure_turni
+      if (turniData && turniData.length > 0) {
+        const dowPranzo = Array(7).fill(0)
+        const dowCena   = Array(7).fill(0)
+        for (const r of turniData) {
+          const dow = new Date(r.data + 'T00:00:00').getDay()
+          const qty = parseInt(r.quantita) || 0
+          if (r.turno === 'pranzo') dowPranzo[dow] += qty
+          else if (r.turno === 'cena') dowCena[dow] += qty
+        }
+        setSplitByDow(prev => prev.map((fallback, dow) => {
+          const tot = dowPranzo[dow] + dowCena[dow]
+          return tot > 0 ? Math.round(dowPranzo[dow] / tot * 100) : fallback
+        }))
+      }
     }).finally(() => setLoading(false))
   }, [location, fromDate, toDate])
 
@@ -168,7 +190,7 @@ function TabTurni({ location, fromDate, toDate }) {
             <div className="font-bold text-violet-700 text-base">{minSala} – {maxSala}</div>
           </div>
           <div className="bg-white rounded-lg p-2.5 border border-violet-100">
-            <div className="text-gray-500 mb-1">Split pranzo (per giorno)</div>
+            <div className="text-gray-500 mb-1">Split pranzo <span className="text-emerald-600 font-medium">(dati reali)</span></div>
             <div className="font-bold text-violet-700 text-base">Dom {splitByDow[0]}% · Sab {splitByDow[6]}%</div>
           </div>
           <div className="bg-white rounded-lg p-2.5 border border-violet-100">
