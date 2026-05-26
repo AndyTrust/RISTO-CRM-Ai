@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import { analytics as analyticsApi, data as dataApi } from '../api/client'
 import PageAssistant from '../components/PageAssistant'
+import PageStatsWidget from '../components/PageStatsWidget'
 
 // ── Colori ──────────────────────────────────────────────────────────────────
 const C = {
@@ -766,6 +767,7 @@ export default function AnalyticsBI() {
 
   return (
     <>
+    <PageStatsWidget />
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>

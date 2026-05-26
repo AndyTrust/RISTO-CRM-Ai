@@ -9,6 +9,7 @@ import {
   beMensileApi, operatoreMeseApi, obiettiviProdottoApi, bonusApi,
   kpiTargetsApi, sediApi,
 } from '../api/client'
+import PageStatsWidget from '../components/PageStatsWidget'
 
 // ── Utils ──────────────────────────────────────────────────────────────
 const fmt = (n, d = 2) => (n == null || isNaN(n)) ? '—' : Number(n).toLocaleString('it-IT', { minimumFractionDigits: d, maximumFractionDigits: d })
@@ -349,6 +350,7 @@ export default function KpiTeamPage() {
 
   return (
     <div className="space-y-5">
+      <PageStatsWidget />
       {toastNode}
 
       {/* Header */}
@@ -470,39 +472,75 @@ export default function KpiTeamPage() {
       )}
 
       {/* Breakdown BE */}
-      {be && (
-        <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-bold text-gray-900 flex items-center gap-2">
-              <BarChart3 size={16} className="text-indigo-600" />
-              Break-Even Breakdown · {sede} · {MESI[mese - 1]} {anno}
-            </h2>
-            <div className="text-xs text-gray-500">{fatturato >= beTotale ? <span className="text-emerald-600 flex items-center gap-1"><CheckCircle2 size={14} /> BE raggiunto ({fmtPct(pctSuBE)})</span> : <span className="text-red-600 flex items-center gap-1"><AlertCircle size={14} /> BE non raggiunto ({fmtPct(pctSuBE)})</span>}</div>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-6 gap-2 text-xs">
-            {[
-              { k: 'costo_personale', l: 'Personale', c: 'violet' },
-              { k: 'costo_food', l: 'Food', c: 'emerald' },
-              { k: 'costo_utenze', l: 'Utenze', c: 'yellow' },
-              { k: 'costo_commissioni', l: 'Commissioni', c: 'orange' },
-              { k: 'costo_servizi', l: 'Servizi', c: 'cyan' },
-              { k: 'costi_fissi', l: 'Costi fissi', c: 'pink' },
-            ].map(({ k, l, c }) => (
-              <div key={k} className={`rounded-lg bg-${c}-50 border border-${c}-200 p-2`}>
-                <div className="text-[10px] font-medium text-gray-600 uppercase">{l}</div>
-                <div className="font-bold text-gray-900 mt-0.5">{fmtEur(be[k])}</div>
-                {be.fatturato > 0 && <div className="text-[9px] text-gray-500">{fmtPct((be[k] / be.fatturato) * 100)}</div>}
+      {be && (() => {
+        // Calcola quota fatture non categorizzate (fornitori senza P.IVA o senza categoria)
+        const categorizzate = (be.costo_food||0) + (be.costo_utenze||0) + (be.costo_commissioni||0) + (be.costo_servizi||0)
+        const nonCat = Math.max(0, +(parseFloat(be.tot_fatture_acquisto||0) - categorizzate).toFixed(2))
+        const hasDuplicazioneAlert = nonCat > 50 // mostra warning se >€50 non categorizzati
+        return (
+          <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                <BarChart3 size={16} className="text-indigo-600" />
+                Break-Even Breakdown · {sede} · {MESI[mese - 1]} {anno}
+              </h2>
+              <div className="text-xs text-gray-500">{fatturato >= beTotale ? <span className="text-emerald-600 flex items-center gap-1"><CheckCircle2 size={14} /> BE raggiunto ({fmtPct(pctSuBE)})</span> : <span className="text-red-600 flex items-center gap-1"><AlertCircle size={14} /> BE non raggiunto ({fmtPct(pctSuBE)})</span>}</div>
+            </div>
+
+            {/* ⚠ Warning fatture non categorizzate */}
+            {hasDuplicazioneAlert && (
+              <div className="mb-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-start gap-2 text-xs">
+                <AlertCircle size={13} className="text-amber-500 mt-0.5 flex-shrink-0"/>
+                <div className="text-amber-800">
+                  <strong>{fmtEur(nonCat)} di fatture acquisto non categorizzate</strong> — fornitori senza P.IVA mappata (METRO, MARR, Deliveroo, ecc.) non sono attribuiti alle voci food/utenze/commissioni.
+                  {' '}<a href="/fornitori" className="underline font-semibold">Categorizza in Fornitori →</a>
+                </div>
               </div>
-            ))}
+            )}
+
+            {/* ⚠ Warning duplicazione costi fissi */}
+            <div className="mb-3 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 flex items-start gap-2 text-xs">
+              <AlertCircle size={13} className="text-blue-500 mt-0.5 flex-shrink-0"/>
+              <div className="text-blue-800">
+                <strong>Controlla duplicazioni:</strong> se utenze (elettricità, telefonia) compaiono sia in Costi Fissi sia nelle fatture acquisto SdI, vengono conteggiate due volte.
+                Verifica in <a href="/fornitori" className="underline font-semibold">Fornitori</a> che i fornitori utenze non abbiano fatture SdI importate.
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-7 gap-2 text-xs">
+              {[
+                { k: 'costo_personale', l: 'Personale', c: 'violet' },
+                { k: 'costo_food', l: 'Food', c: 'emerald' },
+                { k: 'costo_utenze', l: 'Utenze', c: 'yellow' },
+                { k: 'costo_commissioni', l: 'Commissioni', c: 'orange' },
+                { k: 'costo_servizi', l: 'Servizi', c: 'cyan' },
+                { k: 'costi_fissi', l: 'Costi fissi', c: 'pink' },
+              ].map(({ k, l, c }) => (
+                <div key={k} className={`rounded-lg bg-${c}-50 border border-${c}-200 p-2`}>
+                  <div className="text-[10px] font-medium text-gray-600 uppercase">{l}</div>
+                  <div className="font-bold text-gray-900 mt-0.5">{fmtEur(be[k])}</div>
+                  {be.fatturato > 0 && <div className="text-[9px] text-gray-500">{fmtPct((be[k] / be.fatturato) * 100)}</div>}
+                </div>
+              ))}
+              {/* Colonna fatture non categorizzate */}
+              {nonCat > 0.01 && (
+                <div className="rounded-lg bg-gray-100 border border-gray-300 border-dashed p-2">
+                  <div className="text-[10px] font-medium text-gray-500 uppercase">Altro ⚠</div>
+                  <div className="font-bold text-gray-700 mt-0.5">{fmtEur(nonCat)}</div>
+                  {be.fatturato > 0 && <div className="text-[9px] text-gray-400">{fmtPct((nonCat / be.fatturato) * 100)}</div>}
+                </div>
+              )}
+            </div>
+            <div className="mt-3 pt-3 border-t border-gray-100 text-[11px] text-gray-500 flex gap-4 flex-wrap">
+              <span>Coperti: <b>{be.coperti || 0}</b></span>
+              <span>Totale fatture acquisto: <b>{fmtEur(be.tot_fatture_acquisto)}</b></span>
+              <span>% personale: <b>{fmtPct(be.pct_personale)}</b></span>
+              <span>% food: <b>{fmtPct(be.pct_food)}</b></span>
+              {nonCat > 0.01 && <span className="text-amber-600">% altro (non cat.): <b>{fmtPct((nonCat / (be.fatturato||1)) * 100)}</b></span>}
+            </div>
           </div>
-          <div className="mt-3 pt-3 border-t border-gray-100 text-[11px] text-gray-500 flex gap-4 flex-wrap">
-            <span>Coperti: <b>{be.coperti || 0}</b></span>
-            <span>Totale fatture acquisto: <b>{fmtEur(be.tot_fatture_acquisto)}</b></span>
-            <span>% personale: <b>{fmtPct(be.pct_personale)}</b></span>
-            <span>% food: <b>{fmtPct(be.pct_food)}</b></span>
-          </div>
-        </div>
-      )}
+        )
+      })()}
 
       {/* Reparti dashboard */}
       <div className="grid md:grid-cols-2 gap-3">

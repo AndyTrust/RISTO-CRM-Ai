@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import DateRangePicker, { periodToDates, PERIODS } from '../components/DateRangePicker'
 import PageAssistant from '../components/PageAssistant'
+import PageStatsWidget from '../components/PageStatsWidget'
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 const eur = n => (typeof n === 'number' && !isNaN(n))
@@ -243,6 +244,7 @@ export default function Dashboard() {
 
   return (
     <>
+    <PageStatsWidget />
     <div className="space-y-5">
 
       {/* ── Header ── */}

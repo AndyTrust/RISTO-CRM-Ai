@@ -14,6 +14,7 @@ import {
   operatoreMeseApi, beMensileApi, kpiTargetsApi, bonusApi
 } from '../api/client'
 import supabase from '../supabase'
+import PageStatsWidget from '../components/PageStatsWidget'
 
 // ── Utils ──────────────────────────────────────────────────────────────
 const MESI = ['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic']
@@ -25,6 +26,7 @@ const fmtPct = n => n == null ? '—' : `${fmt(n, 1)}%`
 function KpiCard({ icon: Icon, label, value, sub, color = 'indigo', badge }) {
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm flex flex-col gap-1">
+      <PageStatsWidget />
       <div className="flex items-center justify-between">
         <span className="text-[11px] font-medium text-gray-500 uppercase tracking-wide">{label}</span>
         <div className={`p-1.5 rounded-lg bg-${color}-50 text-${color}-600`}><Icon size={16} /></div>

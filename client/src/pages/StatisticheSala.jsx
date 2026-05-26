@@ -8,6 +8,7 @@ import { MapPin, RefreshCw, TrendingUp, Users, Clock, ReceiptText, CalendarDays,
 import DateRangePicker, { periodToDates } from '../components/DateRangePicker'
 import PageAssistant from '../components/PageAssistant'
 import supabase from '../supabase'
+import PageStatsWidget from '../components/PageStatsWidget'
 
 const COLORS = ['#6366f1', '#3b82f6', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#ef4444', '#14b8a6']
 
@@ -539,6 +540,7 @@ export default function StatisticheSala() {
 
   return (
     <>
+    <PageStatsWidget />
     <div className="space-y-5">
       <div className="page-header">
         <div>

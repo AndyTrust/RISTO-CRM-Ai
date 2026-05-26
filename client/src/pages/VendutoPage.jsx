@@ -10,6 +10,7 @@ import {
 import DateRangePicker, { periodToDates } from '../components/DateRangePicker'
 import PageAssistant from '../components/PageAssistant'
 import { TrendingUp, Users, ShoppingBag, BarChart2, Calendar, ArrowUpRight } from 'lucide-react'
+import PageStatsWidget from '../components/PageStatsWidget'
 
 const COLORS = ['#6366f1','#3b82f6','#10b981','#f59e0b','#ec4899','#8b5cf6','#ef4444','#14b8a6','#f97316','#06b6d4']
 const MESI_IT = ['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic']
@@ -1241,6 +1242,7 @@ export default function VendutoPage() {
 
   return (
     <>
+    <PageStatsWidget />
     <div className="space-y-5">
       <div className="page-header">
         <div>

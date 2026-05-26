@@ -11,6 +11,7 @@ import {
   ChevronLeft, Download, Info, Tag, Hash, Layers
 } from 'lucide-react'
 import PageAssistant from '../components/PageAssistant'
+import PageStatsWidget from '../components/PageStatsWidget'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const eur = n => n != null
@@ -92,6 +93,7 @@ function DateRangeBar({ from, to, onChange }) {
 
   return (
     <div className="flex items-center gap-2 flex-wrap">
+      <PageStatsWidget />
       <div className="flex rounded-xl overflow-hidden border border-gray-200 text-xs font-medium">
         {PERIODI.map(p => (
           <button key={p.label}
@@ -419,15 +421,23 @@ function FornitoreDetail({ fornitore, onClose, onUpdated, dateFrom, dateTo }) {
   const [selectedIds, setSelectedIds] = useState(new Set())
   const [bulkModal, setBulkModal] = useState(false)
 
+  const [loadError, setLoadError] = useState(null)
+
   const loadData = useCallback(async () => {
     setLoadingFat(true)
+    setLoadError(null)
     try {
       const [fats, prods] = await Promise.all([
         fornitoriApi.getFatture({ p_iva: fornitore.p_iva, from: dateFrom, to: dateTo, limit: 500 }),
         fornitoriApi.getRighe({ p_iva: fornitore.p_iva, from: dateFrom, to: dateTo, limit: 2000 }),
       ])
-      setFatture(fats)
-      setProdotti(prods)
+      setFatture(Array.isArray(fats) ? fats : [])
+      setProdotti(Array.isArray(prods) ? prods : [])
+    } catch (e) {
+      console.error('FornitoreDetail loadData error:', e)
+      setLoadError(e.message || 'Errore nel caricamento dati')
+      setFatture([])
+      setProdotti([])
     } finally { setLoadingFat(false) }
   }, [fornitore.p_iva, dateFrom, dateTo])
 
@@ -529,6 +539,15 @@ function FornitoreDetail({ fornitore, onClose, onUpdated, dateFrom, dateTo }) {
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-5">
+
+          {/* Errore caricamento */}
+          {loadError && (
+            <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 flex items-center gap-2 mb-4">
+              <AlertCircle size={15} className="text-red-500 flex-shrink-0"/>
+              <p className="text-sm text-red-700"><strong>Errore:</strong> {loadError}</p>
+              <button onClick={loadData} className="ml-auto text-xs text-red-600 hover:underline">Riprova</button>
+            </div>
+          )}
 
           {/* ── TAB FATTURE ── */}
           {tab === 'fatture' && (
@@ -972,8 +991,10 @@ function AllocaSediSection({ dateFrom, dateTo }) {
     fattureCategorieApi?.getAll?.().then(setCategorie).catch(() => fornitoriApi.getCategorie?.().then(setCategorie).catch(()=>{}))
   }, [])
 
+  const [loadAllocaError, setLoadAllocaError] = useState(null)
+
   const load = useCallback(async () => {
-    setLoading(true); setSelected(new Set())
+    setLoading(true); setSelected(new Set()); setLoadAllocaError(null)
     try {
       const data = await fornitoriApi.listaArricchite({
         from: dateFrom, to: dateTo,
@@ -983,7 +1004,11 @@ function AllocaSediSection({ dateFrom, dateTo }) {
         p_iva: filtri.p_iva || undefined,
         limit: 1000,
       })
-      setRows(data)
+      setRows(Array.isArray(data) ? data : [])
+    } catch (e) {
+      console.error('AllocaSedi load error:', e)
+      setLoadAllocaError(e.message || 'Errore caricamento fatture')
+      setRows([])
     } finally { setLoading(false) }
   }, [dateFrom, dateTo, filtri])
 
@@ -1044,6 +1069,13 @@ function AllocaSediSection({ dateFrom, dateTo }) {
 
   return (
     <div className="space-y-4">
+      {loadAllocaError && (
+        <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 flex items-center gap-2">
+          <AlertCircle size={15} className="text-red-500 flex-shrink-0"/>
+          <p className="text-sm text-red-700"><strong>Errore caricamento:</strong> {loadAllocaError}</p>
+          <button onClick={load} className="ml-auto text-xs text-red-600 hover:underline">Riprova</button>
+        </div>
+      )}
       {/* Filtri */}
       <div className="bg-white border border-gray-100 rounded-2xl p-4 space-y-3">
         <div className="flex flex-wrap gap-2 items-center">
@@ -1200,10 +1232,13 @@ export default function FornitoriPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const rows = await fornitoriApi.getAll({ categoria: catFilter !== 'TUTTI' ? catFilter : undefined })
+      const rows = await fornitoriApi.getAll({
+        categoria: catFilter !== 'TUTTI' ? catFilter : undefined,
+        sede: sedeFilter !== 'TUTTI' ? sedeFilter : undefined,
+      })
       setFornitori(rows)
     } finally { setLoading(false) }
-  }, [catFilter])
+  }, [catFilter, sedeFilter])
 
   useEffect(() => { load() }, [load])
 
@@ -1266,12 +1301,20 @@ export default function FornitoriPage() {
       {/* ── VIEW LIST ── */}
       {view === 'list' && (
         <>
-          {/* Filtri categoria */}
+          {/* Filtri — search + sede */}
           <div className="flex gap-2 flex-wrap items-center">
             <Search size={14} className="text-gray-400 flex-shrink-0"/>
             <input className="input py-1.5 text-sm flex-1 min-w-[180px] max-w-xs"
               placeholder="Cerca fornitore o P.IVA..."
               value={search} onChange={e => setSearch(e.target.value)}/>
+            <div className="flex rounded-xl overflow-hidden border border-gray-200 text-xs font-medium">
+              {[['TUTTI','Tutti'],['MA','Solo MA'],['PN','Solo PN']].map(([val,lbl]) => (
+                <button key={val} onClick={() => setSedeFilter(val)}
+                  className={`px-3 py-1.5 transition-colors ${sedeFilter===val ? 'bg-violet-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
+                  {lbl}
+                </button>
+              ))}
+            </div>
           </div>
 
           <div className="flex gap-1.5 flex-wrap">
@@ -1307,21 +1350,18 @@ export default function FornitoriPage() {
                   {filtered.map(f => {
                     const hasOpen = parseInt(f.fatture_aperte || 0) > 0
                     return (
-                      <button key={f.id}
-                        onClick={() => setSelectedF(f)}
-                        className="flex items-center gap-3 p-4 bg-white border border-gray-100 rounded-2xl hover:border-violet-200 hover:shadow-sm transition-all text-left w-full group">
-                        {/* Avatar */}
-                        <div className="w-9 h-9 rounded-xl bg-gray-100 flex items-center justify-center flex-shrink-0 text-sm font-bold text-gray-400 group-hover:bg-violet-50 group-hover:text-violet-600 transition-colors">
+                      <div key={f.id}
+                        className="flex items-center gap-3 p-4 bg-white border border-gray-100 rounded-2xl hover:border-violet-200 hover:shadow-sm transition-all w-full group cursor-pointer">
+                        {/* Avatar — click apre dettaglio */}
+                        <div
+                          onClick={() => setSelectedF(f)}
+                          className="w-9 h-9 rounded-xl bg-gray-100 flex items-center justify-center flex-shrink-0 text-sm font-bold text-gray-400 group-hover:bg-violet-50 group-hover:text-violet-600 transition-colors">
                           {(f.nome || 'F')[0].toUpperCase()}
                         </div>
-                        {/* Info */}
-                        <div className="flex-1 min-w-0">
+                        {/* Info — click apre dettaglio */}
+                        <div className="flex-1 min-w-0" onClick={() => setSelectedF(f)}>
                           <div className="flex items-center gap-2 flex-wrap">
                             <p className="font-medium text-gray-800 text-sm truncate">{f.nome}</p>
-                            <CategoriaSelect
-                              fornitore={f}
-                              onChange={(id, nuova) => setFornitori(prev => prev.map(x => x.id === id ? { ...x, categoria: nuova } : x))}
-                            />
                           </div>
                           <p className="text-xs text-gray-400 mt-0.5 truncate">
                             P.IVA {f.p_iva}
@@ -1329,8 +1369,15 @@ export default function FornitoriPage() {
                             {f.fatture_saldate > 0 && ` · ${f.fatture_saldate} saldate`}
                           </p>
                         </div>
+                        {/* CategoriaSelect — fuori dall'area click, NON apre il modale */}
+                        <div onClick={e => e.stopPropagation()}>
+                          <CategoriaSelect
+                            fornitore={f}
+                            onChange={(id, nuova) => setFornitori(prev => prev.map(x => x.id === id ? { ...x, categoria: nuova } : x))}
+                          />
+                        </div>
                         {/* Dati finanziari */}
-                        <div className="text-right flex-shrink-0 hidden sm:block">
+                        <div className="text-right flex-shrink-0 hidden sm:block" onClick={() => setSelectedF(f)}>
                           <p className="text-sm font-semibold text-gray-800">{eur(f.tot_spesa)}</p>
                           {parseFloat(f.tot_residuo||0) > 0.01
                             ? <p className="text-xs text-amber-600">res. {eur(f.tot_residuo)}</p>
@@ -1338,17 +1385,17 @@ export default function FornitoriPage() {
                           }
                         </div>
                         {/* Badge residuo mobile */}
-                        <div className="text-right sm:hidden">
+                        <div className="text-right sm:hidden" onClick={() => setSelectedF(f)}>
                           <p className="text-xs font-semibold text-gray-700">{eur(f.tot_spesa)}</p>
                         </div>
                         {/* Badge fatture aperte */}
                         {hasOpen && (
-                          <div className="bg-red-100 text-red-600 text-xs font-bold px-2 py-1 rounded-lg flex-shrink-0">
+                          <div className="bg-red-100 text-red-600 text-xs font-bold px-2 py-1 rounded-lg flex-shrink-0" onClick={() => setSelectedF(f)}>
                             {f.fatture_aperte} AP
                           </div>
                         )}
-                        <ChevronRight size={15} className="text-gray-200 flex-shrink-0 group-hover:text-violet-300"/>
-                      </button>
+                        <ChevronRight size={15} className="text-gray-200 flex-shrink-0 group-hover:text-violet-300" onClick={() => setSelectedF(f)}/>
+                      </div>
                     )
                   })}
                 </div>

@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 import { operatoreMeseApi, beMensileApi, kpiTargetsApi, bonusApi } from '../api/client'
 import supabase from '../supabase'
+import PageStatsWidget from '../components/PageStatsWidget'
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const MESI = ['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic']
@@ -47,6 +48,7 @@ function OverviewCard({ icon: Icon, label, value, sub, color = 'indigo', trend }
   const bg  = { indigo:'bg-indigo-50 text-indigo-600', emerald:'bg-emerald-50 text-emerald-600', amber:'bg-amber-50 text-amber-600', violet:'bg-violet-50 text-violet-600', sky:'bg-sky-50 text-sky-600' }
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm flex flex-col gap-1 min-w-0">
+      <PageStatsWidget />
       <div className="flex items-center justify-between gap-2">
         <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-widest truncate">{label}</span>
         <div className={`p-1.5 rounded-lg flex-shrink-0 ${bg[color]}`}><Icon size={14} /></div>

@@ -7,6 +7,7 @@ import { turni as turniApi, employees as empApi, repartiApi } from '../api/clien
 import { bustePaga as bustePagaApi, venduto as vendutoApi } from '../api/client'
 import supabase from '../supabase'
 import useClaudeAI from '../hooks/useClaudeAI'
+import PageStatsWidget from '../components/PageStatsWidget'
 
 // ─── COSTANTI ─────────────────────────────────────────────────────────────────
 
@@ -342,6 +343,7 @@ function ShiftModal({ shift, employee, date, onSave, onDelete, onClose }) {
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <PageStatsWidget />
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-md" onClick={e => e.stopPropagation()}>
         <div className="p-4 border-b flex items-center justify-between">
           <div>

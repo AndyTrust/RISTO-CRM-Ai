@@ -11,6 +11,7 @@
 import React, { useEffect, useState, useMemo, useCallback } from 'react'
 import { costiFissiApi, fattureCategorieApi } from '../api/client'
 import {
+import PageStatsWidget from '../components/PageStatsWidget'
   Home, Plus, Edit3, Save, X, Trash2, TrendingUp, Copy,
   RefreshCw, ChevronRight, AlertCircle, Calendar, Euro
 } from 'lucide-react'
@@ -61,6 +62,7 @@ function VoceRicorrenteModal({ open, onClose, onSaved, categorie, defaultSede, d
 
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => !saving && onClose()}>
+      <PageStatsWidget />
       <div className="bg-white rounded-2xl p-5 max-w-lg w-full space-y-4" onClick={e => e.stopPropagation()}>
         <h3 className="text-lg font-bold flex items-center gap-2"><Plus size={18}/> Nuova voce costo fisso</h3>
 

@@ -7,6 +7,7 @@ import {
 import DateRangePicker, { periodToDates } from '../components/DateRangePicker'
 import { Printer, TrendingUp, TrendingDown, Minus } from 'lucide-react'
 import PageAssistant from '../components/PageAssistant'
+import PageStatsWidget from '../components/PageStatsWidget'
 
 function eur(n) { return n != null ? `€ ${Number(n).toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—' }
 function fmt(n) { return n != null ? Number(n).toLocaleString('it-IT') : '—' }
@@ -93,6 +94,7 @@ export default function ChiusurePage() {
 
   return (
     <>
+    <PageStatsWidget />
     <div className="space-y-5">
       <div className="page-header">
         <div>
