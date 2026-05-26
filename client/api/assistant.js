@@ -1,7 +1,6 @@
 /**
  * Vercel Serverless Function — /api/assistant
  * Proxy per Claude API. Usato dal PageAssistant in produzione (Vercel).
- * In sviluppo, Vite proxy → Express server/routes/assistant.js
  */
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -16,10 +15,11 @@ export default async function handler(req, res) {
   const { messages, system, tools, model } = req.body;
 
   try {
+    const appName = process.env.VITE_APP_NAME || 'Risto CRM';
     const body = {
       model: model || 'claude-sonnet-4-6',
       max_tokens: 4096,
-      system: system || 'Sei un assistente AI del CRM gestionale 140 Grammi. Rispondi in italiano.',
+      system: system || `Sei un assistente AI del CRM gestionale ${appName}. Rispondi in italiano.`,
       messages,
     };
 
@@ -38,9 +38,15 @@ export default async function handler(req, res) {
       body: JSON.stringify(body),
     });
 
+    if (!response.ok) {
+      const errText = await response.text();
+      return res.status(response.status).json({ error: errText });
+    }
+
     const data = await response.json();
-    res.status(response.status).json(data);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
+    return res.status(200).json(data);
+  } catch (error) {
+    console.error('Assistant API error:', error);
+    return res.status(500).json({ error: error.message });
   }
 }

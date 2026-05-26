@@ -27,7 +27,7 @@ const C = {
   loss:    '#ef4444',
 }
 
-const LOC_LABEL = { MAMELI: 'Mameli (MA)', PREDDA_NIEDDA: 'Predda Niedda (PN)' }
+const LOC_LABEL = { MAMELI: 'Sede MA', PREDDA_NIEDDA: 'Sede PN' }
 const MESI_IT = ['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic']
 
 // ── Componenti UI ────────────────────────────────────────────────────────────
@@ -140,7 +140,7 @@ function BESection({ beMensile, loading }) {
       </div>
 
       <TabBar
-        tabs={[{ id: 'MA', label: '🔵 Mameli (MA)' }, { id: 'PN', label: '🟢 Predda Niedda (PN)' }]}
+        tabs={[{ id: 'MA', label: '🔵 Sede MA' }, { id: 'PN', label: '🟢 Sede PN' }]}
         active={sede} onChange={setSede}
       />
 
@@ -429,7 +429,7 @@ function ForecastSection({ forecast, loading }) {
     <div>
       <SectionTitle icon={Zap} label="Previsioni — Prossimi 3 Mesi (con stagionalità 2025)" color={C.forecast} />
       <TabBar
-        tabs={[{ id: 'MAMELI', label: '🔵 Mameli' }, { id: 'PREDDA_NIEDDA', label: '🟢 Predda Niedda' }]}
+        tabs={[{ id: 'MAMELI', label: 'Sede MA' }, { id: 'PREDDA_NIEDDA', label: '🟢 Sede PN' }]}
         active={loc} onChange={setLoc}
       />
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
@@ -515,7 +515,7 @@ function OperatorTargetsSection({ targets, loading }) {
       </div>
 
       <TabBar
-        tabs={[{ id: 'MAMELI', label: '🔵 Mameli' }, { id: 'PREDDA_NIEDDA', label: '🟢 Predda Niedda' }]}
+        tabs={[{ id: 'MAMELI', label: 'Sede MA' }, { id: 'PREDDA_NIEDDA', label: '🟢 Sede PN' }]}
         active={loc} onChange={setLoc}
       />
 

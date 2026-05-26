@@ -801,7 +801,7 @@ function BiSection({ dateFrom, dateTo }) {
           {['TUTTI','MA','PN'].map(s => (
             <button key={s} onClick={() => setSedeFilter(s)}
               className={`px-4 py-1.5 transition-colors ${sedeFilter===s ? 'bg-violet-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
-              {s === 'TUTTI' ? 'Entrambe' : s === 'MA' ? '🔵 Mameli' : '🟣 Predda Niedda'}
+              {s === 'TUTTI' ? 'Entrambe' : s === 'MA' ? 'Sede MA' : 'Sede PN'}
             </button>
           ))}
         </div>
@@ -854,8 +854,8 @@ function BiSection({ dateFrom, dateTo }) {
                 <YAxis tick={{ fontSize: 10 }} tickFormatter={v => `€${(v/1000).toFixed(0)}k`} width={52}/>
                 <Tooltip formatter={v => eur(v)} contentStyle={{ fontSize: 11 }} itemStyle={{ fontSize: 11 }}/>
                 {sedeFilter === 'TUTTI' ? <>
-                  <Area type="monotone" dataKey="MA" stroke="#3b82f6" fill="url(#gradMA)" strokeWidth={2} name="Mameli"/>
-                  <Area type="monotone" dataKey="PN" stroke="#8b5cf6" fill="url(#gradPN)" strokeWidth={2} name="Predda Niedda"/>
+                  <Area type="monotone" dataKey="MA" stroke="#3b82f6" fill="url(#gradMA)" strokeWidth={2} name="Sede MA"/>
+                  <Area type="monotone" dataKey="PN" stroke="#8b5cf6" fill="url(#gradPN)" strokeWidth={2} name="Sede PN"/>
                 </> :
                   <Area type="monotone" dataKey="tot_spesa" stroke="#7c3aed" fill="url(#gradBI)" strokeWidth={2.5} name="Spesa"/>
                 }
@@ -933,8 +933,8 @@ function BiSection({ dateFrom, dateTo }) {
           <p className="text-sm font-semibold text-gray-700 mb-4">🏪 Split costi per sede</p>
           <div className="grid grid-cols-2 gap-4">
             {[
-              { sede: 'MA', label: '🔵 Mameli (CA)', val: data.bySede.MA, color: '#3b82f6' },
-              { sede: 'PN', label: '🟣 Predda Niedda (SS)', val: data.bySede.PN, color: '#8b5cf6' },
+              { sede: 'MA', label: 'Sede MA (CA)', val: data.bySede.MA, color: '#3b82f6' },
+              { sede: 'PN', label: 'Sede PN (SS)', val: data.bySede.PN, color: '#8b5cf6' },
             ].map(s => {
               const tot = (data.bySede.MA || 0) + (data.bySede.PN || 0)
               const pcVal = tot > 0 ? ((s.val / tot) * 100).toFixed(1) : 0
@@ -1146,8 +1146,8 @@ function AllocaSediSection({ dateFrom, dateTo }) {
               <label className="text-xs text-gray-500">Azione</label>
               <select className="input py-1.5 text-sm w-full" value={bulkAction.sposta_a}
                 onChange={e => setBulkAction({...bulkAction, sposta_a: e.target.value})}>
-                <option value="MA">100% Mameli (MA)</option>
-                <option value="PN">100% Predda Niedda (PN)</option>
+                <option value="MA">100% Sede MA</option>
+                <option value="PN">100% Sede PN</option>
                 <option value="SPLIT50">Split 50/50 MA-PN</option>
                 <option value="CUSTOM">Custom %</option>
               </select>
@@ -1469,17 +1469,31 @@ export default function FornitoriPage() {
 
             if (toolName === 'segna_fatture_saldate_bulk') {
               const { fattura_ids, data_pagamento, metodo = 'BONIFICO', note = '' } = toolInput
-              if (!fattura_ids?.length) return 'Nessun ID fattura fornito'
-              // Carica dettagli fatture via API con query su Supabase
-              const SUPA_URL = 'https://xnnvmoqibkubzlrsrife.supabase.co'
-              const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhubnZtb3FpYmt1YnpscnNyaWZlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4NjYwODgsImV4cCI6MjA5MDQ0MjA4OH0.NUJDc0twYyu2e1akgiWhLTu-c386zaRv0CLMdM44NHo'
-              const r = await fetch(`${SUPA_URL}/rest/v1/fatture_importate?id=in.(${fattura_ids.join(',')})&select=id,totale,totale_pagato`, {
-                headers: { apikey: SUPA_KEY, Authorization: `Bearer ${SUPA_KEY}` }
-              })
-              const fats = await r.json()
+
+              // ── Validazione input ──────────────────────────────────────────
+              if (!Array.isArray(fattura_ids) || fattura_ids.length === 0)
+                return 'Errore: fattura_ids deve essere un array non vuoto'
+
+              const isoDateRe = /^\d{4}-\d{2}-\d{2}$/
+              if (!isoDateRe.test(data_pagamento)) {
+                const d = new Date(data_pagamento)
+                if (isNaN(d.getTime()))
+                  return `Errore: data_pagamento non valida ("${data_pagamento}"). Formato richiesto: YYYY-MM-DD`
+              }
+
+              if (!METODI_PAG.includes(metodo))
+                return `Errore: metodo non valido ("${metodo}"). Usa: ${METODI_PAG.join(', ')}`
+              // ─────────────────────────────────────────────────────────────
+
+              // Carica dettagli fatture tramite fattureBi (supabase client — no chiavi hardcoded)
+              const fats = await fattureBi.getByIds(fattura_ids)
+              if (!Array.isArray(fats)) return 'Errore nel recupero delle fatture'
+
               let count = 0
               for (const fat of fats) {
-                const residuo = Math.max(0, +(parseFloat(fat.totale||0) - parseFloat(fat.totale_pagato||0)).toFixed(2))
+                const totale     = parseFloat(fat.totale) || 0
+                const pagato     = parseFloat(fat.totale_pagato) || 0
+                const residuo    = Math.max(0, +(totale - pagato).toFixed(2))
                 if (residuo > 0.01) {
                   await pagApi.add({ fattura_id: fat.id, importo: residuo, data_pagamento, tipo: 'SALDO', metodo, note })
                   count++

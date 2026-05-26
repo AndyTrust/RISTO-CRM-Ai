@@ -1336,7 +1336,6 @@ function MemoriaTab({ onToast }) {
   const SEZIONE_COLORS = {
     turni: 'bg-blue-100 text-blue-700',
     kpi: 'bg-emerald-100 text-emerald-700',
-    ricette: 'bg-amber-100 text-amber-700',
     generale: 'bg-gray-100 text-gray-700',
     chat: 'bg-purple-100 text-purple-700',
     fornitori: 'bg-orange-100 text-orange-700',
@@ -1498,7 +1497,7 @@ function SyncTab({ onToast }) {
     'employees', 'chiusure_giornaliere', 'venduto_camerieri', 'varianti_camerieri',
     'fatture_importate', 'fornitori_fatture', 'fatture_righe', 'buste_paga',
     'turni', 'turni_regole', 'turni_budget', 'crm_memory',
-    'statistiche_tavoli', 'ricette',
+    'statistiche_tavoli',
   ]
 
   const load = useCallback(async () => {

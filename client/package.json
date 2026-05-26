@@ -1,5 +1,5 @@
 {
-  "name": "crm-140grammi-client",
+  "name": "risto-crm-client",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -27,5 +27,6 @@
     "postcss": "^8.4.39",
     "tailwindcss": "^3.4.6",
     "vite": "^5.3.4"
-  }
+  },
+  "description": "Open-source restaurant management CRM \u2014 React + Vite + Supabase"
 }

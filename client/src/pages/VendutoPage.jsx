@@ -343,7 +343,7 @@ function TabTarget({ sede, from, to }) {
             <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
               <div className={`w-2 h-5 rounded-full ${s === 'MA' ? 'bg-indigo-500' : 'bg-green-500'}`} />
               <span className="font-semibold text-sm text-gray-800">
-                {s === 'MA' ? '📍 Mameli (Cagliari)' : '📍 Predda Niedda (Sassari)'}
+                {s === 'MA' ? '📍 Sede MA' : '📍 Sede PN'}
               </span>
               <span className="ml-auto text-xs text-gray-400">{ops.length} operatori</span>
             </div>
@@ -1298,7 +1298,7 @@ export default function VendutoPage() {
         {totFatturato > 0 && location === 'all' && (
           <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
             <div className="flex items-center justify-between mb-2">
-              <p className="text-xs text-gray-500 font-medium uppercase tracking-wide">Mameli</p>
+              <p className="text-xs text-gray-500 font-medium uppercase tracking-wide">Sede MA</p>
               <span className="w-2 h-2 rounded-full bg-indigo-500" />
             </div>
             <p className="text-xl font-bold text-indigo-700">€{(fatMA/1000).toFixed(1)}k</p>
@@ -1308,7 +1308,7 @@ export default function VendutoPage() {
         {totFatturato > 0 && location === 'all' && (
           <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
             <div className="flex items-center justify-between mb-2">
-              <p className="text-xs text-gray-500 font-medium uppercase tracking-wide">Predda Niedda</p>
+              <p className="text-xs text-gray-500 font-medium uppercase tracking-wide">Sede PN</p>
               <span className="w-2 h-2 rounded-full bg-green-500" />
             </div>
             <p className="text-xl font-bold text-green-700">€{(fatPN/1000).toFixed(1)}k</p>
@@ -1373,8 +1373,8 @@ export default function VendutoPage() {
           {/* Quando "all": due colonne MA | PN separate */}
           {!loading && operatoriEnhanced.length > 0 && location === 'all' && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <OperatoriTable ops={opMA} title="Mameli (MA)" color="#6366f1" />
-              <OperatoriTable ops={opPN} title="Predda Niedda (PN)" color="#10b981" />
+              <OperatoriTable ops={opMA} title="Sede MA" color="#6366f1" />
+              <OperatoriTable ops={opPN} title="Sede PN" color="#10b981" />
             </div>
           )}
           {/* Quando sede specifica: lista singola con chart */}

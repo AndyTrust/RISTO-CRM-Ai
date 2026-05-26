@@ -21,8 +21,8 @@ const TABS = [
 ]
 
 const SEDI_UI = [
-  { code: 'MA', label: 'Mameli (Cagliari)' },
-  { code: 'PN', label: 'Predda Niedda (Sassari)' },
+  { code: 'MA', label: 'Sede MA' },
+  { code: 'PN', label: 'Sede PN' },
 ]
 
 function euro(n) {

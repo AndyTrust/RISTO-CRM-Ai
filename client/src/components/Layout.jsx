@@ -5,7 +5,7 @@ import {
   LayoutDashboard, Users, Target, TrendingUp, Receipt, Bot,
   Building2, Settings, ChevronLeft, ChevronRight, RefreshCw,
   BarChart2, Lock, Wallet, UtensilsCrossed, CalendarDays,
-  ChevronDown, ChefHat, Tag, MapPin, Archive, Brain, Cloud, Database, Award, BarChart3
+  ChevronDown, Tag, MapPin, Archive, Brain, Cloud, Database, Award, BarChart3
 } from 'lucide-react'
 import { data as dataApi } from '../api/client'
 
@@ -38,10 +38,8 @@ const NAV_GROUPS = [
     items: [
       { id: 'statistiche',  path: '/statistiche',  icon: UtensilsCrossed, label: 'Statistiche Sala',   desc: 'Tavoli e coperti' },
       { id: 'analytics_bi', path: '/analytics',    icon: BarChart2,       label: 'Analytics & BI',     desc: 'Reportistica avanzata' },
-      { id: 'fornitori',    path: '/fornitori',     icon: Building2,       label: 'Fornitori & Costi',  desc: 'Fatture e food cost' },
+      { id: 'fornitori',    path: '/fornitori',     icon: Building2,       label: 'Fornitori & Costi',  desc: 'Fatture e costi fornitore' },
       { id: 'costi_fissi',  path: '/costi-fissi',   icon: Wallet,          label: 'Costi Fissi',        desc: 'Affitti, consulenze, oneri', alwaysEnabled: true },
-      { id: 'listino',      path: '/listino',       icon: Tag,             label: 'Listino Prodotti',   desc: 'Prezzi, margini, fornitori', alwaysEnabled: true },
-      { id: 'ricette',      path: '/ricette',       icon: ChefHat,         label: 'Ricette & Food Cost',desc: 'Menu e margini' },
       { id: 'chat_claude',  path: '/chat',          icon: Bot,             label: 'Chat Claude AI',     desc: 'Assistente AI integrato' },
     ]
   },

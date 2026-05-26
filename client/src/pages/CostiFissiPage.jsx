@@ -17,8 +17,8 @@ import {
 
 const MESI = ['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic']
 const SEDI = [
-  { code: 'MA', label: 'Mameli' },
-  { code: 'PN', label: 'Predda Niedda' },
+  { code: 'MA', label: 'Sede MA' },
+  { code: 'PN', label: 'Sede PN' },
 ]
 
 const eur = n => n != null
@@ -84,7 +84,7 @@ function VoceRicorrenteModal({ open, onClose, onSaved, categorie, defaultSede, d
           <label className="text-xs text-gray-500">Descrizione</label>
           <input className="input py-1.5 text-sm w-full" value={form.descrizione}
             onChange={e => setForm({...form, descrizione: e.target.value})}
-            placeholder="es. Locazione Mameli, Consulenza Fiscale..."/>
+            placeholder="es. Locazione Sede 1, Consulenza Fiscale..."/>
         </div>
 
         <div>
@@ -175,8 +175,8 @@ function IstatModal({ open, onClose, onSaved, defaultAnno }) {
             <label className="text-xs text-gray-500">Sede</label>
             <select className="input py-1.5 text-sm w-full" value={form.sede} onChange={e => setForm({...form, sede: e.target.value})}>
               <option value="">Entrambe</option>
-              <option value="MA">Mameli</option>
-              <option value="PN">Predda Niedda</option>
+              <option value="MA">Sede MA</option>
+              <option value="PN">Sede PN</option>
             </select>
           </div>
           <div>
@@ -305,8 +305,8 @@ export default function CostiFissiPage() {
         <div className="flex items-center gap-2 flex-wrap">
           <select className="input py-1.5 text-sm" value={sedeF} onChange={e => setSedeF(e.target.value)}>
             <option value="ALL">Tutte le sedi</option>
-            <option value="MA">Mameli</option>
-            <option value="PN">Predda Niedda</option>
+            <option value="MA">Sede MA</option>
+            <option value="PN">Sede PN</option>
           </select>
           <select className="input py-1.5 text-sm" value={annoF} onChange={e => setAnnoF(parseInt(e.target.value))}>
             {annoOpzioni.map(y => <option key={y} value={y}>{y}</option>)}
@@ -330,12 +330,12 @@ export default function CostiFissiPage() {
           <p className="text-2xl font-bold text-gray-800 mt-1">{eur(totAnno)}</p>
         </div>
         <div className="bg-red-50 border border-red-100 rounded-2xl p-4">
-          <p className="text-xs text-red-500 uppercase tracking-wide">Mameli (MA)</p>
+          <p className="text-xs text-red-500 uppercase tracking-wide">Sede MA</p>
           <p className="text-2xl font-bold text-red-700 mt-1">{eur(totaliMese.totSede.MA.reduce((s,v)=>s+v,0))}</p>
           <p className="text-xs text-red-500 mt-0.5">media mese {eur(totaliMese.totSede.MA.reduce((s,v)=>s+v,0)/12)}</p>
         </div>
         <div className="bg-blue-50 border border-blue-100 rounded-2xl p-4">
-          <p className="text-xs text-blue-500 uppercase tracking-wide">Predda Niedda (PN)</p>
+          <p className="text-xs text-blue-500 uppercase tracking-wide">Sede PN</p>
           <p className="text-2xl font-bold text-blue-700 mt-1">{eur(totaliMese.totSede.PN.reduce((s,v)=>s+v,0))}</p>
           <p className="text-xs text-blue-500 mt-0.5">media mese {eur(totaliMese.totSede.PN.reduce((s,v)=>s+v,0)/12)}</p>
         </div>

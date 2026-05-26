@@ -1,3 +1,4 @@
+import useSedi from '../hooks/useSedi'
 import React, { useState, useCallback, useEffect, useMemo } from 'react'
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -27,8 +28,7 @@ const MESI_SHORT = ['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott',
 const MESI_FULL  = ['Gennaio','Febbraio','Marzo','Aprile','Maggio','Giugno',
                     'Luglio','Agosto','Settembre','Ottobre','Novembre','Dicembre']
 
-const SEDI = [{ id: 'MA', label: 'Sede MA (Cagliari)', color: '#ef4444' },
-              { id: 'PN', label: 'Sede PN (Sassari)', color: '#3b82f6' }]
+// Sedi caricate dinamicamente da useSedi hook
 
 function KpiCard({ label, value, sub, icon: Icon, color = 'blue' }) {
   const g = { blue: 'from-blue-500 to-blue-600', green: 'from-emerald-500 to-emerald-600',
@@ -299,7 +299,7 @@ function StatoDipendentiTab({ statoDipendenti, sedeFilter }) {
             <div className="flex items-start justify-between mb-3">
               <div>
                 <h4 className="font-semibold text-white">{emp.employee_name}</h4>
-                <p className="text-xs text-gray-400">{emp.location === 'MA' ? 'Sede MA · Cagliari' : emp.location === 'PN' ? 'Sede PN · Sassari' : emp.location || '—'}</p>
+                <p className="text-xs text-gray-400">{emp.location || '—'}</p>
               </div>
               <span className={`px-2 py-1 rounded text-xs font-semibold ${emp.attivo ? 'bg-emerald-900/40 text-emerald-300 border border-emerald-700' : 'bg-gray-700/60 text-gray-400 border border-gray-600'}`}>
                 {emp.attivo ? 'Attivo' : 'Ex dipendente'}

@@ -19,11 +19,10 @@ const MODELS = [
 ]
 
 const SYSTEM_BASE = `Sei l'assistente AI del Risto CRM — ristorante italiano con due sedi:
-- **Sede MA** (Cagliari)
-- **Sede PN** (Sassari)
+- Le sedi disponibili sono configurabili in Admin → Sedi
 
 Hai accesso completo ai dati del CRM: chiusure cassa, venduto per operatore, fatture acquisto,
-food cost ingredienti, buste paga, turni, KPI camerieri.
+buste paga, turni, KPI camerieri.
 
 Puoi SALVARE informazioni nella memoria del CRM usando questa sintassi ESATTA nella tua risposta:
 SALVA_MEMORIA[sezione/chiave]=valore
@@ -32,8 +31,6 @@ Esempi:
 SALVA_MEMORIA[generale/obiettivo_fatturato_mensile]=€45.000
 SALVA_MEMORIA[turni/regola_costo_personale_max]=28%
 SALVA_MEMORIA[kpi/top_cameriere_marzo]=MARIO ROSSI con 280 coperti
-SALVA_MEMORIA[ricette/nota_food_cost_target]=sotto il 30% per i primi piatti
-
 Quando salvi in memoria, menzionalo nella risposta in modo naturale.
 
 Puoi analizzare KPI, confrontare sedi, suggerire miglioramenti, calcolare costi,
@@ -46,7 +43,6 @@ const SEZIONI_MEMORIA = [
   { id: 'generale',  label: 'Generale',  icon: '🏠' },
   { id: 'turni',     label: 'Turni',     icon: '📅' },
   { id: 'kpi',       label: 'KPI',       icon: '🎯' },
-  { id: 'ricette',   label: 'Ricette',   icon: '👨‍🍳' },
   { id: 'fornitori', label: 'Fornitori', icon: '🏭' },
   { id: 'budget',    label: 'Budget',    icon: '💰' },
 ]
@@ -347,7 +343,6 @@ export default function ChatClaude() {
     'Quali sono i 5 prodotti più venduti degli ultimi 30 giorni?',
     'Analizza il costo personale rispetto al fatturato',
     'Suggerisci come ottimizzare i turni per ridurre costi',
-    'Calcola il food cost medio delle ricette create',
     'Ricorda che il target costo personale è il 28% del fatturato',
   ]
 

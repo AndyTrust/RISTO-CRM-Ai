@@ -1,7 +1,7 @@
 /**
  * useClaudeAI.js
  * Hook condiviso per chiamare Claude AI via Supabase Edge Function (claude-proxy).
- * Usato da ChatClaude, RicettePage, TurniPage, ecc.
+ * Usato da ChatClaude, TurniPage, PerformancePage, ecc.
  *
  * La chiave API Anthropic è gestita SOLO sul server (Supabase Secret).
  * Il frontend non vede mai la chiave.
@@ -29,7 +29,7 @@ export async function buildCrmContext(options = {}) {
 
   const parts = []
   parts.push(`Oggi: ${new Date().toLocaleDateString('it-IT', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`)
-  parts.push(`Risto CRM — sedi: Sede MA (Cagliari) e Sede PN (Sassari)`)
+  parts.push(`Risto CRM`)
 
   try {
     // Chiusure ultimi 30 gg

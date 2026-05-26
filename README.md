@@ -1,8 +1,13 @@
 # 🍽️ Risto CRM — Open Source Restaurant Management
 
-A modern, fully-featured CRM for restaurant management built with React + Vite + Supabase. Deploy in minutes. No server required.
+A modern, fully-featured CRM for restaurants built with **React + Vite + Supabase**. Deploy in minutes. No dedicated server required.
 
 > Built with ❤️ by [140 Grammi](https://140grammi.it) — open sourced under MIT License.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Supabase](https://img.shields.io/badge/Supabase-3ECF8E?logo=supabase&logoColor=white)](https://supabase.com)
+[![React](https://img.shields.io/badge/React-18-61DAFB?logo=react)](https://reactjs.org)
+[![Vite](https://img.shields.io/badge/Vite-5-646CFF?logo=vite)](https://vitejs.dev)
 
 ---
 
@@ -14,201 +19,245 @@ A modern, fully-featured CRM for restaurant management built with React + Vite +
 - **Sales by Operator** — Detailed revenue breakdown per waiter
 - **Suppliers & Invoices** — SdI (Italian e-invoice) import and analysis
 - **Employee Management** — Multi-location, cost split, transfers
-- **Shift Management** — Schedule and actual hours with cost projection
-- **Payslips** — Payroll tracking with CCNL multiplier
-- **Statistics** — Hourly heatmaps, table turnover, product mix
-- **Analytics & BI** — Cross-module data intelligence
+- **Shift Management** — Schedule with budget and actual hours
+- **Payslips** — Payroll tracking with CCNL multiplier (Italian labor law)
+- **Break-Even Module** — Monthly BE calculation with real cost data
+- **Statistics** — Table heatmaps, turnover, product mix
+- **Analytics & BI** — Cross-module business intelligence
 - **AI Chat** — Claude-powered assistant for business questions
-- **1-click Backup & Restore** — Full Supabase snapshot in the browser
-- **Multi-location** — Add unlimited locations with auto-replicated structure
-- **Quick Start Wizard** — Onboarding for new installations
+- **Multi-location** — Add unlimited restaurants (sedi) from one dashboard
+- **Quick Start Wizard** — Guided onboarding for new installations
 
 ---
 
-## 🚀 Quick Start
-
-### 1. Create a Supabase project
-
-Go to [supabase.com](https://supabase.com), create a free project, and run the migration SQL (see `supabase/migrations/`).
-
-### 2. Clone and configure
-
-```bash
-git clone https://github.com/AndyTrust/RISTO-CRM-Ai.git
-cd RISTO-CRM-Ai/client
-cp .env.example .env.local
-```
-
-Edit `.env.local`:
-```env
-VITE_APP_NAME=Il Tuo Ristorante
-VITE_SUPABASE_URL=https://your-project-id.supabase.co
-VITE_SUPABASE_ANON_KEY=your-anon-public-key
-```
-
-### 3. Install and run
-
-```bash
-cd ..
-npm run install:all
-npm run dev
-# → open http://localhost:5173
-```
-
-The **Quick Start Wizard** will guide you through:
-- Restaurant name and branding
-- Adding your locations (sedi)
-- Choosing your data storage (OneDrive / Google Drive / Local / Supabase-only)
-- Enabling modules
-
-### 4. Deploy to Vercel (optional)
-
-```bash
-cd client
-npm run build
-vercel deploy --prod
-```
-
-Add the same environment variables in Vercel Dashboard → Settings → Environment Variables.
-
----
-
-## 🗃️ Database Setup
-
-Run the Supabase migration to create all tables:
-
-```sql
--- In Supabase SQL Editor, run the contents of:
--- supabase/migrations/001_initial_schema.sql
-```
-
-The migration creates all tables with Row Level Security disabled for anonymous access (suitable for internal tools behind a VPN or private Vercel deployment).
-
----
-
-## 📁 Project Structure
+## 🏗️ Architecture
 
 ```
 RISTO-CRM-Ai/
-├── client/                      ← React + Vite (production on Vercel)
+├── client/                 # React + Vite frontend
 │   ├── src/
-│   │   ├── api/
-│   │   │   ├── supabase-client.js   ← All Supabase queries
-│   │   │   └── client.js            ← Re-exports
-│   │   ├── components/
-│   │   │   └── Layout.jsx           ← Sidebar navigation
-│   │   ├── pages/
-│   │   │   ├── Dashboard.jsx
-│   │   │   ├── ChiusurePage.jsx     ← Daily closings
-│   │   │   ├── VendutoPage.jsx      ← Sales
-│   │   │   ├── KPIWaiters.jsx       ← Waiter KPIs
-│   │   │   ├── FornitoriPage.jsx    ← Suppliers
-│   │   │   ├── Employees.jsx
-│   │   │   ├── TurniPage.jsx        ← Shifts
-│   │   │   ├── BustePaga.jsx        ← Payslips
-│   │   │   ├── StatisticheSala.jsx  ← Statistics
-│   │   │   ├── AnalyticsBI.jsx      ← Business intelligence
-│   │   │   ├── ChatClaude.jsx       ← AI chat
-│   │   │   ├── Settings.jsx
-│   │   │   ├── AdminPanel.jsx       ← Backoffice
-│   │   │   └── SetupWizard.jsx      ← First-run wizard
-│   │   ├── App.jsx                  ← Router + module context
-│   │   └── supabase.js              ← Supabase client
-│   ├── .env.example             ← Copy to .env.local
-│   └── vercel.json              ← SPA rewrite rules
-│
-└── server/                      ← Optional local Express dev server
+│   │   ├── pages/          # All CRM pages
+│   │   ├── components/     # Layout, shared components
+│   │   ├── api/            # Supabase client + API layer
+│   │   └── hooks/          # useClaudeAI, etc.
+│   ├── .env.example        # Copy → .env.local
+│   └── vite.config.js
+├── supabase/
+│   ├── schema.sql          # All tables + views (run first)
+│   └── seed.sql            # Default categories + modules
+├── setup.js                # Interactive first-time setup script
+└── README.md
+```
+
+**Stack:** React 18 · Vite 5 · Tailwind CSS · Supabase (PostgreSQL) · Recharts · Lucide Icons · Anthropic Claude (optional)
+
+---
+
+## 🚀 Installation (5 minutes)
+
+### Prerequisites
+
+- [Node.js 18+](https://nodejs.org)
+- A free [Supabase](https://supabase.com) account
+- A free [Vercel](https://vercel.com) account (for deployment)
+
+---
+
+### Step 1 — Clone the repository
+
+```bash
+git clone https://github.com/AndyTrust/RISTO-CRM-Ai.git
+cd RISTO-CRM-Ai
 ```
 
 ---
 
-## ⚙️ Environment Variables
+### Step 2 — Create your Supabase project
 
-| Variable | Description |
-|----------|-------------|
-| `VITE_APP_NAME` | Your restaurant name (shown in sidebar) |
-| `VITE_SUPABASE_URL` | Supabase project URL |
-| `VITE_SUPABASE_ANON_KEY` | Supabase anon/public key |
-
----
-
-## 📊 Supabase Tables
-
-| Table | Description |
-|-------|-------------|
-| `chiusure_giornaliere` | Daily POS closing data |
-| `kpi_revenues` | Waiter revenue KPIs |
-| `employees` | Staff registry |
-| `shifts` | Work shifts |
-| `buste_paga` | Payroll records |
-| `fatture_importate` | Imported invoices (SdI) |
-| `fornitori_fatture` | Supplier registry |
-| `modules` | CRM module toggles |
-| `crm_config` | Key-value configuration store |
-| `sedi` | Locations registry |
-| `crm_backups` | Full database snapshots |
+1. Go to [supabase.com](https://supabase.com) → **New project**
+2. Choose a name and a strong database password
+3. Wait ~2 minutes for the project to provision
+4. Go to **Project Settings → API** and copy:
+   - **Project URL** (looks like `https://abc123.supabase.co`)
+   - **anon public** key (long string starting with `eyJ...`)
 
 ---
 
-## 🔧 Modules (enable/disable from Settings)
+### Step 3 — Set up the database
 
-Each module can be independently enabled/disabled from the Settings page:
+In your Supabase project:
 
-| Module | Route | Description |
-|--------|-------|-------------|
-| Dashboard | `/dashboard` | Overview |
-| Chiusure | `/chiusure` | Daily closings |
-| Venduto | `/venduto` | Sales by operator |
-| KPI Camerieri | `/kpi` | Waiter targets |
-| Fornitori | `/fornitori` | Supplier invoices |
-| Dipendenti | `/dipendenti` | Employee registry |
-| Turni | `/turni` | Shift management |
-| Buste Paga | `/buste-paga` | Payroll |
-| Statistiche | `/statistiche` | Hall statistics |
-| Analytics BI | `/analytics` | BI dashboard |
-| Chat Claude | `/chat` | AI assistant |
+1. Go to **SQL Editor** → **New query**
+2. Paste the contents of `supabase/schema.sql` → **Run** (creates all tables & views)
+3. Create another query, paste `supabase/seed.sql` → **Run** (adds default categories & data)
 
 ---
 
-## 🏪 Multi-Location Support
+### Step 4 — Run the interactive setup
 
-Add unlimited locations from **Admin → Sedi**. Each location:
-- Gets a unique short code (e.g. `MA`, `PN`, `FI`)
-- Appears in all module filters automatically
-- Inherits the full module structure
+```bash
+node setup.js
+```
+
+This guided script will:
+- Ask for your Supabase URL and anon key
+- Test the connection automatically
+- Ask for your restaurant name and locations
+- Create `client/.env.local` securely (never committed to git)
+
+> **Security:** Your credentials are stored only in `client/.env.local` on your machine. The file is in `.gitignore` — it will never be pushed to GitHub.
 
 ---
 
-## 🔒 Security Notes
+### Step 5 — Start locally
 
-This CRM is designed for **internal use** (single restaurant team). By default:
-- All Supabase tables allow anonymous read/write
-- No authentication required
-- Suitable for use behind a private Vercel deployment or VPN
+```bash
+cd client
+npm install
+npm run dev
+```
 
-To add authentication, wrap your app with Supabase Auth (see `AuthGate.jsx`).
+Open [http://localhost:5173](http://localhost:5173) — the **Setup Wizard** will guide you through the rest.
+
+---
+
+### Step 6 — Deploy to Vercel (free)
+
+**Option A — Vercel CLI:**
+```bash
+npm install -g vercel
+vercel deploy --prod   # run from repo root (RISTO-CRM-Ai/)
+```
+
+**Option B — Vercel Dashboard:**
+1. Go to [vercel.com](https://vercel.com) → **Import Project** → connect GitHub
+2. Set **Root Directory** to `client`
+3. Add environment variables (same as `.env.local`):
+   - `VITE_SUPABASE_URL`
+   - `VITE_SUPABASE_ANON_KEY`
+   - `VITE_APP_NAME`
+
+> ⚠️ Never paste your `.env.local` file into GitHub or Vercel's public settings. Always enter values manually in the Vercel dashboard.
+
+---
+
+## 🏢 Multi-Location Setup
+
+Risto CRM supports unlimited restaurant locations. Each location has:
+- A short **code** (2–4 chars, e.g. `MI`, `RM`, `S1`)
+- A **name** (e.g. `Milano Centro`)
+- A **color** for visual distinction
+
+Add locations during the Setup Wizard, or later from **Admin → Sedi**.
+
+All modules (chiusure, venduto, KPI, etc.) automatically filter by location. Employees can be split across multiple locations with configurable cost allocation percentages.
+
+---
+
+## 📂 Data Import
+
+Risto CRM can import data from multiple sources:
+
+| Data Type | Format | How |
+|-----------|--------|-----|
+| Daily Closings | Excel (.xlsx) from iPratico/POS | Admin → Import |
+| Waiter Sales | Excel (.xlsx) — "Venduto per operatore" | Admin → Import |
+| Supplier Invoices | XML SdI (Italian e-invoices) | Fornitori → Import ZIP |
+| Payslips | PDF (auto-extracted) | Buste Paga → Import PDF |
+| Shifts | Manual entry or CSV | Turni |
+
+---
+
+## 🔑 Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `VITE_SUPABASE_URL` | ✅ | Your Supabase project URL |
+| `VITE_SUPABASE_ANON_KEY` | ✅ | Supabase anon/public key |
+| `VITE_APP_NAME` | ✅ | App title (e.g. `My Restaurant CRM`) |
+| `ANTHROPIC_API_KEY` | Optional | Enables Claude AI chat module |
+
+> `ANTHROPIC_API_KEY` should be a **server-side** env var (set in Vercel, not in `.env.local`).
+
+---
+
+## 🔒 Security
+
+- **No secrets in the repo** — `.env.local` is gitignored
+- **Row Level Security (RLS)** enabled on all Supabase tables
+- **Anon key** is safe to include in the frontend (it's a public key with RLS)
+- **Supabase service role key** is never used in the frontend
+- All credentials validated locally via `setup.js` before writing `.env.local`
+
+---
+
+## 🧩 Module System
+
+Every feature is a module. Modules can be enabled/disabled from **Admin → Moduli** without code changes. The state is stored in the `modules` table in Supabase.
+
+---
+
+## 🛠️ Development
+
+```bash
+cd client
+npm install
+npm run dev      # start dev server (http://localhost:5173)
+npm run build    # production build
+npm run preview  # preview production build
+```
+
+---
+
+## 🗃️ Database Schema
+
+See `supabase/schema.sql` for the full annotated schema. Key tables:
+
+| Table | Purpose |
+|-------|---------|
+| `sedi` | Restaurant locations |
+| `employees` | Staff members |
+| `chiusure_giornaliere` | Daily POS closings |
+| `venduto_camerieri` | Waiter sales detail |
+| `fatture_importate` | Supplier invoices |
+| `buste_paga` | Payslips |
+| `shifts` | Shift schedule |
+| `kpi_targets` | Waiter KPI targets |
+| `costi_fissi` | Fixed monthly costs |
+| `crm_config` | App configuration |
+
+20+ analytical views are pre-built for dashboards (break-even, per-operator KPIs, monthly P&L, etc.).
 
 ---
 
 ## 🤖 Claude AI Integration
 
-The Chat module and Skills use [Anthropic Claude](https://anthropic.com). To enable:
+The **Chat AI** module uses [Anthropic Claude](https://anthropic.com). To enable:
+
 1. Get an API key at [console.anthropic.com](https://console.anthropic.com)
-2. Add `ANTHROPIC_API_KEY` as a server-side environment variable
-3. The Chat module sends queries to Claude for restaurant business analysis
+2. Add `ANTHROPIC_API_KEY` to your Vercel project env vars
+3. Enable the `chat_claude` module in Admin settings
+
+The AI has context of your CRM data and can answer business questions, explain trends, and suggest actions.
+
+---
+
+## 🤝 Contributing
+
+Pull requests are welcome! Please:
+- Open an issue first for major changes
+- Follow existing code style (ESLint, Prettier)
+- Test with at least one location setup
 
 ---
 
 ## 📄 License
 
-MIT © 2026 140 Grammi
-
-Free to use, modify, and distribute. Attribution appreciated but not required.
+MIT License — see [LICENSE](LICENSE)
 
 ---
 
-## 🙏 Contributing
+## 🙏 Credits
 
-PRs welcome! If you're using this for your own restaurant, we'd love to hear about it.
-
-Open an issue to report bugs or request features.
+Built and open-sourced by **140 Grammi** (Cagliari & Sassari, Italy).  
+Powered by [Supabase](https://supabase.com), [Vercel](https://vercel.com), [Anthropic Claude](https://anthropic.com).

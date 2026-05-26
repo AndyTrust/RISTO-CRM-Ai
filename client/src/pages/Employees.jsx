@@ -178,8 +178,8 @@ function EmployeeForm({ initial, reparti, ruoliDB, onSave, onClose }) {
             <div>
               <label className="text-xs text-gray-500 mb-1 block">Locale *</label>
               <select className="select" value={form.sede} onChange={e => set('sede', e.target.value)}>
-                <option value="MA">Sede MA (Mameli)</option>
-                <option value="PN">Sede PN (Predda Niedda)</option>
+                <option value="MA">Sede MA (Sede MA)</option>
+                <option value="PN">Sede PN (Sede PN)</option>
               </select>
             </div>
           </div>

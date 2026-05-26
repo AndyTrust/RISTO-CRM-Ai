@@ -17,8 +17,170 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { MessageSquare, X, Send, Bot, User, Loader, ChevronDown, ChevronUp, Wrench, AlertCircle, Lightbulb } from 'lucide-react'
+import supabase from '../supabase'
 
 const API_ENDPOINT = '/api/assistant'
+
+// ─── Sicurezza query_crm: whitelist tabelle e colonne consentite ──────────────
+// Solo tabelle operative — escluse: crm_config, buste_paga (dati sensibili paga),
+// employees (dati personali), auth/storage Supabase interni.
+const QUERY_CRM_ALLOWED_TABLES = [
+  'venduto_camerieri',
+  'chiusure_giornaliere',
+  'varianti_camerieri',
+  'statistiche_tavoli',
+  'kpi_targets_individuale',
+  'kpi_targets_team',
+  'target_venduto_operatori',
+  'fatture_importate',
+]
+
+// Colonne consentite per tabella (esclude dati sensibili come importi paga)
+const QUERY_CRM_ALLOWED_COLUMNS = {
+  venduto_camerieri:         ['sede', 'operatore', 'data_inizio', 'data_fine', 'categoria', 'prodotto', 'quantita', 'totale'],
+  chiusure_giornaliere:      ['sede', 'data', 'totale_venduto_dgfe', 'totale_venduto_ipratico', 'totale_fiscalizzato_fatture', 'n_doc_fiscali_emessi', 'coperti', 'coperto_medio', 'scontrino_medio'],
+  varianti_camerieri:        ['sede', 'operatore', 'data_inizio', 'data_fine', 'variante', 'aggiunta_qty', 'aggiunta_importo', 'rimozione_qty', 'rimozione_importo'],
+  statistiche_tavoli:        ['sede', 'data_inizio', 'data_fine', 'tavolo', 'coperti', 'incasso'],
+  kpi_targets_individuale:   ['operatore', 'sede', 'anno', 'mese', 'target'],
+  kpi_targets_team:          ['sede', 'anno', 'mese', 'target'],
+  target_venduto_operatori:  ['sede', 'operatore', 'anno', 'mese', 'target_pezzi', 'target_pezzi_valorizzati'],
+  fatture_importate:         ['id', 'denominazione', 'piva', 'numero_fattura', 'data_fattura', 'imponibile', 'iva', 'totale', 'sede', 'totale_pagato'],
+}
+
+// Operatori consentiti (no ilike su tabelle sensibili; esclude operatori non standard)
+const QUERY_CRM_ALLOWED_OPS = ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'ilike', 'in']
+
+/**
+ * Valida l'input di query_crm contro le whitelist.
+ * Ritorna una stringa di errore se non valido, altrimenti null.
+ */
+function validateQueryCRMInput(input) {
+  const { table, select = '*', filters = [], not_ilike, order_by } = input
+
+  if (!QUERY_CRM_ALLOWED_TABLES.includes(table)) {
+    return `Tabella non consentita: "${table}". Tabelle disponibili: ${QUERY_CRM_ALLOWED_TABLES.join(', ')}`
+  }
+
+  const allowed = QUERY_CRM_ALLOWED_COLUMNS[table] || []
+
+  // Valida colonne in select (se non è '*')
+  if (select && select !== '*') {
+    const selectedCols = select.split(',').map(c => c.trim())
+    for (const col of selectedCols) {
+      if (!allowed.includes(col)) {
+        return `Colonna non consentita in select: "${col}" su tabella "${table}"`
+      }
+    }
+  }
+
+  // Valida filtri
+  for (const f of filters) {
+    if (!QUERY_CRM_ALLOWED_OPS.includes(f.op)) {
+      return `Operatore non consentito: "${f.op}"`
+    }
+    if (!allowed.includes(f.column)) {
+      return `Colonna filtro non consentita: "${f.column}" su tabella "${table}"`
+    }
+  }
+
+  // Valida not_ilike
+  if (not_ilike && !allowed.includes(not_ilike.column)) {
+    return `Colonna not_ilike non consentita: "${not_ilike.column}" su tabella "${table}"`
+  }
+
+  // Valida order_by
+  if (order_by && !allowed.includes(order_by)) {
+    return `Colonna order_by non consentita: "${order_by}" su tabella "${table}"`
+  }
+
+  return null // OK
+}
+
+// ─── Tool built-in: query CRM Supabase ───────────────────────────────────────
+const QUERY_CRM_TOOL = {
+  name: 'query_crm',
+  description: `Esegui una query SQL sul database CRM (Supabase PostgreSQL) per rispondere a domande sui dati del ristorante.
+Tabelle disponibili:
+- venduto_camerieri: sede, operatore, data_inizio, data_fine, categoria, prodotto, quantita, totale — venduto per operatore
+- chiusure_giornaliere: sede, data, totale_venduto_dgfe, totale_venduto_ipratico, totale_fiscalizzato_fatture, n_doc_fiscali_emessi, coperti, coperto_medio, scontrino_medio — chiusure cassa giornaliere
+- varianti_camerieri: sede, operatore, data_inizio, data_fine, variante, aggiunta_qty, aggiunta_importo, rimozione_qty, rimozione_importo — varianti per operatore
+- statistiche_tavoli: sede, data_inizio, data_fine, tavolo, coperti, incasso — statistiche tavoli
+- kpi_targets_individuale: operatore, sede, anno, mese, target — target KPI individuali
+- kpi_targets_team: sede, anno, mese, target — target KPI team
+- target_venduto_operatori: sede, operatore, anno, mese, target_pezzi, target_pezzi_valorizzati — target venduto
+- fatture_importate: denominazione, piva, numero_fattura, data_fattura, imponibile, iva, totale, sede — fatture fornitori
+Le sedi disponibili si trovano nella tabella 'sedi' (colonne: codice, nome).
+Usa questo tool per rispondere a qualsiasi domanda sui dati reali del CRM.`,
+  input_schema: {
+    type: 'object',
+    properties: {
+      table: { type: 'string', enum: QUERY_CRM_ALLOWED_TABLES, description: 'Nome tabella Supabase' },
+      select: { type: 'string', description: 'Colonne da selezionare (default: *)', default: '*' },
+      filters: {
+        type: 'array',
+        description: 'Filtri WHERE da applicare',
+        items: {
+          type: 'object',
+          properties: {
+            column: { type: 'string' },
+            op: { type: 'string', enum: QUERY_CRM_ALLOWED_OPS },
+            value: {}
+          },
+          required: ['column', 'op', 'value']
+        }
+      },
+      not_ilike: {
+        type: 'object',
+        description: 'Filtro NOT ILIKE (es. escludere totali/medie)',
+        properties: { column: { type: 'string' }, value: { type: 'string' } }
+      },
+      order_by: { type: 'string', description: 'Colonna per ORDER BY' },
+      order_asc: { type: 'boolean', description: 'true = ASC, false = DESC', default: false },
+      limit: { type: 'integer', description: 'Numero massimo di righe (max 500)', default: 100 }
+    },
+    required: ['table']
+  }
+}
+
+async function executeQueryCRM(input) {
+  // Valida contro whitelist prima di qualsiasi operazione
+  const validationError = validateQueryCRMInput(input)
+  if (validationError) return `Accesso negato: ${validationError}`
+
+  const { table, select = '*', filters = [], not_ilike, order_by, order_asc = false, limit = 100 } = input
+  try {
+    let q = supabase.from(table).select(select)
+    for (const f of filters) {
+      if (f.op === 'eq') q = q.eq(f.column, f.value)
+      else if (f.op === 'neq') q = q.neq(f.column, f.value)
+      else if (f.op === 'gt') q = q.gt(f.column, f.value)
+      else if (f.op === 'gte') q = q.gte(f.column, f.value)
+      else if (f.op === 'lt') q = q.lt(f.column, f.value)
+      else if (f.op === 'lte') q = q.lte(f.column, f.value)
+      else if (f.op === 'ilike') q = q.ilike(f.column, `%${f.value}%`)
+      else if (f.op === 'in') q = q.in(f.column, Array.isArray(f.value) ? f.value : [f.value])
+    }
+    if (not_ilike) q = q.not(not_ilike.column, 'ilike', `%${not_ilike.value}%`)
+    if (order_by) q = q.order(order_by, { ascending: order_asc })
+    q = q.limit(Math.min(Math.max(limit, 1), 500))
+    const { data, error } = await q
+    if (error) return `Errore query: ${error.message}`
+    if (!data || data.length === 0) return 'Nessun risultato trovato.'
+    // Formatta come tabella testuale
+    const cols = Object.keys(data[0])
+    const header = cols.join(' | ')
+    const sep = cols.map(c => '-'.repeat(Math.max(c.length, 8))).join('-|-')
+    const rows = data.map(r => cols.map(c => {
+      const v = r[c]
+      if (v === null || v === undefined) return '—'
+      if (typeof v === 'number') return v.toLocaleString('it-IT')
+      return String(v)
+    }).join(' | '))
+    return `${header}\n${sep}\n${rows.join('\n')}\n\n(${data.length} righe)`
+  } catch (e) {
+    return `Errore: ${e.message}`
+  }
+}
 
 // ─── Messaggio renderizzato ───────────────────────────────────────────────────
 function Message({ msg }) {
@@ -109,31 +271,36 @@ export default function PageAssistant({ pagina, systemContext, tools = [], onToo
   }, [open, messages.length])
 
   const buildSystemPrompt = useCallback(() => {
-    let sys = `Sei l'assistente AI del CRM gestionale **140 Grammi** — ristorante con sedi Mameli (MA) e Predda Niedda (PN).
+    let sys = `Sei l'assistente AI del CRM gestionale. Puoi accedere ai dati del ristorante (chiusure, venduto, dipendenti, fatture, KPI). Parla in italiano.
 Pagina corrente: **${pagina}**.
 Rispondi sempre in italiano, in modo conciso e diretto.
-Quando esegui azioni (registrare pagamenti, modificare dati), conferma brevemente quello che hai fatto.`
+Quando esegui azioni (registrare pagamenti, modificare dati), conferma brevemente quello che hai fatto.
+Hai accesso diretto al database CRM tramite lo strumento **query_crm**: usalo SEMPRE per rispondere a domande sui dati reali (venduto, coperti, camerieri, fatture, KPI, buste paga, ecc.) invece di rispondere con dati generici o inventati.
+Quando cerchi errori o incongruenze nei dati, esegui query per confrontare i valori e segnala anomalie specifiche con i dati reali.`
     if (systemContext) sys += `\n\n${systemContext}`
-    if (tools.length > 0) {
-      sys += `\n\nHai a disposizione i seguenti strumenti per operare direttamente sul CRM:
-${tools.map(t => `- **${t.name}**: ${t.description}`).join('\n')}
-Usa questi strumenti quando l'utente ti chiede di eseguire azioni concrete.`
+    const allTools = [...tools, QUERY_CRM_TOOL]
+    if (allTools.length > 0) {
+      sys += `\n\nHai a disposizione i seguenti strumenti:
+${allTools.map(t => `- **${t.name}**: ${t.description.split('\n')[0]}`).join('\n')}
+Usa questi strumenti per eseguire azioni concrete e rispondere con dati reali.`
     }
     return sys
   }, [pagina, systemContext, tools])
 
   const callAssistant = useCallback(async (apiMessages) => {
+    // Sempre includi QUERY_CRM_TOOL + eventuali tool di pagina
+    const allToolDefs = [QUERY_CRM_TOOL, ...tools].map(t => ({
+      name: t.name,
+      description: t.description,
+      input_schema: t.input_schema,
+    }))
     const res = await fetch(API_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         messages: apiMessages,
         system: buildSystemPrompt(),
-        tools: tools.length > 0 ? tools.map(t => ({
-          name: t.name,
-          description: t.description,
-          input_schema: t.input_schema,
-        })) : undefined,
+        tools: allToolDefs,
       }),
     })
     if (!res.ok) {
@@ -176,7 +343,10 @@ Usa questi strumenti quando l'utente ti chiede di eseguire azioni concrete.`
 
         let result = 'Eseguito'
         try {
-          if (onToolCall) {
+          if (block.name === 'query_crm') {
+            // Gestito internamente — query diretta Supabase
+            result = await executeQueryCRM(block.input)
+          } else if (onToolCall) {
             result = await onToolCall(block.name, block.input)
           }
         } catch (e) {

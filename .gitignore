@@ -1,12 +1,40 @@
+# Dependencies
 node_modules/
-data/
-*.db
+.pnp/
+
+# Build
+dist/
+dist-ssr/
+*.timestamp-*.mjs
+
+# Environment — NEVER commit
 .env
 .env.local
 .env.*.local
+*.env
+
+# Data / uploads
+data/
+uploads/
+*.db
+*.sqlite
+
+# Logs
 *.log
-dist/
-*.timestamp-*.mjs
+npm-debug.log*
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+*.swp
+
+# Setup markers
+.setup_done
 .ssh_deploy_key
 .ssh_deploy_key.pub
+
+# Vercel
+.vercel

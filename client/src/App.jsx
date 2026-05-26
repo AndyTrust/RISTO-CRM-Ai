@@ -1,5 +1,48 @@
 import React, { useState, useEffect } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
+
+// ─── Error Boundary ───────────────────────────────────────────────────────────
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props)
+    this.state = { hasError: false, error: null }
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error }
+  }
+
+  componentDidCatch(error, info) {
+    // Log in produzione senza esporre stack al DOM
+    console.error('[CRM ErrorBoundary]', error, info?.componentStack)
+  }
+
+  render() {
+    if (!this.state.hasError) return this.props.children
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: '#fafafa', fontFamily: 'system-ui, sans-serif', padding: '2rem' }}>
+        <div style={{ maxWidth: 480, textAlign: 'center' }}>
+          <div style={{ fontSize: 48, marginBottom: 16 }}>⚠️</div>
+          <h2 style={{ fontSize: 20, fontWeight: 700, color: '#111', marginBottom: 8 }}>
+            Si è verificato un errore imprevisto
+          </h2>
+          <p style={{ color: '#666', fontSize: 14, marginBottom: 4 }}>
+            {this.state.error?.message || 'Errore sconosciuto'}
+          </p>
+          <p style={{ color: '#aaa', fontSize: 12, marginBottom: 24 }}>
+            Il problema è stato registrato. Ricarica la pagina per continuare.
+          </p>
+          <button
+            onClick={() => window.location.reload()}
+            style={{ background: '#7c3aed', color: '#fff', border: 'none', borderRadius: 10, padding: '10px 24px', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}
+          >
+            Ricarica pagina
+          </button>
+        </div>
+      </div>
+    )
+  }
+}
 import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
 import PersonalePage from './pages/PersonalePage'
@@ -15,11 +58,9 @@ import StatisticheSala from './pages/StatisticheSala'
 import TurniPage from './pages/TurniPage'
 import AdminPanel from './pages/AdminPanel'
 import SetupWizard from './pages/SetupWizard'
-import RicettePage from './pages/RicettePage'
 import KPIConfig from './pages/KPIConfig'
 import KpiTeamPage from './pages/KpiTeamPage'
 import CostiFissiPage from './pages/CostiFissiPage'
-import ListinoProdotti from './pages/ListinoProdotti'
 import { modules as modulesApi, crmConfig } from './api/client'
 
 export const ModulesContext = React.createContext({})
@@ -87,6 +128,7 @@ export default function App() {
   }
 
   return (
+    <ErrorBoundary>
     <ModulesContext.Provider value={{ modules, toggleModule, saveModules, isEnabled }}>
       <Layout>
         <Routes>
@@ -98,12 +140,10 @@ export default function App() {
           <Route path="/kpi" element={isEnabled('kpi_camerieri') ? <KPIWaiters /> : <DisabledModule name="KPI Camerieri" />} />
           <Route path="/kpi-config" element={<KPIConfig />} />
           <Route path="/kpi-team" element={<KpiTeamPage />} />
-          <Route path="/listino" element={<ListinoProdotti />} />
           <Route path="/venduto" element={isEnabled('venduto') ? <VendutoPage /> : <DisabledModule name="Venduto" />} />
           <Route path="/chiusure" element={isEnabled('chiusure') ? <ChiusurePage /> : <DisabledModule name="Chiusure" />} />
           <Route path="/chat" element={isEnabled('chat_claude') ? <ChatClaude /> : <DisabledModule name="Chat Claude AI" />} />
           <Route path="/fornitori" element={isEnabled('fornitori') ? <FornitoriPage /> : <DisabledModule name="Fornitori" />} />
-          <Route path="/ricette" element={isEnabled('ricette') ? <RicettePage /> : <DisabledModule name="Ricette & Food Cost" />} />
           <Route path="/analytics" element={isEnabled('analytics_bi') ? <AnalyticsBI /> : <DisabledModule name="Analytics & BI" />} />
           <Route path="/buste-paga" element={isEnabled('buste_paga') ? <PersonalePage defaultTab="buste-paga" /> : <DisabledModule name="Buste Paga" />} />
           <Route path="/statistiche" element={isEnabled('statistiche') ? <StatisticheSala /> : <DisabledModule name="Statistiche Sala" />} />
@@ -116,6 +156,7 @@ export default function App() {
         </Routes>
       </Layout>
     </ModulesContext.Provider>
+    </ErrorBoundary>
   )
 }
 

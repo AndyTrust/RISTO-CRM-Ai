@@ -480,10 +480,17 @@ export default function StatisticheSala() {
       if (fascheRes && Array.isArray(fascheRes)) {
         const totTavoli = fascheRes.reduce((sum, f) => sum + (f.n_tavoli || 0), 0)
         const totCoperti = fascheRes.reduce((sum, f) => sum + (f.n_coperti || 0), 0)
-        const totMinuti = fascheRes.reduce((sum, f) => sum + ((f.media_permanenza || 0) * (f.n_tavoli || 0)), 0)
         const totIncasso = fascheRes.reduce((sum, f) => sum + (f.incasso_totale || 0), 0)
 
-        const mediaPermanenza = totTavoli > 0 ? Math.round(totMinuti / totTavoli) : 0
+        // fasceOrarie() non include media_permanenza (viene da chiusure_giornaliere).
+        // Calcoliamo la media da tavoliRes che proviene da statistiche_tavoli.durata_media_min
+        const mediaPermanenza = (() => {
+          if (!tavoliRes || !Array.isArray(tavoliRes)) return 0
+          const conDurata = tavoliRes.filter(t => t.media_permanenza != null && t.media_permanenza > 0)
+          if (conDurata.length === 0) return 0
+          return Math.round(conDurata.reduce((s, t) => s + t.media_permanenza, 0) / conDurata.length)
+        })()
+
         const copertMedio = totCoperti > 0 ? totIncasso / totCoperti : 0
 
         setKpiData({

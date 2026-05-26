@@ -43,7 +43,7 @@ const MODULE_DEFAULTS = [
   { id: 'buste_paga',   name: 'Buste Paga',        description: 'Cedolini e costi del personale',        icon: '💼', enabled: true },
   { id: 'statistiche',  name: 'Statistiche Sala',  description: 'Fasce orarie, tavoli e operatori',      icon: '📉', enabled: true },
   { id: 'fornitori',    name: 'Fornitori & Costi', description: 'Gestione fornitori e fatture acquisto', icon: '🏭', enabled: true },
-  { id: 'ricette',      name: 'Ricette & Food Cost', description: 'Gestione ricette con food cost e AI', icon: '👨‍🍳', enabled: true },
+
   { id: 'analytics_bi', name: 'Analytics & BI',   description: 'Business intelligence e previsioni',    icon: '🧠', enabled: true },
   { id: 'chat_claude',  name: 'Chat AI',           description: 'Assistente Claude AI integrato',        icon: '🤖', enabled: true },
   { id: 'impostazioni', name: 'Impostazioni',      description: 'Configurazione CRM',                    icon: '⚙️', enabled: true },
@@ -239,7 +239,13 @@ export const chiusure = {
     if (p.year) q = q.like('mese', `${p.year}-%`)
     if (p.from) q = q.gte('mese', p.from.substring(0, 7))
     if (p.to)   q = q.lte('mese', p.to.substring(0, 7))
-    return sbFetch(q)
+    const rows = await sbFetch(q)
+    // La view usa "sede" (MA/PN) e "n_giorni" — mappiamo per compatibilità col componente
+    return rows.map(r => ({
+      ...r,
+      location: r.sede === 'MA' ? 'MAMELI' : 'PREDDA_NIEDDA',
+      giorni_apertura: r.n_giorni,
+    }))
   },
 
   recenti: async (p = {}) => {
@@ -922,6 +928,15 @@ export const fornitori = {
 
 // ─── BI AGGREGATI (viste consolidate) ────────────────────────────────────
 export const fattureBi = {
+  /** Carica dettagli fatture per array di UUID — usato da segna_fatture_saldate_bulk */
+  getByIds: async (ids) => {
+    if (!Array.isArray(ids) || ids.length === 0) return []
+    return sbFetch(
+      supabase.from('fatture_importate')
+        .select('id, totale, totale_pagato')
+        .in('id', ids)
+    )
+  },
   macroMensile: async ({ anno, sede } = {}) => {
     let q = supabase.from('v_macro_spesa_mensile').select('*').order('mese')
     if (anno) q = q.gte('mese', `${anno}-01`).lte('mese', `${anno}-12`)
@@ -3165,90 +3180,6 @@ export function calcBonusIndividuale(valoreAttuale, quantum, target, premioMax) 
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// LISTINO PRODOTTI — prezzi, costi, margini (importato da xlsx iPratico)
-// ═══════════════════════════════════════════════════════════════════
-export const listinoApi = {
-  async getAll(filters = {}) {
-    let q = supabase.from('listino_prodotti').select('*, fornitori_fatture(id, nome, p_iva)').order('categoria').order('nome_prodotto')
-    if (filters.categoria) q = q.eq('categoria', filters.categoria)
-    if (filters.listino)   q = q.eq('listino', filters.listino)
-    if (filters.search)    q = q.ilike('nome_prodotto', `%${filters.search}%`)
-    if (filters.attivo !== undefined) q = q.eq('attivo', filters.attivo)
-    const { data, error } = await q
-    if (error) throw error
-    return data || []
-  },
-  async getCategorie() {
-    const { data, error } = await supabase.from('listino_prodotti').select('categoria').order('categoria')
-    if (error) throw error
-    return [...new Set((data || []).map(r => r.categoria))].sort()
-  },
-  async create(p) {
-    const { data, error } = await supabase.from('listino_prodotti').insert({
-      categoria: p.categoria,
-      listino: p.listino || 'LISTINO',
-      nome_prodotto: p.nome_prodotto,
-      prezzo_vendita: p.prezzo_vendita ?? null,
-      costo_acquisto: p.costo_acquisto ?? null,
-      margine_lordo_pct: p.margine_lordo_pct ?? null,
-      fornitore_id: p.fornitore_id ?? null,
-      note: p.note ?? null,
-      attivo: p.attivo ?? true,
-    }).select().single()
-    if (error) throw error
-    try { localStorage.setItem('crm_listino_updated', String(Date.now())) } catch {}
-    return data
-  },
-  async update(id, p) {
-    const payload = {}
-    ;['categoria','listino','nome_prodotto','prezzo_vendita','costo_acquisto','margine_lordo_pct','fornitore_id','note','attivo'].forEach(k => {
-      if (p[k] !== undefined) payload[k] = p[k]
-    })
-    payload.updated_at = new Date().toISOString()
-    // Ricalcola margine se prezzi cambiati
-    if (payload.prezzo_vendita != null && payload.costo_acquisto != null && payload.prezzo_vendita > 0) {
-      payload.margine_lordo_pct = +((payload.prezzo_vendita - payload.costo_acquisto) / payload.prezzo_vendita * 100).toFixed(2)
-    }
-    const { data, error } = await supabase.from('listino_prodotti').update(payload).eq('id', id).select().single()
-    if (error) throw error
-    try { localStorage.setItem('crm_listino_updated', String(Date.now())) } catch {}
-    return data
-  },
-  async remove(id) {
-    const { error } = await supabase.from('listino_prodotti').delete().eq('id', id)
-    if (error) throw error
-    try { localStorage.setItem('crm_listino_updated', String(Date.now())) } catch {}
-  },
-  // Fatturato per cameriere (mensile, dai dati venduto valorizzati col listino)
-  async fatturatoOperatore(sede, anno, mese) {
-    let q = supabase.from('v_fatturato_operatore_mensile').select('*').order('fatturato_totale', { ascending: false })
-    if (sede) q = q.eq('sede', sede)
-    if (anno) q = q.eq('anno', anno)
-    if (mese) q = q.eq('mese', mese)
-    const { data, error } = await q
-    if (error) throw error
-    return data || []
-  },
-  // Prodotti del venduto che NON matchano col listino (da mappare manualmente)
-  async prodottiSenzaMatch(sede, anno, mese) {
-    const { data, error } = await supabase
-      .from('v_venduto_valorizzato')
-      .select('prodotto, sede, anno, mese, quantita')
-      .is('prezzo_vendita', null)
-      .eq('sede', sede || 'MA')
-    if (error) throw error
-    const map = new Map()
-    for (const r of (data || [])) {
-      if (anno && r.anno !== anno) continue
-      if (mese && r.mese !== mese) continue
-      const k = r.prodotto
-      map.set(k, (map.get(k) || 0) + Number(r.quantita || 0))
-    }
-    return [...map.entries()].map(([prodotto, quantita]) => ({ prodotto, quantita })).sort((a,b) => b.quantita - a.quantita)
-  },
-}
-
-// ═══════════════════════════════════════════════════════════════════
 // BE MENSILE — break-even per sede × mese (personale + fatture + fissi)
 // ═══════════════════════════════════════════════════════════════════
 export const beMensileApi = {
@@ -3361,6 +3292,6 @@ export default {
   roles, admin, crmConfig, sediApi, operatorMapping, repartiApi,
   fattureCategorieApi, costiFissiApi, standardNazionaliApi, kpiTargetsApi, kpiPerformanceApi,
   beMensileApi, operatoreMeseApi, obiettiviProdottoApi, bonusApi,
-  listinoApi, fattureBi,
+  fattureBi,
   calcBonusTeam, calcBonusIndividuale,
 }

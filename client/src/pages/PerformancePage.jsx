@@ -1,5 +1,5 @@
 /**
- * PerformancePage.jsx — Hub Performance 140 Grammi
+ * PerformancePage.jsx — Hub Performance — KPI Camerieri e Sedi
  * Filtri condivisi (sede + mese/anno) + overview cards + 4 tab:
  *   Venduto | Obiettivi | Team | Tavoli
  *
@@ -1156,7 +1156,7 @@ export default function PerformancePage() {
                 onClick={() => setSede(s)}
                 className={`px-4 py-1.5 transition-colors ${sede === s ? 'bg-indigo-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
               >
-                {s === 'MA' ? 'Mameli' : 'Predda Niedda'}
+                {s === 'MA' ? 'Sede MA' : 'Sede PN'}
               </button>
             ))}
           </div>

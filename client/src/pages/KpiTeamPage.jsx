@@ -278,8 +278,6 @@ export default function KpiTeamPage() {
         ' Valuta riduzione ore in giorni bassi o riallocazione turni.'
       }`,
     })
-    if (be.pct_food > 32) out.push({ type: 'warn', icon: AlertCircle, title: 'Food cost elevato', text: `% food ${fmtPct(be.pct_food)} (benchmark 26–30%). Controlla prezzi ingredienti, scarti, porzionature e ricette.` })
-
     // 4) Obiettivi a rischio
     if (bonusTeam.length > 0 && isCurMonth && pctTempo > 0) {
       const aRischio = bonusTeam.filter(b => {
@@ -410,7 +408,7 @@ export default function KpiTeamPage() {
                 className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
                   sede === s ? 'bg-indigo-600 text-white shadow' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                 }`}>
-                {s === 'MA' ? '🏛️ Mameli' : '🏭 Predda Niedda'}
+                {s === 'MA' ? 'Sede MA' : 'Sede PN'}
               </button>
             ))}
           </div>

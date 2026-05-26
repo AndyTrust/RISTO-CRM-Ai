@@ -484,8 +484,8 @@ function SettimanaTab({ ctx }) {
             <option value="__none__">Senza Reparto</option>
           </select>
           <select value={ctx.selectedSede} onChange={e => ctx.setSelectedSede(e.target.value)} className="border rounded-lg px-2 py-1.5 text-sm font-medium">
-            <option value="MA">🍽 Mameli</option>
-            <option value="PN">🏪 Predda Niedda</option>
+            <option value="MA">Sede MA</option>
+            <option value="PN">Sede PN</option>
             <option value="ALL">Entrambe</option>
           </select>
         </div>
@@ -634,8 +634,8 @@ function RiepilogoTab({ ctx }) {
           Split MA/PN
         </label>
         <select value={ctx.selectedSede} onChange={e => ctx.setSelectedSede(e.target.value)} className="border rounded-lg px-2 py-1.5 text-sm">
-          <option value="MA">Mameli</option>
-          <option value="PN">Predda Niedda</option>
+          <option value="MA">Sede MA</option>
+          <option value="PN">Sede PN</option>
           <option value="ALL">Entrambe</option>
         </select>
       </div>
@@ -1008,7 +1008,7 @@ function RepartiTab({ ctx }) {
           ))}
         </div>
         <div className="flex items-center gap-2 border rounded-lg p-0.5 bg-gray-50">
-          {[{v:'MA',l:'🍽 Mameli'},{v:'PN',l:'🏪 Predda N.'},{v:'ALL',l:'Entrambe'}].map(s=>(
+          {[{v:'MA',l:'Sede MA'},{v:'PN',l:'Sede PN'},{v:'ALL',l:'Entrambe'}].map(s=>(
             <button key={s.v} onClick={()=>setFabSede(s.v)}
               className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${fabSede===s.v?'bg-white shadow text-gray-900':'text-gray-500'}`}>
               {s.l}
@@ -1041,8 +1041,8 @@ function RepartiTab({ ctx }) {
               <label className="text-xs text-gray-600 font-medium">Sede</label>
               <select value={form.sede||''} onChange={e=>setForm(f=>({...f,sede:e.target.value||null}))} className="w-full border rounded-lg px-2 py-2 text-sm mt-1">
                 <option value="">Entrambe</option>
-                <option value="MA">Mameli</option>
-                <option value="PN">Predda Niedda</option>
+                <option value="MA">Sede MA</option>
+                <option value="PN">Sede PN</option>
               </select>
             </div>
             <div>
@@ -1115,7 +1115,7 @@ function RepartiTab({ ctx }) {
                   <div key={sede}>
                     {fabSede === 'ALL' && (
                       <div className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">
-                        {sede === 'MA' ? '🍽 Mameli' : '🏪 Predda Niedda'}
+                        {sede === 'MA' ? 'Sede MA' : 'Sede PN'}
                       </div>
                     )}
                     <div className="grid grid-cols-2 gap-2">
@@ -1625,7 +1625,7 @@ function AIPlannerTab({ ctx }) {
       return `${toYMD(d)} ${dow}`
     }).join(', ')
 
-    return `SEDE: ${aiSede==='MA'?'Mameli':'Predda Niedda'}
+    return `SEDE: ${aiSede==='MA'?'Sede MA':'Sede PN'}
 SETTIMANA: ${dateList}
 
 REGOLE:
@@ -1856,8 +1856,8 @@ IMPORTANTE: includi SOLO i turni lavorativi (Pranzo/Cena/Intero/Ferie). NON incl
             <div className="flex items-center gap-3 flex-wrap">
               <div className="font-semibold text-gray-800">🤖 AI Planner — {weekStr}</div>
               <select value={aiSede} onChange={e=>setAiSede(e.target.value)} className="border rounded-lg px-2 py-1.5 text-sm ml-auto">
-                <option value="MA">🍽 Mameli</option>
-                <option value="PN">🏪 Predda Niedda</option>
+                <option value="MA">Sede MA</option>
+                <option value="PN">Sede PN</option>
               </select>
             </div>
             <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 text-xs text-blue-800 space-y-1">

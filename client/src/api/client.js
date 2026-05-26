@@ -29,9 +29,12 @@ export {
   costiFissiApi,
   standardNazionaliApi,
   kpiTargetsApi,
+  kpiPerformanceApi,
   beMensileApi,
   operatoreMeseApi,
   obiettiviProdottoApi,
   bonusApi,
+  calcBonusTeam,
+  calcBonusIndividuale,
   default,
 } from './supabase-client'
