@@ -1559,12 +1559,20 @@ export const analytics = {
   },
 
   // BE mensile: costi (personale + fatture + fissi) vs incasso per sede
+  // Regola: costo_personale e costo_fatture sono CONDIVISI tra i 2 locali
+  // → ogni sede mostra il 50% del totale mensile (media equa)
+  // I costi_fissi rimangono per-sede (affitti, indennizzi specifici)
   beMensile: async () => {
     try {
+      const now = new Date()
+      const annoCorrente = now.getFullYear()
+      const meseCorrente = now.getMonth() + 1  // 1-12
+      const mesePad = String(meseCorrente).padStart(2, '0')
+
       const [{ data: costiRows }, { data: chiusureRows }] = await Promise.all([
-        supabase.from('v_costi_mensili').select('*').eq('anno', 2026).order('mese'),
+        supabase.from('v_costi_mensili').select('*').eq('anno', annoCorrente).order('mese'),
         supabase.from('v_chiusure_mensile').select('sede, mese, tot_venduto, tot_coperti, n_giorni')
-          .gte('mese', '2026-01').lte('mese', '2026-05'),
+          .gte('mese', `${annoCorrente}-01`).lte('mese', `${annoCorrente}-${mesePad}`),
       ])
 
       // Lookup incasso per sede-mese
@@ -1578,38 +1586,72 @@ export const analytics = {
         }
       }
 
-      // Mesi con attribuzione fatture per sede non affidabile (MA quasi zero, PN gonfiata)
+      // Mesi con attribuzione fatture per sede non affidabile (gen-feb senza sede assegnata)
       const unreliable = new Set(['MA-1','MA-2','PN-1','PN-2'])
 
-      const meseCorrente = new Date().getMonth() + 1 // 1-12
-      const result = []
+      // --- Step 1: costruisci righe grezze per sede ---
+      const rawBySede = {}   // { mese: { MA: {...}, PN: {...} } }
       for (const r of costiRows ?? []) {
-        if (r.mese > meseCorrente) continue // non mostrare mesi futuri senza dati
-
-        const revKey = `${r.sede}-${r.mese}`
-        const rev = revMap[revKey] || { incasso: 0, coperti: 0, giorni: 0 }
-        const costoTot = parseFloat(r.be_totale) || 0
-        const incasso = rev.incasso
-        const margine = incasso > 0 ? incasso - costoTot : null
-        const margine_pct = incasso > 0 ? Math.round(margine / incasso * 100) : null
-
-        result.push({
-          sede: r.sede,
-          anno: r.anno,
-          mese: r.mese,
-          mese_label: MESI_IT_SHORT[r.mese - 1],
-          incasso,
-          coperti: rev.coperti,
-          giorni: rev.giorni,
+        if (r.mese > meseCorrente) continue
+        const mn = r.mese
+        if (!rawBySede[mn]) rawBySede[mn] = {}
+        rawBySede[mn][r.sede] = {
           costo_personale: parseFloat(r.costo_personale) || 0,
-          costo_fatture: parseFloat(r.costo_fatture) || 0,
-          costo_fissi: parseFloat(r.costo_fissi) || 0,
-          be_totale: costoTot,
-          margine,
-          margine_pct,
-          fatture_unreliable: unreliable.has(revKey),
-          has_real_data: incasso > 0 && costoTot > 0,
-        })
+          costo_fatture:   parseFloat(r.costo_fatture)   || 0,
+          costo_fissi:     parseFloat(r.costo_fissi)     || 0,
+        }
+      }
+
+      // --- Step 2: applica split 50/50 su personale e fatture ---
+      // I costi_fissi restano per-sede (affitti, indennizzi specifici di ogni locale)
+      const result = []
+      for (const [mese, bySede] of Object.entries(rawBySede)) {
+        const mn = parseInt(mese)
+        const maRaw = bySede['MA'] || { costo_personale: 0, costo_fatture: 0, costo_fissi: 0 }
+        const pnRaw = bySede['PN'] || { costo_personale: 0, costo_fatture: 0, costo_fissi: 0 }
+
+        // Totali condivisi → divisi al 50%
+        const totPersonale = maRaw.costo_personale + pnRaw.costo_personale
+        const totFatture   = maRaw.costo_fatture   + pnRaw.costo_fatture
+        const personalePerSede = Math.round(totPersonale / 2)
+        const fatturePerSede   = Math.round(totFatture   / 2)
+
+        for (const sede of ['MA', 'PN']) {
+          const raw = bySede[sede]
+          if (!raw) continue  // nessun dato per questa sede in questo mese
+
+          const revKey = `${sede}-${mn}`
+          const rev = revMap[revKey] || { incasso: 0, coperti: 0, giorni: 0 }
+
+          const costo_personale = personalePerSede
+          const costo_fatture   = fatturePerSede
+          const costo_fissi     = raw.costo_fissi
+          const be_totale       = costo_personale + costo_fatture + costo_fissi
+          const incasso         = rev.incasso
+          const margine         = incasso > 0 ? incasso - be_totale : null
+          const margine_pct     = incasso > 0 ? Math.round(margine / incasso * 100) : null
+
+          result.push({
+            sede,
+            anno: annoCorrente,
+            mese: mn,
+            mese_label: MESI_IT_SHORT[mn - 1],
+            incasso,
+            coperti: rev.coperti,
+            giorni: rev.giorni,
+            costo_personale,
+            costo_fatture,
+            costo_fissi,
+            be_totale,
+            margine,
+            margine_pct,
+            fatture_unreliable: unreliable.has(revKey),
+            has_real_data: incasso > 0 && be_totale > 0,
+            // metadati per il box "calcolo semplice" (totali originali)
+            _tot_personale: totPersonale,
+            _tot_fatture:   totFatture,
+          })
+        }
       }
 
       return result.sort((a, b) => a.mese - b.mese || a.sede.localeCompare(b.sede))

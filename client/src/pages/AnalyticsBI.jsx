@@ -131,11 +131,13 @@ function BESection({ beMensile, loading }) {
     <div>
       <SectionTitle icon={DollarSign} label="Costi & Break-Even Mensile 2026" color={C.MA} />
 
-      <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-4 flex items-start gap-2">
-        <Info size={14} className="text-amber-600 mt-0.5 flex-shrink-0" />
-        <p className="text-xs text-amber-700">
-          <strong>Nota dati:</strong> Gen–Feb 2026 le fatture di acquisto non avevano sede assegnata → l'attribuzione per locale è inaffidabile per quei mesi (segnalati con ⚠). Apr 2026 è il primo mese con dati fatture affidabili per sede.
-          I costi fissi registrati (affitto + indennizzi) sono parziali — mancano utenze, commercialista, assicurazioni.
+      <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-4 flex items-start gap-2">
+        <Info size={14} className="text-blue-600 mt-0.5 flex-shrink-0" />
+        <p className="text-xs text-blue-700">
+          <strong>Metodo di calcolo:</strong> Buste paga e fatture acquisto sono costi condivisi tra i due locali
+          → ogni sede mostra il <strong>50% del totale mensile</strong> (media equa). I costi fissi (affitto, indennizzi)
+          rimangono specifici per sede. Gen–Feb 2026 segnalati con ⚠ per attribuzione fatture non affidabile.
+          I costi fissi registrati sono parziali — mancano utenze, commercialista, assicurazioni.
         </p>
       </div>
 
@@ -229,34 +231,51 @@ function BESection({ beMensile, loading }) {
         </table>
       </div>
 
-      {/* Box calcolo semplice */}
+      {/* Box riepilogo 50/50 — mese più recente con dati completi */}
       <div className="mt-4 bg-gray-50 border border-gray-200 rounded-xl p-4">
-        <p className="text-xs font-semibold text-gray-700 mb-2">📐 Calcolo semplice — (Buste paga + Fatture acquisto) ÷ 2 locali — Aprile 2026</p>
         {(() => {
-          const aprMA = beMensile.find(r => r.sede === 'MA' && r.mese === 4)
-          const aprPN = beMensile.find(r => r.sede === 'PN' && r.mese === 4)
-          if (!aprMA || !aprPN) return <p className="text-xs text-gray-400">Dati aprile non disponibili</p>
-          const totPersonale = aprMA.costo_personale + aprPN.costo_personale
-          const totFatture = aprMA.costo_fatture + aprPN.costo_fatture
-          const totFissi = aprMA.costo_fissi + aprPN.costo_fissi
-          const totCosti = totPersonale + totFatture + totFissi
-          const perLocale = Math.round(totCosti / 2)
+          // Prendi il mese più recente con dati affidabili (entrambe le sedi, no unreliable)
+          const completeMeses = beMensile.filter(r => !r.fatture_unreliable && r.costo_personale > 0 && r.costo_fatture > 0)
+          const lastMese = completeMeses.reduce((max, r) => r.mese > max ? r.mese : max, 0)
+          const rowMA = beMensile.find(r => r.sede === 'MA' && r.mese === lastMese)
+          const rowPN = beMensile.find(r => r.sede === 'PN' && r.mese === lastMese)
+          if (!rowMA || !rowPN || lastMese === 0) return (
+            <p className="text-xs text-gray-400">Dati non ancora disponibili per il riepilogo.</p>
+          )
+          // I totali pre-split sono nei metadati _tot_*
+          const totPersonale = rowMA._tot_personale ?? (rowMA.costo_personale * 2)
+          const totFatture   = rowMA._tot_fatture   ?? (rowMA.costo_fatture   * 2)
+          const totFissiMA   = rowMA.costo_fissi
+          const totFissiPN   = rowPN.costo_fissi
+          const meseLabel    = MESI_IT[lastMese - 1]
           return (
             <div>
+              <p className="text-xs font-semibold text-gray-700 mb-3">
+                📐 Riepilogo costi condivisi — {meseLabel} {new Date().getFullYear()}
+              </p>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs mb-2">
                 <div>
-                  <span className="text-gray-500">Buste paga (apr):</span><br />
+                  <span className="text-gray-500">Buste paga totali:</span><br />
                   <strong>€{totPersonale.toLocaleString('it-IT')}</strong>
-                  <span className="text-amber-500 ml-1" title="Aprile ha 18 cedolini per sede vs 28 normali — probabilmente incompleto">⚠</span>
+                  <div className="text-indigo-600 mt-0.5">→ €{rowMA.costo_personale.toLocaleString('it-IT')} per sede</div>
                 </div>
-                <div><span className="text-gray-500">Fatture acq. (apr):</span><br /><strong>€{totFatture.toLocaleString('it-IT')}</strong></div>
-                <div><span className="text-gray-500">Costi fissi (parziali):</span><br /><strong>€{totFissi.toLocaleString('it-IT')}</strong></div>
+                <div>
+                  <span className="text-gray-500">Fatture acquisto totali:</span><br />
+                  <strong>€{totFatture.toLocaleString('it-IT')}</strong>
+                  <div className="text-violet-600 mt-0.5">→ €{rowMA.costo_fatture.toLocaleString('it-IT')} per sede</div>
+                </div>
+                <div>
+                  <span className="text-gray-500">Costi fissi (per sede):</span><br />
+                  <div>MA: <strong>€{totFissiMA.toLocaleString('it-IT')}</strong></div>
+                  <div>PN: <strong>€{totFissiPN.toLocaleString('it-IT')}</strong></div>
+                </div>
                 <div className="bg-indigo-50 rounded p-2">
-                  <span className="text-indigo-600 font-semibold">÷ 2 locali = </span><br />
-                  <strong className="text-indigo-700 text-sm">€{perLocale.toLocaleString('it-IT')}/locale</strong>
+                  <div className="text-indigo-600 font-semibold mb-1">Totale BE per sede</div>
+                  <div>MA: <strong className="text-indigo-700">€{rowMA.be_totale.toLocaleString('it-IT')}</strong></div>
+                  <div>PN: <strong className="text-green-700">€{rowPN.be_totale.toLocaleString('it-IT')}</strong></div>
                 </div>
               </div>
-              <p className="text-xs text-amber-600">⚠ Buste paga apr: 18 cedolini per sede (vs 28+ normali) → personale probabilmente sottostimato. Fissi registrati = solo affitto+indennizzi, mancano utenze/commercialista/assicurazioni.</p>
+              <p className="text-xs text-gray-500">Costi fissi registrati parziali — mancano utenze, commercialista, assicurazioni.</p>
             </div>
           )
         })()}
