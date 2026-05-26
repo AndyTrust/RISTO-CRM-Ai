@@ -636,8 +636,8 @@ export default function StatisticheSala() {
                       <YAxis yAxisId="right" orientation="right" />
                       <Tooltip
                         formatter={(value, name) => {
-                          if (name === 'n_tavoli' || name === 'n_coperti') return value
-                          return eur(value)
+                          if (name === 'Tavoli' || name === 'Coperti') return [Math.round(value), name]
+                          return [eur(value), name]
                         }}
                         labelFormatter={label => `Fascia: ${label}`}
                       />
