@@ -103,8 +103,10 @@ function TabVenduto({ sede, anno, mese }) {
   const [ops,    setOps]    = useState([])
   const [loading, setLoading] = useState(true)
   const [sortBy,  setSortBy]  = useState('fatturato')
-  const [expanded, setExpanded] = useState(null)
-  const [prodotti, setProdotti] = useState({})
+  const [expanded,    setExpanded]    = useState(null)      // operatore espanso
+  const [expandedCat, setExpandedCat] = useState({})        // { op: catName | null }
+  const [prodotti,    setProdotti]    = useState({})        // { op: [{cat,pezzi,totale,raw}] }
+  const [prodByCat,   setProdByCat]   = useState({})        // { "op|cat": [{prod,pezzi,totale}] }
 
   useEffect(() => {
     setLoading(true)
@@ -143,16 +145,49 @@ function TabVenduto({ sede, anno, mese }) {
       .eq('sede', sede).eq('operatore', op.operatore)
       .gte('data_inizio', ini).lte('data_fine', fine)
       .not('prodotto', 'ilike', '%coperto%')
-    // Aggrega per categoria
+    // Aggrega per categoria, filtra solo items con valore economico > €0.01
     const byCat = {}
     for (const r of data || []) {
+      const tot = parseFloat(r.totale) || 0
+      if (tot <= 0.01) continue   // escludi items senza valore economico
       const cat = r.categoria || 'Altro'
       if (!byCat[cat]) byCat[cat] = { cat, pezzi: 0, totale: 0 }
       byCat[cat].pezzi  += parseFloat(r.quantita) || 0
-      byCat[cat].totale += parseFloat(r.totale)   || 0
+      byCat[cat].totale += tot
     }
-    const sorted = Object.values(byCat).sort((a, b) => b.totale - a.totale).slice(0, 10)
-    setProdotti(p => ({ ...p, [key]: sorted }))
+    const sortedCats = Object.values(byCat).sort((a, b) => b.totale - a.totale)
+    setProdotti(p => ({ ...p, [key]: sortedCats }))
+  }
+
+  async function toggleExpandCat(op, cat) {
+    const opKey  = op.operatore || op
+    const cKey   = `${opKey}|${cat}`
+    setExpandedCat(prev => ({
+      ...prev,
+      [opKey]: prev[opKey] === cat ? null : cat,
+    }))
+    if (prodByCat[cKey]) return
+    const ini  = `${anno}-${String(mese).padStart(2,'0')}-01`
+    const fine = new Date(anno, mese, 0).toISOString().slice(0,10)
+    const { data } = await supabase
+      .from('venduto_camerieri')
+      .select('prodotto, quantita, totale')
+      .eq('sede', sede).eq('operatore', opKey)
+      .eq('categoria', cat)
+      .gte('data_inizio', ini).lte('data_fine', fine)
+      .not('prodotto', 'ilike', '%coperto%')
+    // Aggrega per prodotto
+    const byProd = {}
+    for (const r of data || []) {
+      const tot = parseFloat(r.totale) || 0
+      if (tot <= 0.01) continue
+      const prod = r.prodotto || '—'
+      if (!byProd[prod]) byProd[prod] = { prod, pezzi: 0, totale: 0 }
+      byProd[prod].pezzi  += parseFloat(r.quantita) || 0
+      byProd[prod].totale += tot
+    }
+    const prodArr = Object.values(byProd).sort((a, b) => b.totale - a.totale)
+    setProdByCat(p => ({ ...p, [cKey]: prodArr }))
   }
 
   function SortBtn({ id, label }) {
@@ -224,16 +259,48 @@ function TabVenduto({ sede, anno, mese }) {
                         {!prodotti[op.operatore]
                           ? <span className="text-xs text-gray-400">Caricamento…</span>
                           : prodotti[op.operatore].length === 0
-                            ? <span className="text-xs text-gray-400">Nessun prodotto nel periodo</span>
+                            ? <span className="text-xs text-gray-400">Nessun prodotto con valore > €0.01 nel periodo</span>
                             : (
-                              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
-                                {prodotti[op.operatore].map(c => (
-                                  <div key={c.cat} className="bg-white rounded-lg border border-indigo-100 p-2.5">
-                                    <div className="text-[10px] text-gray-400 font-medium uppercase truncate">{c.cat}</div>
-                                    <div className="text-sm font-bold text-indigo-700">{fmtEur(c.totale)}</div>
-                                    <div className="text-xs text-gray-500">{fmt(c.pezzi)} pz</div>
-                                  </div>
-                                ))}
+                              <div className="space-y-2">
+                                <p className="text-[10px] text-indigo-400 uppercase font-semibold tracking-wider mb-1">
+                                  Categorie — clicca per vedere i prodotti
+                                </p>
+                                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
+                                  {prodotti[op.operatore].map(c => {
+                                    const isCatExp = expandedCat[op.operatore] === c.cat
+                                    const cKey = `${op.operatore}|${c.cat}`
+                                    return (
+                                      <div key={c.cat} className="space-y-1">
+                                        <div
+                                          className={`rounded-lg border p-2.5 cursor-pointer transition-all ${isCatExp ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-indigo-100 hover:border-indigo-300'}`}
+                                          onClick={() => toggleExpandCat(op, c.cat)}
+                                        >
+                                          <div className={`text-[10px] font-medium uppercase truncate ${isCatExp ? 'text-indigo-100' : 'text-gray-400'}`}>{c.cat}</div>
+                                          <div className={`text-sm font-bold ${isCatExp ? 'text-white' : 'text-indigo-700'}`}>{fmtEur(c.totale)}</div>
+                                          <div className={`text-xs ${isCatExp ? 'text-indigo-200' : 'text-gray-500'}`}>{fmt(c.pezzi)} pz {isCatExp ? '▲' : '▼'}</div>
+                                        </div>
+                                        {isCatExp && (
+                                          <div className="bg-white rounded-lg border border-indigo-100 overflow-hidden">
+                                            {!prodByCat[cKey]
+                                              ? <div className="text-xs text-gray-400 px-2 py-1.5">Caricamento…</div>
+                                              : prodByCat[cKey].length === 0
+                                                ? <div className="text-xs text-gray-400 px-2 py-1.5">Nessun prodotto</div>
+                                                : prodByCat[cKey].map((p, pi) => (
+                                                    <div key={pi} className="flex items-center justify-between px-2 py-1 border-b border-gray-50 last:border-0 hover:bg-indigo-50/50">
+                                                      <span className="text-[10px] text-gray-700 flex-1 truncate pr-1" title={p.prod}>{p.prod}</span>
+                                                      <div className="text-right flex-shrink-0">
+                                                        <div className="text-[10px] font-mono font-bold text-indigo-700">{fmtEur(p.totale)}</div>
+                                                        <div className="text-[9px] text-gray-400">{fmt(p.pezzi)} pz</div>
+                                                      </div>
+                                                    </div>
+                                                  ))
+                                            }
+                                          </div>
+                                        )}
+                                      </div>
+                                    )
+                                  })}
+                                </div>
                               </div>
                             )
                         }
@@ -562,19 +629,19 @@ function TabTavoli({ sede, anno, mese }) {
         for (const r of data || []) {
           if (!byT[r.tavolo]) byT[r.tavolo] = {
             tavolo: r.tavolo, n_coperti: 0, n_ordini: 0,
-            incasso: 0, scontrino_sum: 0, durata_sum: 0, n_rows: 0
+            incasso: 0, durata_sum: 0, n_rows: 0
           }
           const t = byT[r.tavolo]
-          t.n_coperti    += parseInt(r.n_coperti) || 0
-          t.n_ordini     += parseInt(r.n_ordini)  || 0
-          t.incasso      += parseFloat(r.incasso) || 0
-          t.scontrino_sum+= parseFloat(r.scontrino_medio) || 0
-          t.durata_sum   += parseInt(r.durata_media_min) || 0
+          t.n_coperti  += parseInt(r.n_coperti) || 0
+          t.n_ordini   += parseInt(r.n_ordini)  || 0
+          t.incasso    += parseFloat(r.incasso) || 0
+          t.durata_sum += parseInt(r.durata_media_min) || 0
           t.n_rows++
         }
         const arr = Object.values(byT).map(t => ({
           ...t,
-          scontrino_medio: t.n_rows > 0 ? t.scontrino_sum / t.n_rows : 0,
+          // scontrino medio = incasso totale / numero ordini totali (NON media di medie)
+          scontrino_medio: t.n_ordini > 0 ? t.incasso / t.n_ordini : 0,
           durata_media_min: t.n_rows > 0 ? Math.round(t.durata_sum / t.n_rows) : 0,
         }))
         setTavoli(arr)
@@ -593,7 +660,9 @@ function TabTavoli({ sede, anno, mese }) {
 
   const totIncasso  = useMemo(() => tavoli.reduce((s, t) => s + t.incasso, 0), [tavoli])
   const totCoperti  = useMemo(() => tavoli.reduce((s, t) => s + t.n_coperti, 0), [tavoli])
-  const avgScontr   = useMemo(() => tavoli.length ? tavoli.reduce((s,t) => s + t.scontrino_medio,0)/tavoli.length : 0, [tavoli])
+  const totOrdini   = useMemo(() => tavoli.reduce((s, t) => s + t.n_ordini, 0), [tavoli])
+  // avgScontr = incasso totale / ordini totali (NON media di medie)
+  const avgScontr   = useMemo(() => totOrdini > 0 ? totIncasso / totOrdini : 0, [totIncasso, totOrdini])
 
   function SortBtn({ id, label }) {
     return (

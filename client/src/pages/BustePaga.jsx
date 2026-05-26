@@ -486,6 +486,7 @@ function DettaglioCedoliniTab({ cedolini, sedeFilter, meseFilter, onRefresh, emp
 // MAIN PAGE
 // ═══════════════════════════════════════════════════════════════════════════
 export default function BustePaga({ startTab = 'riepilogo' }) {
+  const { sedi }                      = useSedi()
   const [anno,        setAnno]        = useState(new Date().getFullYear())
   const [meseFilter,  setMeseFilter]  = useState(0) // 0 = tutti i mesi
   const [sedeFilter,  setSedeFilter]  = useState('Tutte')
@@ -581,7 +582,7 @@ export default function BustePaga({ startTab = 'riepilogo' }) {
             <select value={sedeFilter} onChange={e => setSedeFilter(e.target.value)}
               className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
               <option value="Tutte">Tutte le sedi</option>
-              {SEDI.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+              {sedi.map(s => <option key={s.codice} value={s.codice}>{s.nome}</option>)}
             </select>
           </div>
         </div>

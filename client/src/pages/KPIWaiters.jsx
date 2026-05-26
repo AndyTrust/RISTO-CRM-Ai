@@ -684,7 +684,7 @@ export default function KPIWaiters() {
           {['MA', 'PN'].map(s => (
             <button key={s} onClick={() => setSede(s)}
               className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${sede === s ? 'bg-indigo-600 text-white shadow' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
-              {s === 'MA' ? s.nome : 'Sede PN'}
+              {s === 'MA' ? 'Sede MA' : 'Sede PN'}
             </button>
           ))}
         </div>

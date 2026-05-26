@@ -440,7 +440,7 @@ export default function Dashboard() {
         {/* YoY confronto */}
         <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="font-bold text-gray-800 text-sm">Confronto Anno su Anno (2025 vs 2026)</h2>
+            <h2 className="font-bold text-gray-800 text-sm">Confronto Anno su Anno ({new Date().getFullYear() - 1} vs {new Date().getFullYear()})</h2>
             <Link to="/analytics" className="text-xs text-indigo-600 hover:underline flex items-center gap-1">
               BI <ArrowRight size={12} />
             </Link>
@@ -453,8 +453,8 @@ export default function Dashboard() {
                 <YAxis tickFormatter={v => `€${(v/1000).toFixed(0)}k`} tick={{ fontSize: 10 }} />
                 <Tooltip content={<ChartTooltip />} />
                 <Legend wrapperStyle={{ fontSize: 10 }} />
-                <Bar dataKey="venduto_2025" name="2025" fill="#cbd5e1" radius={[3,3,0,0]} />
-                <Bar dataKey="venduto_2026" name="2026" fill="#6366f1" radius={[3,3,0,0]} />
+                <Bar dataKey={`venduto_${new Date().getFullYear() - 1}`} name={String(new Date().getFullYear() - 1)} fill="#cbd5e1" radius={[3,3,0,0]} />
+                <Bar dataKey={`venduto_${new Date().getFullYear()}`} name={String(new Date().getFullYear())} fill="#6366f1" radius={[3,3,0,0]} />
               </BarChart>
             </ResponsiveContainer>
           ) : (
