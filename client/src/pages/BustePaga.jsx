@@ -5,7 +5,8 @@ import {
 } from 'recharts'
 import {
   RefreshCw, Users, TrendingUp, DollarSign, Activity, User2,
-  Calendar, MapPin, AlertCircle, PlusCircle, Trash2, Edit3, CheckCircle, X
+  Calendar, MapPin, AlertCircle, PlusCircle, Trash2, CheckCircle, X,
+  FileText, ShieldCheck, BarChart2, Info,
 } from 'lucide-react'
 import { bustePaga as bp, employees as empApi } from '../api/client'
 import PageAssistant from '../components/PageAssistant'
@@ -14,9 +15,7 @@ import PageStatsWidget from '../components/PageStatsWidget'
 // ═══════════════════════════════════════════════════════════════════════════
 // CONSTANTS & UTILS
 // ═══════════════════════════════════════════════════════════════════════════
-// costo_azienda = paga_base (retr. mensile LUL) × 1.33 — salvato in Supabase dal LUL
-// Fallback locale solo se il DB non ha ancora il valore
-const COSTO_AZ_FALLBACK = 1.33
+const COSTO_AZ_FALLBACK = 1.9653  // usato solo se costo_azienda mancante
 const EUR  = new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', maximumFractionDigits: 2 })
 const EUR0 = new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 })
 const NUM  = new Intl.NumberFormat('it-IT', { maximumFractionDigits: 0 })
@@ -29,8 +28,36 @@ const MESI_SHORT = ['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott',
 const MESI_FULL  = ['Gennaio','Febbraio','Marzo','Aprile','Maggio','Giugno',
                     'Luglio','Agosto','Settembre','Ottobre','Novembre','Dicembre']
 
-// Sedi caricate dinamicamente da useSedi hook
+// ── Qualità dato ────────────────────────────────────────────────────────────
+function qualitaDato(c) {
+  if (!c) return 'stima'
+  if (c.note && c.note.startsWith('Stima ')) return 'previsione'
+  if (c.note === 'stima_da_gennaio_2026') return 'stima'
+  if (c.file_name && c.totale_competenze) return 'certo'
+  if (c.totale_competenze) return 'parziale'
+  return 'stima'
+}
 
+const QUALITY = {
+  certo:      { label: 'Da PDF',     sym: '✓', cls: 'bg-emerald-900/40 text-emerald-300 border-emerald-700', dot: 'bg-emerald-400' },
+  parziale:   { label: 'Da LUL',    sym: '≈', cls: 'bg-yellow-900/40 text-yellow-300 border-yellow-700',   dot: 'bg-yellow-400' },
+  previsione: { label: 'Previsione', sym: '⚡', cls: 'bg-amber-900/40 text-amber-300 border-amber-700',     dot: 'bg-amber-400' },
+  stima:      { label: 'Stima',      sym: '~', cls: 'bg-red-900/40 text-red-300 border-red-700',            dot: 'bg-red-400' },
+}
+
+function QualityBadge({ c, small = false }) {
+  const q = qualitaDato(c)
+  const { label, sym, cls } = QUALITY[q]
+  return (
+    <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs font-medium border ${cls} ${small ? 'text-[10px]' : ''}`}>
+      {sym} {label}
+    </span>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// KPI CARD
+// ═══════════════════════════════════════════════════════════════════════════
 function KpiCard({ label, value, sub, icon: Icon, color = 'blue' }) {
   const g = { blue: 'from-blue-500 to-blue-600', green: 'from-emerald-500 to-emerald-600',
               purple: 'from-purple-500 to-purple-600', amber: 'from-amber-500 to-amber-600' }
@@ -44,6 +71,253 @@ function KpiCard({ label, value, sub, icon: Icon, color = 'blue' }) {
         {Icon && <Icon size={24} className="opacity-60" />}
       </div>
       {sub && <p className="text-xs opacity-70">{sub}</p>}
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SCHEDA DIPENDENTE — modal con tutti i dettagli
+// ═══════════════════════════════════════════════════════════════════════════
+function SchedaDipendente({ emp, onClose }) {
+  const cedolini = emp.cedolini
+  const sorted = useMemo(() => [...cedolini].sort((a, b) => a.anno * 100 + a.mese - (b.anno * 100 + b.mese)), [cedolini])
+
+  const stats = useMemo(() => {
+    const certi    = cedolini.filter(c => qualitaDato(c) === 'certo').length
+    const parziali = cedolini.filter(c => qualitaDato(c) === 'parziale').length
+    const stime    = cedolini.filter(c => qualitaDato(c) === 'stima').length
+    const totNetto = cedolini.reduce((s, c) => s + (parseFloat(c.netto) || 0), 0)
+    const totCosto = cedolini.reduce((s, c) => s + (parseFloat(c.costo_azienda) || (parseFloat(c.netto) || 0) * COSTO_AZ_FALLBACK), 0)
+    const totLorda = cedolini.reduce((s, c) => s + (parseFloat(c.totale_competenze) || 0), 0)
+    const avgNetto = cedolini.length > 0 ? totNetto / cedolini.length : 0
+    return { certi, parziali, stime, totNetto, totCosto, totLorda, avgNetto }
+  }, [cedolini])
+
+  const chartData = sorted.map(c => ({
+    label: `${MESI_SHORT[(c.mese || 1) - 1]}`,
+    netto: parseFloat(c.netto) || 0,
+    lorda: parseFloat(c.totale_competenze) || 0,
+    costo: parseFloat(c.costo_azienda) || (parseFloat(c.netto) || 0) * COSTO_AZ_FALLBACK,
+  }))
+
+  // Calcolo costo CCNL corretto (da lorda)
+  const costoCalcolato = stats.totLorda > 0
+    ? stats.totLorda * 1.3857
+    : stats.totNetto * COSTO_AZ_FALLBACK
+  const deltaCosto = stats.totCosto - costoCalcolato
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-start justify-center z-50 p-4 overflow-y-auto">
+      <div className="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-3xl my-6 shadow-2xl">
+
+        {/* Header */}
+        <div className="flex items-start justify-between p-6 border-b border-gray-700">
+          <div>
+            <h2 className="text-xl font-bold text-white">{emp.employee_name}</h2>
+            <div className="flex items-center gap-2 mt-2 flex-wrap">
+              <span className={`px-2 py-0.5 rounded text-xs font-bold ${emp.sede === 'MA' ? 'bg-red-900/40 text-red-300' : 'bg-blue-900/40 text-blue-300'}`}>
+                {emp.sede === 'MA' ? 'Mameli — Cagliari' : 'Predda Niedda — Sassari'}
+              </span>
+              {emp.qualifica && <span className="text-xs text-gray-300 bg-gray-800 px-2 py-0.5 rounded">{emp.qualifica}</span>}
+              {emp.percentuale_pt && <span className="text-xs text-gray-400">PT {parseFloat(emp.percentuale_pt)}%</span>}
+              {emp.ore_mensili && <span className="text-xs text-gray-400">{emp.ore_mensili}h/mese</span>}
+              {emp.paga_base && <span className="text-xs text-gray-400">Paga base: {fmtEur(parseFloat(emp.paga_base))}</span>}
+            </div>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-white ml-4"><X size={20} /></button>
+        </div>
+
+        {/* KPI row */}
+        <div className="p-6 grid grid-cols-2 sm:grid-cols-4 gap-3 border-b border-gray-700">
+          <div className="bg-gray-800 rounded-lg p-3 text-center">
+            <p className="text-xl font-bold text-emerald-400">{fmtEur0(stats.totNetto)}</p>
+            <p className="text-xs text-gray-400 mt-1">Totale netto</p>
+          </div>
+          <div className="bg-gray-800 rounded-lg p-3 text-center">
+            <p className="text-xl font-bold text-blue-400">{fmtEur0(stats.totLorda)}</p>
+            <p className="text-xs text-gray-400 mt-1">Totale lorda</p>
+          </div>
+          <div className="bg-gray-800 rounded-lg p-3 text-center">
+            <p className="text-xl font-bold text-purple-400">{fmtEur0(stats.totCosto)}</p>
+            <p className="text-xs text-gray-400 mt-1">Costo aziendale</p>
+          </div>
+          <div className="bg-gray-800 rounded-lg p-3 text-center">
+            <p className="text-xl font-bold text-amber-400">{fmtEur0(stats.avgNetto)}</p>
+            <p className="text-xs text-gray-400 mt-1">Media mensile netto</p>
+          </div>
+        </div>
+
+        {/* Qualità dati */}
+        <div className="px-6 pt-5 pb-2">
+          <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Qualità dati</h3>
+          <div className="flex gap-3 flex-wrap">
+            <div className="flex items-center gap-2 bg-emerald-900/20 border border-emerald-800/40 rounded-lg px-3 py-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+              <span className="text-xs text-emerald-300 font-medium">{stats.certi} certi</span>
+              <span className="text-xs text-gray-500">Da PDF individuale</span>
+            </div>
+            {stats.parziali > 0 && (
+              <div className="flex items-center gap-2 bg-yellow-900/20 border border-yellow-800/40 rounded-lg px-3 py-2">
+                <span className="w-2 h-2 rounded-full bg-yellow-400"></span>
+                <span className="text-xs text-yellow-300 font-medium">{stats.parziali} parziali</span>
+                <span className="text-xs text-gray-500">Da LUL (lorda nota)</span>
+              </div>
+            )}
+            {stats.stime > 0 && (
+              <div className="flex items-center gap-2 bg-red-900/20 border border-red-800/40 rounded-lg px-3 py-2">
+                <span className="w-2 h-2 rounded-full bg-red-400"></span>
+                <span className="text-xs text-red-300 font-medium">{stats.stime} stime</span>
+                <span className="text-xs text-gray-500">In attesa cedolino PDF</span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Trend chart */}
+        {chartData.length > 1 && (
+          <div className="px-6 pt-4">
+            <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Andamento mensile</h3>
+            <ResponsiveContainer width="100%" height={180}>
+              <LineChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                <XAxis dataKey="label" stroke="#6b7280" tick={{ fontSize: 11 }} />
+                <YAxis stroke="#6b7280" tick={{ fontSize: 11 }} tickFormatter={v => `${(v / 1000).toFixed(1)}k`} />
+                <Tooltip contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #4b5563' }}
+                  labelStyle={{ color: '#fff' }} formatter={v => fmtEur(v)} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                <Line type="monotone" dataKey="netto" stroke="#10b981" name="Netto" strokeWidth={2} dot={{ r: 3 }} />
+                <Line type="monotone" dataKey="lorda" stroke="#60a5fa" name="Lorda" strokeWidth={2} dot={{ r: 3 }} strokeDasharray="4 2" />
+                <Line type="monotone" dataKey="costo" stroke="#a78bfa" name="Costo Az." strokeWidth={2} dot={{ r: 3 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+
+        {/* Tabella cedolini dettaglio */}
+        <div className="px-6 pt-4 pb-2">
+          <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Cedolini dettaglio</h3>
+          <div className="overflow-x-auto rounded-lg border border-gray-700">
+            <table className="w-full text-xs">
+              <thead className="bg-gray-800">
+                <tr className="border-b border-gray-700">
+                  <th className="px-3 py-2 text-left text-gray-400 font-medium">Periodo</th>
+                  <th className="px-3 py-2 text-right text-gray-400 font-medium">Netto</th>
+                  <th className="px-3 py-2 text-right text-gray-400 font-medium">Lorda</th>
+                  <th className="px-3 py-2 text-right text-gray-400 font-medium">Costo Az.</th>
+                  <th className="px-3 py-2 text-center text-gray-400 font-medium">Fonte</th>
+                  <th className="px-3 py-2 text-left text-gray-400 font-medium hidden sm:table-cell">File PDF</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map((c, i) => {
+                  const netto = parseFloat(c.netto) || 0
+                  const lorda = parseFloat(c.totale_competenze) || 0
+                  const costo = parseFloat(c.costo_azienda) || (netto * COSTO_AZ_FALLBACK)
+                  // Evidenzia se costo non è CCNL-corretto
+                  const costoAtteso = lorda > 0 ? lorda * 1.3857 : 0
+                  const costoDeltaAlert = costoAtteso > 0 && Math.abs(costo - costoAtteso) > 50
+                  return (
+                    <tr key={i} className="border-b border-gray-800 hover:bg-gray-800/30">
+                      <td className="px-3 py-2 text-gray-300 whitespace-nowrap">{MESI_FULL[(c.mese || 1) - 1]} {c.anno}</td>
+                      <td className="px-3 py-2 text-right text-emerald-400 font-semibold">{fmtEur(netto)}</td>
+                      <td className="px-3 py-2 text-right text-blue-400">{lorda > 0 ? fmtEur(lorda) : <span className="text-gray-600">—</span>}</td>
+                      <td className="px-3 py-2 text-right">
+                        <span className={costoDeltaAlert ? 'text-amber-400' : 'text-purple-400'}>{fmtEur(costo)}</span>
+                        {costoDeltaAlert && <span className="ml-1 text-amber-500" title={`Atteso CCNL: ${fmtEur(costoAtteso)}`}>⚠</span>}
+                      </td>
+                      <td className="px-3 py-2 text-center"><QualityBadge c={c} small /></td>
+                      <td className="px-3 py-2 text-gray-500 max-w-[200px] truncate hidden sm:table-cell" title={c.file_name || ''}>
+                        {c.file_name ? '📄 ' + c.file_name.split('/').pop() : <span className="text-gray-700">—</span>}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+              <tfoot>
+                <tr className="bg-gray-800/50">
+                  <td className="px-3 py-2 text-gray-300 font-semibold">Totale</td>
+                  <td className="px-3 py-2 text-right text-emerald-400 font-bold">{fmtEur(stats.totNetto)}</td>
+                  <td className="px-3 py-2 text-right text-blue-400 font-bold">{stats.totLorda > 0 ? fmtEur(stats.totLorda) : '—'}</td>
+                  <td className="px-3 py-2 text-right text-purple-400 font-bold">{fmtEur(stats.totCosto)}</td>
+                  <td colSpan={2}></td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+
+        {/* Dettaglio fiscale ultimo cedolino */}
+        {sorted.length > 0 && (() => {
+          const last = sorted[sorted.length - 1]
+          const hasDetail = last.irpef_lorda || last.tfr_mese || last.ore_lavorate || last.inps_dipendente
+          if (!hasDetail) return null
+          return (
+            <div className="px-6 pb-2">
+              <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">
+                Dettaglio fiscale — {MESI_FULL[(last.mese || 1) - 1]} {last.anno}
+              </h3>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+                {last.ore_lavorate != null && (
+                  <div className="bg-gray-800/60 rounded-lg p-3 text-center border border-gray-700">
+                    <p className="text-xl font-bold text-sky-400">{fmtNum(last.ore_lavorate)}</p>
+                    <p className="text-xs text-gray-400 mt-1">Ore lavorate</p>
+                  </div>
+                )}
+                {last.inps_dipendente != null && (
+                  <div className="bg-gray-800/60 rounded-lg p-3 text-center border border-gray-700">
+                    <p className="text-xl font-bold text-indigo-400">{fmtEur(parseFloat(last.inps_dipendente))}</p>
+                    <p className="text-xs text-gray-400 mt-1">INPS c/dip</p>
+                  </div>
+                )}
+                {last.irpef_lorda != null && (
+                  <div className="bg-gray-800/60 rounded-lg p-3 text-center border border-gray-700">
+                    <p className="text-xl font-bold text-rose-400">{fmtEur(parseFloat(last.irpef_lorda))}</p>
+                    <p className="text-xs text-gray-400 mt-1">IRPEF lorda</p>
+                    {last.irpef_netta != null && <p className="text-xs text-gray-500">Netta: {fmtEur(parseFloat(last.irpef_netta))}</p>}
+                  </div>
+                )}
+                {last.tfr_mese != null && (
+                  <div className="bg-gray-800/60 rounded-lg p-3 text-center border border-gray-700">
+                    <p className="text-xl font-bold text-amber-400">{fmtEur(parseFloat(last.tfr_mese))}</p>
+                    <p className="text-xs text-gray-400 mt-1">TFR maturato</p>
+                    {last.tfr_annuo_progressivo != null && <p className="text-xs text-gray-500">Annuo prog.: {fmtEur(parseFloat(last.tfr_annuo_progressivo))}</p>}
+                  </div>
+                )}
+              </div>
+              {(last.imponibile_fiscale || last.imponibile_inps) && (
+                <div className="bg-gray-900/50 rounded-lg p-3 text-xs text-gray-400 grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {last.imponibile_inps    != null && <span>Imponibile INPS: <span className="text-white font-medium">{fmtEur(parseFloat(last.imponibile_inps))}</span></span>}
+                  {last.imponibile_fiscale != null && <span>Imponibile IRPEF: <span className="text-white font-medium">{fmtEur(parseFloat(last.imponibile_fiscale))}</span></span>}
+                  {last.totale_trattenute != null && <span>Totale trattenute: <span className="text-white font-medium">{fmtEur(parseFloat(last.totale_trattenute))}</span></span>}
+                  {last.totale_contributi_mese != null && <span>Contributi mese: <span className="text-white font-medium">{fmtEur(parseFloat(last.totale_contributi_mese))}</span></span>}
+                </div>
+              )}
+            </div>
+          )
+        })()}
+
+        {/* CCNL breakdown */}
+        <div className="px-6 py-4">
+          <div className="bg-gray-800/50 rounded-lg p-4">
+            <h4 className="text-xs font-semibold text-gray-300 mb-2 flex items-center gap-1.5"><Info size={12}/> Calcolo costo aziendale — CCNL Turismo Pubblici Esercizi</h4>
+            <div className="grid grid-cols-3 gap-x-4 gap-y-0.5 text-xs text-gray-400">
+              <span>INPS IVS: 23.81%</span><span>Disoccupazione: 1.31%</span><span>Maternità: 0.46%</span>
+              <span>CUAF: 0.68%</span><span>FIS c/az: 0.80%</span><span>INAIL: 3.50%</span>
+              <span>EST Sanità: 0.50%</span><span>EPAR bilat.: 0.10%</span><span>TFR: 7.41%</span>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-4 text-xs">
+              <span className="text-gray-300">Totale c/azienda: <span className="text-white font-semibold">38.57% su lorda</span></span>
+              <span className="text-gray-300">Formula: <span className="text-white font-semibold">costo = lorda × 1.3857</span></span>
+              {stats.totLorda > 0 && (
+                <span className="text-gray-300">Costo CCNL atteso: <span className="text-emerald-400 font-semibold">{fmtEur(costoCalcolato)}</span>
+                  {Math.abs(deltaCosto) > 50 && <span className="text-amber-400 ml-1">(Δ {fmtEur(deltaCosto)} vs DB)</span>}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+
+      </div>
     </div>
   )
 }
@@ -75,7 +349,6 @@ function AddModal({ employees, onSave, onClose }) {
   const pickEmployee = (code) => {
     const e = employees.find(x => x.code === code)
     if (!e) { setForm(f => ({ ...f, employee_code: '', employee_name: '', sede: 'MA', employee_id: '' })); return }
-    // Pre-popola anche ore dalle regole del dipendente se disponibili
     setForm(f => ({
       ...f,
       employee_id:    e.id      || '',
@@ -103,10 +376,8 @@ function AddModal({ employees, onSave, onClose }) {
     if (!form.employee_name) return setErr('Inserisci nome dipendente')
     if (!form.netto || parseFloat(form.netto) <= 0) return setErr('Inserisci netto > 0')
     setSaving(true); setErr(null)
-    try {
-      await onSave(form)
-      onClose()
-    } catch(e) { setErr(e.message || 'Errore salvataggio') }
+    try { await onSave(form); onClose() }
+    catch(e) { setErr(e.message || 'Errore salvataggio') }
     finally { setSaving(false) }
   }
 
@@ -137,8 +408,8 @@ function AddModal({ employees, onSave, onClose }) {
               <label className="text-xs text-gray-400 mb-1 block">Sede</label>
               <select className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
                 value={form.sede} onChange={e => set('sede', e.target.value)}>
-                <option value="MA">MA — Sede MA</option>
-                <option value="PN">PN — Sede PN</option>
+                <option value="MA">MA — Mameli</option>
+                <option value="PN">PN — Predda Niedda</option>
               </select>
             </div>
             <div>
@@ -167,7 +438,6 @@ function AddModal({ employees, onSave, onClose }) {
                 value={form.file_name} onChange={e => set('file_name', e.target.value)} placeholder="cedolino_gen.pdf"/>
             </div>
           </div>
-          {/* Ore contratto */}
           <div>
             <label className="text-xs text-gray-400 mb-1 block">Ore contratto</label>
             <select className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
@@ -233,7 +503,7 @@ function RiepilogoTab({ anno, mese, sedeFilter, riepilogo }) {
     for (const r of filtered) {
       const k = `${r.anno}-${String(r.mese).padStart(2,'0')}`
       if (!byMese[k]) byMese[k] = { label: `${MESI_SHORT[r.mese-1]} ${r.anno}`, netto: 0, costoAz: 0 }
-      byMese[k].netto  += r.totale_netto || 0
+      byMese[k].netto   += r.totale_netto || 0
       byMese[k].costoAz += r.totale_costo || 0
     }
     return Object.entries(byMese).sort().map(([,v]) => v)
@@ -243,9 +513,9 @@ function RiepilogoTab({ anno, mese, sedeFilter, riepilogo }) {
     <div className="space-y-6">
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <KpiCard label="Totale Netto" value={fmtEur0(kpis.totNetto)} sub={periodoLabel} icon={DollarSign} color="green"/>
-        <KpiCard label="Costo Aziendale" value={fmtEur0(kpis.totCosto)} sub="paga_base × 1.33 (RAL-based)" icon={TrendingUp} color="purple"/>
+        <KpiCard label="Costo Aziendale" value={fmtEur0(kpis.totCosto)} sub="CCNL Turismo (lorda × 1.3857)" icon={TrendingUp} color="purple"/>
         <KpiCard label="N. Dipendenti" value={fmtNum(kpis.nDip)} sub={periodoLabel} icon={Users} color="blue"/>
-        <KpiCard label="Media Dipendente" value={fmtEur0(kpis.media)} sub="Netto medio" icon={User2} color="amber"/>
+        <KpiCard label="Media Dipendente" value={fmtEur0(kpis.media)} sub="Netto medio mensile" icon={User2} color="amber"/>
       </div>
       {chartData.length > 0 && (
         <div className="bg-gray-900 rounded-lg p-6 border border-gray-800">
@@ -258,63 +528,500 @@ function RiepilogoTab({ anno, mese, sedeFilter, riepilogo }) {
               <Tooltip contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #4b5563' }}
                 labelStyle={{ color: '#fff' }} formatter={v => fmtEur0(v)}/>
               <Legend/>
-              <Bar dataKey="netto"  fill="#10b981" name="Netto"/>
+              <Bar dataKey="netto"   fill="#10b981" name="Netto"/>
               <Bar dataKey="costoAz" fill="#8b5cf6" name="Costo Aziendale"/>
             </BarChart>
           </ResponsiveContainer>
         </div>
       )}
-      {filtered.length === 0 && <p className="text-gray-400 text-center py-12">Nessun dato. Aggiungi i cedolini dalla tab "Dettaglio".</p>}
+      {filtered.length === 0 && <p className="text-gray-400 text-center py-12">Nessun dato. Aggiungi i cedolini dalla tab "Cedolini".</p>}
     </div>
   )
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TAB — STATO DIPENDENTI
+// TAB — DIPENDENTI (con schede personali cliccabili)
 // ═══════════════════════════════════════════════════════════════════════════
-function StatoDipendentiTab({ statoDipendenti, sedeFilter }) {
-  const filtered = useMemo(() => {
-    if (!statoDipendenti) return []
-    return (sedeFilter === 'Tutte' ? statoDipendenti : statoDipendenti.filter(e => e.location === sedeFilter))
-      .sort((a, b) => {
-        if (a.attivo !== b.attivo) return b.attivo - a.attivo
-        return (a.employee_name || '').localeCompare(b.employee_name || '')
+function DipendentiTab({ cedolini, sedeFilter, anno }) {
+  const [selected, setSelected] = useState(null)
+  const [search, setSearch]     = useState('')
+
+  const byEmployee = useMemo(() => {
+    const map = {}
+    for (const c of cedolini) {
+      const key = c.employee_name
+      if (!map[key]) map[key] = {
+        employee_name: key,
+        sede:          c.sede,
+        qualifica:     c.qualifica,
+        percentuale_pt: c.percentuale_pt,
+        ore_mensili:   c.ore_mensili,
+        paga_base:     c.paga_base,
+        cedolini:      [],
+      }
+      // Aggiorna con dati più recenti (some cols vary per month)
+      if (c.qualifica)     map[key].qualifica     = c.qualifica
+      if (c.percentuale_pt) map[key].percentuale_pt = c.percentuale_pt
+      if (c.ore_mensili)   map[key].ore_mensili   = c.ore_mensili
+      if (c.paga_base)     map[key].paga_base     = c.paga_base
+      map[key].cedolini.push(c)
+    }
+    return Object.values(map)
+      .filter(e => {
+        if (sedeFilter !== 'Tutte' && e.sede !== sedeFilter) return false
+        if (search && !e.employee_name.toLowerCase().includes(search.toLowerCase())) return false
+        return true
       })
-  }, [statoDipendenti, sedeFilter])
+      .sort((a, b) => a.employee_name.localeCompare(b.employee_name))
+  }, [cedolini, sedeFilter, search])
+
+  const globalStats = useMemo(() => {
+    const ft  = byEmployee.filter(e => parseFloat(e.percentuale_pt) >= 100).length
+    const pt  = byEmployee.filter(e => { const p = parseFloat(e.percentuale_pt); return p > 0 && p < 100 }).length
+    const certiTot = cedolini.filter(c => {
+      if (sedeFilter !== 'Tutte' && c.sede !== sedeFilter) return false
+      return qualitaDato(c) === 'certo'
+    }).length
+    const totCed = sedeFilter === 'Tutte' ? cedolini.length : cedolini.filter(c => c.sede === sedeFilter).length
+    return { ft, pt, certiTot, totCed }
+  }, [byEmployee, cedolini, sedeFilter])
+
+  const selectedEmp = useMemo(() => selected ? byEmployee.find(e => e.employee_name === selected) : null, [selected, byEmployee])
 
   return (
     <div className="space-y-4">
-      {/* Nota logica attivo */}
-      <div className="bg-blue-900/20 border border-blue-800/50 rounded-lg px-4 py-2.5 text-xs text-blue-300 flex items-center gap-2">
-        <Users size={13} className="flex-shrink-0"/>
-        Dipendenti dalla tabella buste paga — <strong className="text-white">Attivi</strong> = presenti nell'ultimo mese di cedolino caricato
+      {selectedEmp && <SchedaDipendente emp={selectedEmp} onClose={() => setSelected(null)} />}
+
+      {/* Stats globali */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <KpiCard label="Dipendenti" value={byEmployee.length} color="blue" icon={Users} sub={`anno ${anno}`}/>
+        <KpiCard label="Full Time" value={globalStats.ft} color="green" icon={User2} sub="100% ore"/>
+        <KpiCard label="Part Time" value={globalStats.pt} color="amber" icon={User2} sub="< 100% ore"/>
+        <KpiCard label="Cedolini Da PDF" value={`${globalStats.certiTot}/${globalStats.totCed}`} color="purple" icon={FileText} sub="fonte certa"/>
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <KpiCard label="Attivi" value={fmtNum(filtered.filter(e => e.attivo).length)} color="green"/>
-        <KpiCard label="Non più in organico" value={fmtNum(filtered.filter(e => !e.attivo).length)} color="amber"/>
-        <KpiCard label="Totale storico" value={fmtNum(filtered.length)} color="blue"/>
+
+      {/* Legenda qualità */}
+      <div className="bg-gray-800/40 border border-gray-700 rounded-lg px-4 py-3 flex flex-wrap gap-4 text-xs text-gray-400">
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-emerald-400"></span><strong className="text-emerald-300">Da PDF</strong> — netto e lorda estratti dal cedolino PDF individuale</span>
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-yellow-400"></span><strong className="text-yellow-300">Da LUL</strong> — lorda nota dal LUL mensile, ma senza file individuale tracciato</span>
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-amber-400"></span><strong className="text-amber-300">Previsione</strong> — media dei mesi precedenti dello stesso anno, in attesa del cedolino</span>
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-red-400"></span><strong className="text-red-300">Stima</strong> — valore stimato (es. proiezione da gennaio), in attesa del PDF</span>
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {filtered.map((emp, i) => (
-          <div key={i} className="bg-gray-800 rounded-lg border border-gray-700 p-4">
-            <div className="flex items-start justify-between mb-3">
-              <div>
-                <h4 className="font-semibold text-white">{emp.employee_name}</h4>
-                <p className="text-xs text-gray-400">{emp.location || '—'}</p>
+
+      {/* Search */}
+      <input type="text" placeholder="Cerca dipendente..."
+        value={search} onChange={e => setSearch(e.target.value)}
+        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white placeholder-gray-500 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+
+      {/* Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        {byEmployee.map((emp) => {
+          const totNetto = emp.cedolini.reduce((s, c) => s + (parseFloat(c.netto) || 0), 0)
+          const totCosto = emp.cedolini.reduce((s, c) => s + (parseFloat(c.costo_azienda) || (parseFloat(c.netto) || 0) * COSTO_AZ_FALLBACK), 0)
+          const certi    = emp.cedolini.filter(c => qualitaDato(c) === 'certo').length
+          const parziali = emp.cedolini.filter(c => qualitaDato(c) === 'parziale').length
+          const stime    = emp.cedolini.filter(c => qualitaDato(c) === 'stima').length
+          const pt       = parseFloat(emp.percentuale_pt)
+          const ultCed   = [...emp.cedolini].sort((a, b) => b.anno * 100 + b.mese - (a.anno * 100 + a.mese))[0]
+
+          return (
+            <button key={emp.employee_name} onClick={() => setSelected(emp.employee_name)}
+              className="bg-gray-800 border border-gray-700 rounded-xl p-4 text-left hover:border-blue-500/60 hover:bg-gray-800/80 transition-all group cursor-pointer">
+
+              {/* Row 1: nome + netto/costo */}
+              <div className="flex items-start justify-between mb-3">
+                <div className="flex-1 min-w-0">
+                  <h4 className="font-semibold text-white truncate group-hover:text-blue-300 transition-colors text-sm">{emp.employee_name}</h4>
+                  <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                    <span className={`px-1.5 py-0.5 rounded text-xs font-semibold ${emp.sede === 'MA' ? 'bg-red-900/30 text-red-300' : 'bg-blue-900/30 text-blue-300'}`}>{emp.sede}</span>
+                    {emp.qualifica && <span className="text-xs text-gray-500">{emp.qualifica.replace('PART TIME ', 'PT ')}</span>}
+                  </div>
+                </div>
+                <div className="text-right ml-2 flex-shrink-0">
+                  <p className="text-sm font-bold text-emerald-400">{fmtEur0(totNetto)}</p>
+                  <p className="text-xs text-purple-400">{fmtEur0(totCosto)}</p>
+                </div>
               </div>
-              <span className={`px-2 py-1 rounded text-xs font-semibold ${emp.attivo ? 'bg-emerald-900/40 text-emerald-300 border border-emerald-700' : 'bg-gray-700/60 text-gray-400 border border-gray-600'}`}>
-                {emp.attivo ? 'Attivo' : 'Ex dipendente'}
-              </span>
+
+              {/* Row 2: mini stats */}
+              <div className="grid grid-cols-3 gap-2 text-xs mb-3">
+                <div className="bg-gray-900/50 rounded p-1.5 text-center">
+                  <p className="font-semibold text-white">{emp.cedolini.length}</p>
+                  <p className="text-gray-500">mesi</p>
+                </div>
+                <div className="bg-gray-900/50 rounded p-1.5 text-center">
+                  <p className="font-semibold text-white">{pt > 0 ? `${pt}%` : '—'}</p>
+                  <p className="text-gray-500">PT</p>
+                </div>
+                <div className="bg-gray-900/50 rounded p-1.5 text-center">
+                  <p className="font-semibold text-white">{emp.ore_mensili ? `${emp.ore_mensili}h` : '—'}</p>
+                  <p className="text-gray-500">/mese</p>
+                </div>
+              </div>
+
+              {/* Row 3: quality badges */}
+              <div className="flex items-center gap-1.5 flex-wrap text-xs">
+                {certi    > 0 && <span className="bg-emerald-900/30 text-emerald-400 border border-emerald-800/50 px-1.5 py-0.5 rounded">✓ {certi} PDF</span>}
+                {parziali > 0 && <span className="bg-yellow-900/30 text-yellow-400 border border-yellow-800/50 px-1.5 py-0.5 rounded">≈ {parziali} LUL</span>}
+                {stime    > 0 && <span className="bg-red-900/30 text-red-400 border border-red-800/50 px-1.5 py-0.5 rounded">~ {stime} stima</span>}
+              </div>
+
+              {ultCed && <p className="text-xs text-gray-600 mt-2">Ultimo: {MESI_FULL[(ultCed.mese || 1) - 1]} {ultCed.anno}</p>}
+              <p className="text-xs text-blue-500/50 group-hover:text-blue-400/70 mt-1 transition-colors">Clicca per la scheda completa →</p>
+            </button>
+          )
+        })}
+      </div>
+      {byEmployee.length === 0 && <p className="text-gray-400 text-center py-12">Nessun dipendente trovato.</p>}
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TAB — BI ANALISI DETTAGLIATA
+// ═══════════════════════════════════════════════════════════════════════════
+function AnalisiTab({ cedolini, sedeFilter, anno }) {
+  const filtered = useMemo(() => {
+    if (!cedolini) return []
+    return sedeFilter === 'Tutte' ? cedolini : cedolini.filter(c => c.sede === sedeFilter)
+  }, [cedolini, sedeFilter])
+
+  // Trend mensile per sede
+  const trendData = useMemo(() => {
+    const byMese = {}
+    for (const c of filtered) {
+      const k = String(c.mese).padStart(2, '0')
+      if (!byMese[k]) byMese[k] = { label: MESI_SHORT[c.mese - 1], nettoMA: 0, nettoPN: 0, costoMA: 0, costoPN: 0, dipMA: new Set(), dipPN: new Set() }
+      const netto = parseFloat(c.netto) || 0
+      const costo = parseFloat(c.costo_azienda) || (netto * COSTO_AZ_FALLBACK)
+      if (c.sede === 'MA') { byMese[k].nettoMA += netto; byMese[k].costoMA += costo; byMese[k].dipMA.add(c.employee_name) }
+      else                 { byMese[k].nettoPN += netto; byMese[k].costoPN += costo; byMese[k].dipPN.add(c.employee_name) }
+    }
+    return Object.entries(byMese).sort().map(([, v]) => ({
+      ...v, dipMA: v.dipMA.size, dipPN: v.dipPN.size,
+    }))
+  }, [filtered])
+
+  // Top 10 per costo az
+  const topCosto = useMemo(() => {
+    const byEmp = {}
+    for (const c of filtered) {
+      if (!byEmp[c.employee_name]) byEmp[c.employee_name] = { netto: 0, costo: 0, mesi: 0, sede: c.sede }
+      byEmp[c.employee_name].netto += parseFloat(c.netto) || 0
+      byEmp[c.employee_name].costo += parseFloat(c.costo_azienda) || 0
+      byEmp[c.employee_name].mesi++
+    }
+    return Object.entries(byEmp)
+      .map(([name, v]) => ({ name: name.split(' ').slice(0, 2).join(' '), ...v }))
+      .sort((a, b) => b.costo - a.costo)
+      .slice(0, 12)
+  }, [filtered])
+
+  // Distribuzione FT vs PT
+  const ftPtData = useMemo(() => {
+    const cats = {}
+    const empSeen = {}
+    for (const c of filtered) {
+      if (empSeen[c.employee_name]) continue
+      empSeen[c.employee_name] = true
+      const pt = parseFloat(c.percentuale_pt)
+      const cat = !c.percentuale_pt ? 'N/D' : pt >= 100 ? 'Full Time 100%' : pt >= 75 ? 'Part Time 75%' : pt >= 62 ? 'Part Time 62.5%' : pt >= 50 ? 'Part Time 50%' : 'Altro'
+      if (!cats[cat]) cats[cat] = 0
+      cats[cat]++
+    }
+    return Object.entries(cats).map(([name, n]) => ({ name, dipendenti: n }))
+  }, [filtered])
+
+  // Qualità dati
+  const qualStats = useMemo(() => {
+    const certi    = filtered.filter(c => qualitaDato(c) === 'certo')
+    const parziali = filtered.filter(c => qualitaDato(c) === 'parziale')
+    const stime    = filtered.filter(c => qualitaDato(c) === 'stima')
+    const sumNetto = arr => arr.reduce((s, c) => s + (parseFloat(c.netto) || 0), 0)
+    return [
+      { label: 'Da PDF', n: certi.length,    netto: sumNetto(certi),    color: '#10b981' },
+      { label: 'Da LUL', n: parziali.length, netto: sumNetto(parziali), color: '#f59e0b' },
+      { label: 'Stima',  n: stime.length,    netto: sumNetto(stime),    color: '#ef4444' },
+    ]
+  }, [filtered])
+
+  // Confronto sedi
+  const sedeStats = useMemo(() => {
+    const s = { MA: { netto: 0, costo: 0, lorda: 0, dip: new Set() }, PN: { netto: 0, costo: 0, lorda: 0, dip: new Set() } }
+    for (const c of filtered) {
+      const k = c.sede
+      if (!s[k]) continue
+      const netto = parseFloat(c.netto) || 0
+      const costo = parseFloat(c.costo_azienda) || (netto * COSTO_AZ_FALLBACK)
+      const lorda = parseFloat(c.totale_competenze) || 0
+      s[k].netto += netto; s[k].costo += costo; s[k].lorda += lorda; s[k].dip.add(c.employee_name)
+    }
+    return [
+      { sede: 'Mameli (MA)', ...s.MA, dip: s.MA.dip.size },
+      { sede: 'Predda Niedda (PN)', ...s.PN, dip: s.PN.dip.size },
+    ]
+  }, [filtered])
+
+  return (
+    <div className="space-y-6">
+
+      {/* Qualità dati */}
+      <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-5">
+        <h3 className="font-semibold text-white mb-4 flex items-center gap-2"><ShieldCheck size={16}/> Qualità dati {anno}</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
+          {qualStats.map(q => (
+            <div key={q.label} className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: q.color }}></span>
+                <p className="text-sm font-semibold text-white">{q.label}</p>
+              </div>
+              <p className="text-3xl font-bold text-white">{q.n}</p>
+              <p className="text-xs text-gray-400 mt-1">cedolini</p>
+              <p className="text-sm font-medium mt-2" style={{ color: q.color }}>{fmtEur0(q.netto)}</p>
+              <p className="text-xs text-gray-500">netto totale</p>
             </div>
-            <div className="space-y-1 text-sm">
-              <div className="flex justify-between"><span className="text-gray-400">Ultimo cedolino:</span><span className="text-white">{emp.ultimo_mese_label ? `${emp.ultimo_mese_label} ${emp.ultimo_anno}` : '—'}</span></div>
-              <div className="flex justify-between"><span className="text-gray-400">N. cedolini:</span><span className="text-white">{emp.totale_buste || 0}</span></div>
-              <div className="flex justify-between"><span className="text-gray-400">Totale netto:</span><span className="text-emerald-400 font-medium">{fmtEur(emp.totale_netto)}</span></div>
+          ))}
+        </div>
+        <div className="bg-gray-900/30 rounded-lg px-4 py-2 text-xs text-gray-400">
+          <strong className="text-gray-300">Come leggere:</strong>{' '}
+          <span className="text-emerald-300">Da PDF</span> = cedolino individuale estratto (fonte certa) ·{' '}
+          <span className="text-yellow-300">Da LUL</span> = netto/lorda dal Libro Unico Lavoro ·{' '}
+          <span className="text-amber-300">Previsione</span> = media mesi precedenti, in attesa del cedolino ·{' '}
+          <span className="text-red-300">Stima</span> = proiezione da inizio anno
+        </div>
+      </div>
+
+      {/* Confronto sedi */}
+      <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-5">
+        <h3 className="font-semibold text-white mb-4 flex items-center gap-2"><MapPin size={16}/> Confronto sedi</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {sedeStats.map(s => (
+            <div key={s.sede} className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
+              <p className="font-semibold text-white mb-3">{s.sede}</p>
+              <div className="space-y-2 text-sm">
+                <div className="flex justify-between items-center"><span className="text-gray-400">Dipendenti</span><span className="text-white font-bold text-lg">{s.dip}</span></div>
+                <div className="flex justify-between"><span className="text-gray-400">Totale netto</span><span className="text-emerald-400 font-semibold">{fmtEur0(s.netto)}</span></div>
+                <div className="flex justify-between"><span className="text-gray-400">Totale lorda</span><span className="text-blue-400">{s.lorda > 0 ? fmtEur0(s.lorda) : '—'}</span></div>
+                <div className="flex justify-between"><span className="text-gray-400">Costo aziendale</span><span className="text-purple-400 font-semibold">{fmtEur0(s.costo)}</span></div>
+                <div className="flex justify-between border-t border-gray-700 pt-2"><span className="text-gray-400">Netto medio/dip</span><span className="text-white">{fmtEur0(s.dip > 0 ? s.netto / s.dip : 0)}</span></div>
+                <div className="flex justify-between"><span className="text-gray-400">Costo medio/dip</span><span className="text-white">{fmtEur0(s.dip > 0 ? s.costo / s.dip : 0)}</span></div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Distribuzione contratti */}
+      {ftPtData.length > 0 && (
+        <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-5">
+          <h3 className="font-semibold text-white mb-4 flex items-center gap-2"><Users size={16}/> Distribuzione contratti</h3>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {ftPtData.map((row) => (
+              <div key={row.name} className="bg-gray-900/50 rounded-lg p-3 text-center border border-gray-700">
+                <p className="text-3xl font-bold text-white">{row.dipendenti}</p>
+                <p className="text-xs text-gray-400 mt-1">{row.name}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Top 12 costo */}
+      {topCosto.length > 0 && (
+        <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-5">
+          <h3 className="font-semibold text-white mb-4 flex items-center gap-2"><TrendingUp size={16}/> Top dipendenti per costo aziendale {anno}</h3>
+          <ResponsiveContainer width="100%" height={320}>
+            <BarChart data={topCosto} layout="vertical" margin={{ left: 10, right: 20, top: 5, bottom: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#374151" horizontal={false}/>
+              <XAxis type="number" stroke="#6b7280" tick={{ fontSize: 11 }} tickFormatter={v => `${(v/1000).toFixed(0)}k`}/>
+              <YAxis type="category" dataKey="name" width={130} stroke="#6b7280" tick={{ fontSize: 10 }}/>
+              <Tooltip contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #4b5563' }}
+                labelStyle={{ color: '#fff' }} formatter={v => fmtEur0(v)}/>
+              <Legend wrapperStyle={{ fontSize: 11 }}/>
+              <Bar dataKey="netto" fill="#10b981" name="Netto"/>
+              <Bar dataKey="costo" fill="#8b5cf6" name="Costo Az."/>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* Trend mensile per sede */}
+      {trendData.length > 0 && (
+        <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-5">
+          <h3 className="font-semibold text-white mb-4 flex items-center gap-2"><BarChart2 size={16}/> Trend mensile netto per sede — {anno}</h3>
+          <ResponsiveContainer width="100%" height={280}>
+            <BarChart data={trendData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#374151"/>
+              <XAxis dataKey="label" stroke="#6b7280" tick={{ fontSize: 12 }}/>
+              <YAxis stroke="#6b7280" tick={{ fontSize: 12 }} tickFormatter={v => `${(v / 1000).toFixed(0)}k`}/>
+              <Tooltip contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #4b5563' }}
+                labelStyle={{ color: '#fff' }} formatter={v => fmtEur0(v)}/>
+              <Legend wrapperStyle={{ fontSize: 11 }}/>
+              <Bar dataKey="nettoMA" fill="#ef4444" name="Netto Mameli (MA)" stackId="netto"/>
+              <Bar dataKey="nettoPN" fill="#f97316" name="Netto Predda N. (PN)" stackId="netto"/>
+            </BarChart>
+          </ResponsiveContainer>
+
+          <div className="mt-4 overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-gray-700">
+                  <th className="py-2 text-left text-gray-400">Mese</th>
+                  <th className="py-2 text-right text-gray-400">Netto MA</th>
+                  <th className="py-2 text-right text-gray-400">Netto PN</th>
+                  <th className="py-2 text-right text-gray-400">Costo MA</th>
+                  <th className="py-2 text-right text-gray-400">Costo PN</th>
+                  <th className="py-2 text-right text-gray-400">Dip. MA</th>
+                  <th className="py-2 text-right text-gray-400">Dip. PN</th>
+                </tr>
+              </thead>
+              <tbody>
+                {trendData.map((r, i) => (
+                  <tr key={i} className="border-b border-gray-800 hover:bg-gray-800/30">
+                    <td className="py-1.5 text-gray-300 font-medium">{r.label}</td>
+                    <td className="py-1.5 text-right text-emerald-400">{fmtEur0(r.nettoMA)}</td>
+                    <td className="py-1.5 text-right text-orange-400">{fmtEur0(r.nettoPN)}</td>
+                    <td className="py-1.5 text-right text-purple-400">{fmtEur0(r.costoMA)}</td>
+                    <td className="py-1.5 text-right text-indigo-400">{fmtEur0(r.costoPN)}</td>
+                    <td className="py-1.5 text-right text-gray-300">{r.dipMA}</td>
+                    <td className="py-1.5 text-right text-gray-300">{r.dipPN}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* TFR Accumulato */}
+      {(() => {
+        const tfrByEmp = {}
+        for (const c of filtered) {
+          if (!c.tfr_mese) continue
+          if (!tfrByEmp[c.employee_name]) tfrByEmp[c.employee_name] = { sede: c.sede, tfr: 0, mesi: 0 }
+          tfrByEmp[c.employee_name].tfr  += parseFloat(c.tfr_mese) || 0
+          tfrByEmp[c.employee_name].mesi++
+        }
+        const rows = Object.entries(tfrByEmp).sort((a, b) => b[1].tfr - a[1].tfr)
+        if (rows.length === 0) return null
+        const totMA = rows.filter(([,v]) => v.sede === 'MA').reduce((s,[,v]) => s + v.tfr, 0)
+        const totPN = rows.filter(([,v]) => v.sede === 'PN').reduce((s,[,v]) => s + v.tfr, 0)
+        return (
+          <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-5">
+            <h3 className="font-semibold text-white mb-1 flex items-center gap-2">
+              <DollarSign size={16} className="text-amber-400"/> TFR Accumulato {anno}
+            </h3>
+            <p className="text-xs text-gray-400 mb-4">Fondo TFR maturato nell'anno (accantonato per legge = 1/13.5 della retribuzione utile mensile)</p>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-4">
+              <div className="bg-amber-900/20 border border-amber-800/40 rounded-lg p-4 text-center">
+                <p className="text-2xl font-bold text-amber-400">{fmtEur0(totMA + totPN)}</p>
+                <p className="text-xs text-gray-400 mt-1">Totale TFR accantonato</p>
+              </div>
+              <div className="bg-red-900/20 border border-red-800/40 rounded-lg p-4 text-center">
+                <p className="text-xl font-bold text-red-400">{fmtEur0(totMA)}</p>
+                <p className="text-xs text-gray-400 mt-1">Mameli (MA)</p>
+              </div>
+              <div className="bg-blue-900/20 border border-blue-800/40 rounded-lg p-4 text-center">
+                <p className="text-xl font-bold text-blue-400">{fmtEur0(totPN)}</p>
+                <p className="text-xs text-gray-400 mt-1">Predda Niedda (PN)</p>
+              </div>
+            </div>
+            <div className="bg-amber-900/10 rounded-lg px-4 py-2 text-xs text-amber-200/60">
+              Il TFR è una passività aziendale — viene pagato al dipendente alla cessazione del rapporto di lavoro.
+              Totale dipendenti con TFR estratto: <strong className="text-amber-300">{rows.length}</strong>
             </div>
           </div>
-        ))}
-      </div>
-      {filtered.length === 0 && <p className="text-gray-400 text-center py-12">Nessun dipendente trovato.</p>}
+        )
+      })()}
+
+      {/* Analisi IRPEF */}
+      {(() => {
+        let irpefLordaTot = 0, irpefNettaTot = 0, imponibileTot = 0, contiIrpef = 0
+        for (const c of filtered) {
+          if (c.irpef_lorda) { irpefLordaTot += parseFloat(c.irpef_lorda); contiIrpef++ }
+          if (c.irpef_netta)   irpefNettaTot  += parseFloat(c.irpef_netta)
+          if (c.imponibile_fiscale) imponibileTot += parseFloat(c.imponibile_fiscale)
+        }
+        if (contiIrpef === 0) return null
+        const aliquotaMedia = imponibileTot > 0 ? (irpefLordaTot / imponibileTot) * 100 : 0
+        const detrazioniTot = irpefLordaTot - irpefNettaTot
+        return (
+          <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-5">
+            <h3 className="font-semibold text-white mb-1 flex items-center gap-2">
+              <Activity size={16} className="text-rose-400"/> Analisi IRPEF {anno}
+            </h3>
+            <p className="text-xs text-gray-400 mb-4">Ritenute fiscali aggregate dai cedolini con dati estratti da PDF</p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700 text-center">
+                <p className="text-2xl font-bold text-rose-400">{fmtEur0(irpefLordaTot)}</p>
+                <p className="text-xs text-gray-400 mt-1">IRPEF lorda totale</p>
+              </div>
+              <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700 text-center">
+                <p className="text-2xl font-bold text-pink-400">{fmtEur0(irpefNettaTot)}</p>
+                <p className="text-xs text-gray-400 mt-1">IRPEF netta totale</p>
+              </div>
+              <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700 text-center">
+                <p className="text-2xl font-bold text-violet-400">{fmtEur0(detrazioniTot)}</p>
+                <p className="text-xs text-gray-400 mt-1">Detrazioni totali</p>
+              </div>
+              <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700 text-center">
+                <p className="text-2xl font-bold text-indigo-400">{aliquotaMedia.toFixed(1)}%</p>
+                <p className="text-xs text-gray-400 mt-1">Aliquota media effettiva</p>
+              </div>
+            </div>
+            <p className="text-xs text-gray-500 mt-3">Basato su {contiIrpef} cedolini con IRPEF estratta da PDF · Imponibile totale: {fmtEur0(imponibileTot)}</p>
+          </div>
+        )
+      })()}
+
+      {/* Ore lavorate per sede */}
+      {(() => {
+        const oreMA = filtered.filter(c => c.sede === 'MA' && c.ore_lavorate).reduce((s, c) => s + (parseInt(c.ore_lavorate) || 0), 0)
+        const orePN = filtered.filter(c => c.sede === 'PN' && c.ore_lavorate).reduce((s, c) => s + (parseInt(c.ore_lavorate) || 0), 0)
+        const contiOre = filtered.filter(c => c.ore_lavorate).length
+        if (contiOre === 0) return null
+        const costoOraMaArr = filtered.filter(c => c.sede === 'MA' && c.ore_lavorate && c.costo_azienda)
+        const costoOreMA = costoOraMaArr.length > 0
+          ? costoOraMaArr.reduce((s, c) => s + (parseFloat(c.costo_azienda) || 0), 0) / oreMA
+          : 0
+        const costoPNArr = filtered.filter(c => c.sede === 'PN' && c.ore_lavorate && c.costo_azienda)
+        const costoOrePN = costoPNArr.length > 0
+          ? costoPNArr.reduce((s, c) => s + (parseFloat(c.costo_azienda) || 0), 0) / orePN
+          : 0
+        return (
+          <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-5">
+            <h3 className="font-semibold text-white mb-1 flex items-center gap-2">
+              <Calendar size={16} className="text-sky-400"/> Ore Lavorate {anno}
+            </h3>
+            <p className="text-xs text-gray-400 mb-4">Ore effettive lavorate aggregate (da cedolini con estrazione PDF)</p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700 text-center">
+                <p className="text-2xl font-bold text-sky-400">{fmtNum(oreMA + orePN)}</p>
+                <p className="text-xs text-gray-400 mt-1">Ore totali</p>
+              </div>
+              <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700 text-center">
+                <p className="text-2xl font-bold text-red-400">{fmtNum(oreMA)}</p>
+                <p className="text-xs text-gray-400 mt-1">Ore Mameli (MA)</p>
+                {costoOreMA > 0 && <p className="text-xs text-gray-500 mt-1">{fmtEur(costoOreMA)}/ora</p>}
+              </div>
+              <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700 text-center">
+                <p className="text-2xl font-bold text-blue-400">{fmtNum(orePN)}</p>
+                <p className="text-xs text-gray-400 mt-1">Ore Predda N. (PN)</p>
+                {costoOrePN > 0 && <p className="text-xs text-gray-500 mt-1">{fmtEur(costoOrePN)}/ora</p>}
+              </div>
+              <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700 text-center">
+                <p className="text-2xl font-bold text-emerald-400">
+                  {costoOreMA > 0 || costoOrePN > 0 ? fmtEur((costoOreMA + costoOrePN) / (costoOreMA && costoOrePN ? 2 : 1)) : '—'}
+                </p>
+                <p className="text-xs text-gray-400 mt-1">Costo medio/ora</p>
+              </div>
+            </div>
+            <p className="text-xs text-gray-500 mt-3">{contiOre} cedolini con ore estratte da PDF</p>
+          </div>
+        )
+      })()}
+
+      {filtered.length === 0 && <p className="text-gray-400 text-center py-12">Nessun dato disponibile.</p>}
     </div>
   )
 }
@@ -340,7 +1047,10 @@ function CostoPersonaleTab({ costoMensile, sedeFilter }) {
     <div className="space-y-6">
       <div className="bg-blue-900/20 border border-blue-800 rounded-lg p-4 flex gap-2">
         <AlertCircle size={18} className="text-blue-400 flex-shrink-0 mt-0.5"/>
-        <div className="text-sm text-blue-300"><p className="font-medium">Costo Aziendale: paga base (LUL) × 1.33</p><p className="text-xs mt-0.5 opacity-80">Contributi INPS c/ditta ~33% — estratto dal LUL PDF</p></div>
+        <div className="text-sm text-blue-300">
+          <p className="font-medium">Costo Aziendale — CCNL Turismo Pubblici Esercizi</p>
+          <p className="text-xs mt-0.5 opacity-80">Formula: costo = lorda × 1.3857 (38.57% contributi c/az). Fallback: netto × 1.9653 quando lorda non disponibile.</p>
+        </div>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <KpiCard label="Media Mensile" value={fmtEur0(stats.avg)} color="green"/>
@@ -358,7 +1068,7 @@ function CostoPersonaleTab({ costoMensile, sedeFilter }) {
               <Tooltip contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #4b5563' }}
                 labelStyle={{ color: '#fff' }} formatter={v => fmtEur0(v)}/>
               <Legend/>
-              <Line type="monotone" dataKey="netto"  stroke="#10b981" name="Netto" strokeWidth={2} dot={{ r: 4 }}/>
+              <Line type="monotone" dataKey="netto"   stroke="#10b981" name="Netto"           strokeWidth={2} dot={{ r: 4 }}/>
               <Line type="monotone" dataKey="costoAz" stroke="#8b5cf6" name="Costo Aziendale" strokeWidth={2} dot={{ r: 4 }}/>
             </LineChart>
           </ResponsiveContainer>
@@ -373,12 +1083,12 @@ function CostoPersonaleTab({ costoMensile, sedeFilter }) {
 // TAB — DETTAGLIO CEDOLINI
 // ═══════════════════════════════════════════════════════════════════════════
 function DettaglioCedoliniTab({ cedolini, sedeFilter, meseFilter, onRefresh, employees }) {
-  const [search, setSearch]     = useState('')
+  const [search, setSearch]       = useState('')
   const [editingId, setEditingId] = useState(null)
   const [editNetto, setEditNetto] = useState('')
-  const [saving, setSaving]     = useState(null)
-  const [showAdd, setShowAdd]   = useState(false)
-  const [deleting, setDeleting] = useState(null)
+  const [saving, setSaving]       = useState(null)
+  const [showAdd, setShowAdd]     = useState(false)
+  const [deleting, setDeleting]   = useState(null)
 
   const filtered = useMemo(() => {
     if (!cedolini) return []
@@ -388,7 +1098,7 @@ function DettaglioCedoliniTab({ cedolini, sedeFilter, meseFilter, onRefresh, emp
       if (search && !(c.employee_name || '').toLowerCase().includes(search.toLowerCase())) return false
       return true
     }).sort((a, b) => {
-      const pA = a.anno*100 + a.mese, pB = b.anno*100 + b.mese
+      const pA = a.anno * 100 + a.mese, pB = b.anno * 100 + b.mese
       return pB - pA || (a.employee_name || '').localeCompare(b.employee_name || '')
     })
   }, [cedolini, sedeFilter, meseFilter, search])
@@ -427,25 +1137,29 @@ function DettaglioCedoliniTab({ cedolini, sedeFilter, meseFilter, onRefresh, emp
         <table className="w-full text-sm">
           <thead className="bg-gray-800">
             <tr className="border-b border-gray-700">
-              <th className="px-4 py-3 text-left font-semibold text-gray-300">Dipendente</th>
-              <th className="px-4 py-3 text-left font-semibold text-gray-300">Sede</th>
-              <th className="px-4 py-3 text-left font-semibold text-gray-300">Mese</th>
-              <th className="px-4 py-3 text-right font-semibold text-gray-300">Netto</th>
-              <th className="px-4 py-3 text-right font-semibold text-gray-300">Costo Az.</th>
-              <th className="px-4 py-3 text-center font-semibold text-gray-300">File</th>
-              <th className="px-4 py-3 text-center font-semibold text-gray-300">Azioni</th>
+              <th className="px-3 py-3 text-left font-semibold text-gray-300">Dipendente</th>
+              <th className="px-3 py-3 text-left font-semibold text-gray-300">Sede</th>
+              <th className="px-3 py-3 text-left font-semibold text-gray-300">Mese</th>
+              <th className="px-3 py-3 text-right font-semibold text-gray-300">Netto</th>
+              <th className="px-3 py-3 text-right font-semibold text-gray-300 hidden md:table-cell">Lorda</th>
+              <th className="px-3 py-3 text-right font-semibold text-gray-300">Costo Az.</th>
+              <th className="px-3 py-3 text-center font-semibold text-gray-300">Fonte</th>
+              <th className="px-3 py-3 text-center font-semibold text-gray-300">Azioni</th>
             </tr>
           </thead>
           <tbody>
             {filtered.map((c, i) => {
-              const netto   = c.netto || 0
-              const costoAz = c.costo_azienda || +(netto * COSTO_AZ_FALLBACK).toFixed(2)
+              const netto   = parseFloat(c.netto) || 0
+              const lorda   = parseFloat(c.totale_competenze) || 0
+              const costoAz = parseFloat(c.costo_azienda) || (netto * COSTO_AZ_FALLBACK)
               return (
                 <tr key={c.id || i} className="border-b border-gray-700 hover:bg-gray-800/50 transition">
-                  <td className="px-4 py-3 text-white font-medium">{c.employee_name}</td>
-                  <td className="px-4 py-3"><span className={`px-2 py-0.5 rounded text-xs font-semibold ${c.sede === 'MA' ? 'bg-red-900/30 text-red-300' : 'bg-blue-900/30 text-blue-300'}`}>{c.sede}</span></td>
-                  <td className="px-4 py-3 text-gray-300">{MESI_FULL[(c.mese||1)-1]} {c.anno}</td>
-                  <td className="px-4 py-3 text-right">
+                  <td className="px-3 py-3 text-white font-medium">{c.employee_name}</td>
+                  <td className="px-3 py-3">
+                    <span className={`px-2 py-0.5 rounded text-xs font-semibold ${c.sede === 'MA' ? 'bg-red-900/30 text-red-300' : 'bg-blue-900/30 text-blue-300'}`}>{c.sede}</span>
+                  </td>
+                  <td className="px-3 py-3 text-gray-300 whitespace-nowrap">{MESI_FULL[(c.mese||1)-1]} {c.anno}</td>
+                  <td className="px-3 py-3 text-right">
                     {editingId === c.id ? (
                       <div className="flex items-center justify-end gap-1">
                         <input type="number" step="0.01" min="0" autoFocus
@@ -459,13 +1173,14 @@ function DettaglioCedoliniTab({ cedolini, sedeFilter, meseFilter, onRefresh, emp
                       <button onClick={() => { setEditingId(c.id); setEditNetto(netto || '') }}
                         className={`font-medium ${netto > 0 ? 'text-emerald-400 hover:text-emerald-300' : 'text-gray-500 italic hover:text-blue-400'} transition-colors`}
                         title="Clicca per modificare">
-                        {netto > 0 ? fmtEur(netto) : '+ inserisci netto'}
+                        {netto > 0 ? fmtEur(netto) : '+ inserisci'}
                       </button>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-right text-purple-400">{costoAz > 0 ? fmtEur(costoAz) : '—'}</td>
-                  <td className="px-4 py-3 text-center text-xs text-gray-500">{c.file_name || '—'}</td>
-                  <td className="px-4 py-3 text-center">
+                  <td className="px-3 py-3 text-right text-blue-400 hidden md:table-cell">{lorda > 0 ? fmtEur(lorda) : <span className="text-gray-600">—</span>}</td>
+                  <td className="px-3 py-3 text-right text-purple-400">{costoAz > 0 ? fmtEur(costoAz) : '—'}</td>
+                  <td className="px-3 py-3 text-center"><QualityBadge c={c} small /></td>
+                  <td className="px-3 py-3 text-center">
                     <button onClick={() => handleDelete(c.id)} disabled={deleting === c.id}
                       className="text-gray-600 hover:text-red-400 transition-colors" title="Elimina">
                       {deleting === c.id ? <RefreshCw size={14} className="animate-spin"/> : <Trash2 size={14}/>}
@@ -489,29 +1204,34 @@ function DettaglioCedoliniTab({ cedolini, sedeFilter, meseFilter, onRefresh, emp
 export default function BustePaga({ startTab = 'riepilogo' }) {
   const { sedi }                      = useSedi()
   const [anno,        setAnno]        = useState(new Date().getFullYear())
-  const [meseFilter,  setMeseFilter]  = useState(0) // 0 = tutti i mesi
+  const [meseFilter,  setMeseFilter]  = useState(0)
   const [sedeFilter,  setSedeFilter]  = useState('Tutte')
   const [activeTab,   setActiveTab]   = useState(startTab)
-  const [riepilogo,   setRiepilogo]   = useState([])
-  const [statoDip,    setStatoDip]    = useState([])
-  const [costoMensile,setCostoMensile] = useState([])
-  const [cedolini,    setCedolini]    = useState([])
-  const [employees,   setEmployees]   = useState([])
-  const [loading,     setLoading]     = useState(false)
-  const [error,       setError]       = useState(null)
+
+  useEffect(() => {
+    const t = setTimeout(() => window.dispatchEvent(new Event('resize')), 50)
+    return () => clearTimeout(t)
+  }, [activeTab])
+
+  const [riepilogo,    setRiepilogo]    = useState([])
+  const [costoMensile, setCostoMensile] = useState([])
+  const [cedolini,     setCedolini]     = useState([])
+  const [employees,    setEmployees]    = useState([])
+  const [loading,      setLoading]      = useState(false)
+  const [error,        setError]        = useState(null)
+  const [syncing,      setSyncing]      = useState(false)
+  const [syncResult,   setSyncResult]   = useState(null)
 
   const loadData = useCallback(async () => {
     setLoading(true); setError(null)
     try {
-      const [ried, stato, costo, ced, emps] = await Promise.all([
+      const [ried, costo, ced, emps] = await Promise.all([
         bp.riepilogo({ anno }),
-        bp.statoDipendenti(),
         bp.costoMensile({ anno }),
         bp.getAll({ anno }),
         empApi.getAll({ active: 'true' }),
       ])
       setRiepilogo(ried)
-      setStatoDip(stato)
       setCostoMensile(costo)
       setCedolini(ced)
       setEmployees(emps.map(e => ({ ...e, sede: e.sede || (e.location === 'MAMELI' ? 'MA' : 'PN') })))
@@ -522,18 +1242,56 @@ export default function BustePaga({ startTab = 'riepilogo' }) {
 
   useEffect(() => { loadData() }, [loadData])
 
-  // ── Cross-page reactivity: ricarica se un'altra tab modifica un dipendente ─
+  const sincronizzaPDF = useCallback(async () => {
+    setSyncing(true); setSyncResult(null)
+    try {
+      const res = await fetch('http://localhost:3001/api/buste-paga/sincronizza-pdf', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ anno }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.error || `Errore server (${res.status})`)
+      }
+      const data = await res.json()
+      setSyncResult({ type: 'success', ...data })
+      await loadData()
+    } catch (e) {
+      if (e.message.includes('Failed to fetch') || e.message.includes('NetworkError') || e.message.includes('fetch')) {
+        setSyncResult({ type: 'offline', msg: 'Server locale non raggiungibile. Avvia Mac_Avvio.command.' })
+      } else {
+        setSyncResult({ type: 'error', msg: e.message })
+      }
+    } finally { setSyncing(false) }
+  }, [anno, loadData])
+
   useEffect(() => {
     const onStorage = (e) => { if (e.key === 'crm_employee_updated') loadData() }
     window.addEventListener('storage', onStorage)
     return () => window.removeEventListener('storage', onStorage)
   }, [loadData])
 
+  const previsioneInfo = useMemo(() => {
+    const relevant = cedolini.filter(c => {
+      if (sedeFilter !== 'Tutte' && c.sede !== sedeFilter) return false
+      if (meseFilter > 0 && c.mese !== meseFilter) return false
+      return c.anno === anno && c.note && c.note.startsWith('Stima ')
+    })
+    if (relevant.length === 0) return null
+    const months = [...new Set(relevant.map(c => c.mese))].sort((a,b) => a-b)
+    const noteExample = relevant[0]?.note || ''
+    // Estrae il metodo dal testo: "Stima maggio 2026 = media mesi 1-4 2026 (4 mesi)..."
+    const metodo = noteExample.includes('=') ? noteExample.split('=')[1].split('.')[0].trim() : noteExample
+    return { months, metodo, count: relevant.length }
+  }, [cedolini, anno, meseFilter, sedeFilter])
+
   const TABS = [
-    { id: 'riepilogo', label: 'Riepilogo' },
-    { id: 'stato',     label: 'Dipendenti' },
-    { id: 'costo',     label: 'Costo Personale' },
-    { id: 'dettaglio', label: 'Dettaglio Cedolini' },
+    { id: 'riepilogo',  label: 'Riepilogo' },
+    { id: 'dipendenti', label: 'Dipendenti' },
+    { id: 'analisi',    label: 'BI Analisi' },
+    { id: 'costo',      label: 'Trend Costi' },
+    { id: 'dettaglio',  label: 'Cedolini' },
   ]
 
   return (
@@ -541,18 +1299,44 @@ export default function BustePaga({ startTab = 'riepilogo' }) {
     <PageStatsWidget />
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
           <div>
             <h1 className="text-3xl font-bold text-white flex items-center gap-3"><Activity size={28}/> Buste Paga</h1>
-            <p className="text-gray-400 mt-1">Gestione cedolini e costi personale</p>
+            <p className="text-gray-400 mt-1">Gestione cedolini · Schede dipendenti · BI analisi costi</p>
           </div>
-          <button onClick={loadData} disabled={loading}
-            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 text-white px-4 py-2 rounded-lg font-medium transition-colors">
-            <RefreshCw size={16} className={loading ? 'animate-spin' : ''}/>
-            {loading ? 'Caricamento...' : 'Aggiorna'}
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={loadData} disabled={loading || syncing}
+              className="flex items-center gap-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 text-gray-200 px-3 py-2 rounded-lg text-sm font-medium transition-colors">
+              <RefreshCw size={14} className={loading ? 'animate-spin' : ''}/>
+              {loading ? 'Carico...' : 'Ricarica'}
+            </button>
+            <button onClick={sincronizzaPDF} disabled={loading || syncing}
+              className="flex items-center gap-2 bg-green-700 hover:bg-green-600 disabled:bg-gray-700 text-white px-4 py-2 rounded-lg font-medium transition-colors">
+              <RefreshCw size={16} className={syncing ? 'animate-spin' : ''}/>
+              {syncing ? 'Sincronizzazione...' : 'Sincronizza PDF'}
+            </button>
+          </div>
         </div>
+
+        {/* Sync result */}
+        {syncResult && (
+          <div className={`mb-4 rounded-lg p-3 text-sm flex items-start gap-3 ${
+            syncResult.type === 'success' ? 'bg-green-900/30 border border-green-700 text-green-300' :
+            syncResult.type === 'offline' ? 'bg-yellow-900/30 border border-yellow-700 text-yellow-300' :
+            'bg-red-900/30 border border-red-700 text-red-300'
+          }`}>
+            <div className="flex-1">
+              {syncResult.type === 'success'
+                ? `✅ Sync completato — ${syncResult.aggiornati} aggiornati, ${syncResult.saltati} saltati, ${syncResult.errori} errori`
+                : syncResult.type === 'offline'
+                ? `⚠️ ${syncResult.msg}`
+                : `❌ ${syncResult.msg}`}
+            </div>
+            <button onClick={() => setSyncResult(null)} className="opacity-60 hover:opacity-100"><X size={14}/></button>
+          </div>
+        )}
 
         {error && (
           <div className="mb-6 bg-red-900/20 border border-red-800 rounded-lg p-4 flex gap-3">
@@ -575,8 +1359,7 @@ export default function BustePaga({ startTab = 'riepilogo' }) {
             <select value={meseFilter} onChange={e => setMeseFilter(Number(e.target.value))}
               className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
               <option value={0}>Tutti i mesi</option>
-              {['Gennaio','Febbraio','Marzo','Aprile','Maggio','Giugno','Luglio','Agosto','Settembre','Ottobre','Novembre','Dicembre'].map((m,i) =>
-                <option key={i+1} value={i+1}>{m}</option>)}
+              {MESI_FULL.map((m,i) => <option key={i+1} value={i+1}>{m}</option>)}
             </select>
           </div>
           <div>
@@ -589,6 +1372,25 @@ export default function BustePaga({ startTab = 'riepilogo' }) {
           </div>
         </div>
 
+        {/* Banner dati previsionali */}
+        {previsioneInfo && (
+          <div className="mb-6 bg-amber-900/20 border border-amber-600/40 rounded-lg p-4 flex items-start gap-3">
+            <AlertCircle size={20} className="text-amber-400 flex-shrink-0 mt-0.5"/>
+            <div className="flex-1 min-w-0">
+              <p className="text-amber-300 font-semibold text-sm">
+                ⚡ Dati previsionali —{' '}
+                {previsioneInfo.months.map(m => MESI_FULL[m-1]).join(', ')} {anno}
+              </p>
+              <p className="text-amber-200/80 text-xs mt-1">
+                <span className="font-medium">Metodo di calcolo:</span> {previsioneInfo.metodo}
+              </p>
+              <p className="text-amber-200/50 text-xs mt-0.5">
+                I valori saranno sostituiti automaticamente con i dati reali quando il cedolino PDF sarà disponibile. Clicca "Sincronizza PDF" dopo aver caricato il LUL.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Tabs */}
         <div className="mb-6 flex flex-wrap gap-2">
           {TABS.map(t => (
@@ -600,20 +1402,32 @@ export default function BustePaga({ startTab = 'riepilogo' }) {
         </div>
 
         {/* Content */}
-        {activeTab === 'riepilogo'  && <RiepilogoTab anno={anno} mese={meseFilter} sedeFilter={sedeFilter} riepilogo={riepilogo}/>}
-        {activeTab === 'stato'      && <StatoDipendentiTab statoDipendenti={statoDip} sedeFilter={sedeFilter}/>}
-        {activeTab === 'costo'      && <CostoPersonaleTab costoMensile={costoMensile} sedeFilter={sedeFilter}/>}
-        {activeTab === 'dettaglio'  && <DettaglioCedoliniTab cedolini={cedolini} sedeFilter={sedeFilter} meseFilter={meseFilter} onRefresh={loadData} employees={employees}/>}
+        {loading ? (
+          <div className="flex flex-col gap-4 mt-4">
+            {[1,2,3].map(i => <div key={i} className="h-24 rounded-xl bg-gray-700/50 animate-pulse" />)}
+          </div>
+        ) : error ? (
+          <div className="mt-4 p-4 rounded-xl bg-red-900/30 text-red-400 text-sm">{error}</div>
+        ) : (
+          <>
+            {activeTab === 'riepilogo'  && <RiepilogoTab anno={anno} mese={meseFilter} sedeFilter={sedeFilter} riepilogo={riepilogo}/>}
+            {activeTab === 'dipendenti' && <DipendentiTab cedolini={cedolini} sedeFilter={sedeFilter} anno={anno}/>}
+            {activeTab === 'analisi'    && <AnalisiTab cedolini={cedolini} sedeFilter={sedeFilter} anno={anno}/>}
+            {activeTab === 'costo'      && <CostoPersonaleTab costoMensile={costoMensile} sedeFilter={sedeFilter}/>}
+            {activeTab === 'dettaglio'  && <DettaglioCedoliniTab cedolini={cedolini} sedeFilter={sedeFilter} meseFilter={meseFilter} onRefresh={loadData} employees={employees}/>}
+          </>
+        )}
       </div>
     </div>
-      <PageAssistant
-        pagina="Buste Paga"
-        suggerimenti={[
-          "Qual è il costo totale del personale questo mese?",
-          "Mostrami i cedolini di marzo 2026",
-          "Differenza costo azienda vs netto dipendenti",
-        ]}
-      />
+    <PageAssistant
+      pagina="Buste Paga"
+      suggerimenti={[
+        "Qual è il costo totale del personale questo mese?",
+        "Mostrami la scheda di un dipendente specifico",
+        "Quanti cedolini sono certi vs stima?",
+        "Confronto costi Mameli vs Predda Niedda",
+      ]}
+    />
     </>
   )
 }
