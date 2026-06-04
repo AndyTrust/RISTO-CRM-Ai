@@ -1066,7 +1066,7 @@ function TabIncentivi({ sede, anno, mese }) {
               </tr>
               {/* Riga Quorum */}
               <tr className="bg-indigo-50/60 border-b border-indigo-100">
-                <td className="px-3 py-1.5 text-indigo-700 font-medium italic text-[11px]">Quorum (media {nMesi}m)</td>
+                <td className="px-3 py-1.5 text-indigo-700 font-medium italic text-[11px]">⌀ Media team ({nMesi}m)</td>
                 <td className="px-3 py-1.5 text-center text-indigo-500 font-mono">—</td>
                 {categorie.map(cat => {
                   const avgQ = operatori.length > 0
@@ -1082,7 +1082,7 @@ function TabIncentivi({ sede, anno, mese }) {
               </tr>
               {/* Riga Target */}
               <tr className="bg-violet-50/60 border-b border-violet-100">
-                <td className="px-3 py-1.5 text-violet-700 font-medium italic text-[11px]">Target (+{percIncremento}%)</td>
+                <td className="px-3 py-1.5 text-violet-700 font-medium italic text-[11px]">⌀ Target medio (+{percIncremento}%)</td>
                 <td className="px-3 py-1.5 text-center text-violet-500 font-mono">—</td>
                 {categorie.map(cat => {
                   const avgT = operatori.length > 0
@@ -1101,8 +1101,9 @@ function TabIncentivi({ sede, anno, mese }) {
               {operatori.map(op => {
                 const q = quorumMap[op] || {}
                 const c = currentMap[op] || {}
-                const totalTarget = Object.values(q).reduce((s, v) => s + v.target, 0)
-                const totalCurr   = Object.values(c).reduce((s, v) => s + v, 0)
+                // Totale: somma solo le categorie VISIBILI (top-8) per coerenza con le colonne
+                const totalTarget = categorie.reduce((s, cat) => s + (q[cat]?.target || 0), 0)
+                const totalCurr   = categorie.reduce((s, cat) => s + Math.round(c[cat] || 0), 0)
                 const pctTotal    = totalTarget > 0 ? Math.min(200, Math.round(totalCurr / totalTarget * 100)) : 0
                 const colTotal    = getColor(pctTotal)
                 const varTot      = Math.round(variantiMap[op] || 0)
@@ -1156,8 +1157,10 @@ function TabIncentivi({ sede, anno, mese }) {
       </div>
 
       <p className="text-xs text-gray-400 italic">
-        Quorum = media pezzi/mese nei {nMesi} {nMesi === 1 ? 'mese' : 'mesi'} precedenti il {MESI[mese-1]} {anno}.
-        Target = Quorum × {(100 + percIncremento)}%. Aggiunte = varianti up-sell del mese corrente.
+        Quorum individuale = media pezzi/mese dell'operatore nei {nMesi} {nMesi === 1 ? 'mese' : 'mesi'} precedenti {MESI[mese-1]} {anno}.
+        Target individuale = Quorum × {(100 + percIncremento)}% (mostrato come denominatore in ogni cella).
+        Riga «⌀ Media team» = media dei quorum individuali per categoria (solo riferimento).
+        Totale = somma delle {categorie.length} categorie principali visibili.
       </p>
     </div>
   )
