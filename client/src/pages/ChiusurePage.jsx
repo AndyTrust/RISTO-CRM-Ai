@@ -4,7 +4,8 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Legend, LineChart, Line, ComposedChart
 } from 'recharts'
-import DateRangePicker, { periodToDates } from '../components/DateRangePicker'
+import { periodToDates } from '../components/DateRangePicker'
+import PeriodFilter from '../components/PeriodFilter'
 import { Printer, TrendingUp, TrendingDown, Minus } from 'lucide-react'
 import PageAssistant from '../components/PageAssistant'
 import PageStatsWidget from '../components/PageStatsWidget'
@@ -121,13 +122,8 @@ export default function ChiusurePage() {
         </div>
       </div>
 
-      {/* Date range picker */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <DateRangePicker period={period} dates={dates} onChange={handleDateChange} />
-        {dates?.from && dates?.to && (
-          <span className="text-xs text-gray-400">{dates.from} → {dates.to}</span>
-        )}
-      </div>
+      {/* Filtro periodo condiviso */}
+      <PeriodFilter period={period} dates={dates} onChange={handleDateChange} />
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">

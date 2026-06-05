@@ -1140,20 +1140,50 @@ export const data = {
 // ─── ANALYTICS ────────────────────────────────────────────────────────────
 const MESI_IT_SHORT = ['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic']
 
+// Helper: sposta una data YYYY-MM-DD di n anni
+function shiftYears(dateStr, n) {
+  if (!dateStr) return dateStr
+  const y = parseInt(dateStr.substring(0, 4)) + n
+  return `${y}${dateStr.substring(4)}`
+}
+
+// Helper: label leggibile per un range (es. "01/03 – 05/06")
+function rangeLabel(from, to) {
+  const f = s => `${s.substring(8, 10)}/${s.substring(5, 7)}`
+  if (!from || !to) return 'YTD'
+  return `${f(from)}–${f(to)}`
+}
+
 export const analytics = {
   // Ritorna { yoy: [...], kpiBox: { MAMELI: {...}, PREDDA_NIEDDA: {...} } }
+  // p.from / p.to (YYYY-MM-DD): periodo selezionato. YoY e kpiBox confrontano
+  // il periodo selezionato con lo STESSO intervallo dell'anno precedente.
   overview: async (p = {}) => {
     try {
+      const now = new Date()
+      const pad = n => String(n).padStart(2, '0')
+      const defFrom = `${now.getFullYear()}-01-01`
+      const defTo   = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`
+      const from = p.from || defFrom
+      const to   = p.to   || defTo
+      const fromPrev = shiftYears(from, -1)
+      const toPrev   = shiftYears(to, -1)
+
+      // Carica periodo corrente + stesso periodo anno precedente
       const { data: rows } = await supabase.from('chiusure_giornaliere')
         .select('sede, data, totale_venduto_ipratico, coperti, coperto_medio')
+        .gte('data', fromPrev).lte('data', to)
         .order('data').range(0, 4999) // bypass limite default 1000 righe
 
-      const allRows = rows ?? []
+      const annoCorrente = parseInt(to.substring(0, 4))
+      const annoPrec = annoCorrente - 1
+      const inCurr = d => d >= from && d <= to
+      const inPrev = d => d >= fromPrev && d <= toPrev
+      const allRows = (rows ?? []).filter(r => r.data && (inCurr(r.data) || inPrev(r.data)))
 
-      // YoY: aggrega per anno+mese_num (tutte le sedi sommate)
+      // YoY: aggrega per anno+mese_num (tutte le sedi sommate), solo mesi del periodo
       const byAnnoMese = {}
       for (const r of allRows) {
-        if (!r.data) continue
         const anno = parseInt(r.data.substring(0, 4))
         const mese_num = parseInt(r.data.substring(5, 7))
         const k = `${anno}-${mese_num}`
@@ -1166,8 +1196,8 @@ export const analytics = {
       for (const d of Object.values(byAnnoMese)) {
         const mn = d.mese_num
         if (!byMeseNum[mn]) byMeseNum[mn] = { mese_num: mn, mese_label: MESI_IT_SHORT[mn-1] }
-        if (d.anno === 2025) { byMeseNum[mn].venduto_2025 = Math.round(d.venduto); byMeseNum[mn].coperti_2025 = d.coperti }
-        else if (d.anno === 2026) { byMeseNum[mn].venduto_2026 = Math.round(d.venduto); byMeseNum[mn].coperti_2026 = d.coperti }
+        if (d.anno === annoPrec) { byMeseNum[mn].venduto_2025 = Math.round(d.venduto); byMeseNum[mn].coperti_2025 = d.coperti }
+        else if (d.anno === annoCorrente) { byMeseNum[mn].venduto_2026 = Math.round(d.venduto); byMeseNum[mn].coperti_2026 = d.coperti }
       }
 
       const yoy = Object.values(byMeseNum).sort((a,b) => a.mese_num - b.mese_num).map(m => ({
@@ -1176,25 +1206,15 @@ export const analytics = {
         delta_coperti_pct: m.coperti_2025 > 0 ? Math.round(((m.coperti_2026||0) - m.coperti_2025) / m.coperti_2025 * 1000) / 10 : null,
       }))
 
-      // kpiBox: mesi completati dell'anno corrente vs stesso periodo anno precedente (dinamico)
-      const nowD = new Date()
-      const annoCorrente = nowD.getFullYear()
-      const annoPrec = annoCorrente - 1
-      // Mesi completati = da gennaio al mese scorso (mese corrente non ancora finito)
-      const meseCorrente = nowD.getMonth() + 1 // 1-12
-      const mesiCompletati = meseCorrente > 1 ? meseCorrente - 1 : 12
+      // kpiBox: periodo selezionato vs stesso periodo anno precedente
       const kpiBox = {}
       for (const r of allRows) {
-        if (!r.data) continue
-        const anno = parseInt(r.data.substring(0, 4))
-        const mese_num = parseInt(r.data.substring(5, 7))
-        if (mese_num > mesiCompletati) continue
         const loc = r.sede === 'MA' ? 'MAMELI' : 'PREDDA_NIEDDA'
         if (!kpiBox[loc]) kpiBox[loc] = { venduto_ytd: 0, venduto_ytd_prec: 0, coperti: 0, coperti_prec: 0, n: 0, n_prec: 0 }
         const v = parseFloat(r.totale_venduto_ipratico) || 0
         const c = parseInt(r.coperti) || 0
-        if (anno === annoCorrente) { kpiBox[loc].venduto_ytd += v; kpiBox[loc].coperti += c; kpiBox[loc].n++ }
-        else if (anno === annoPrec) { kpiBox[loc].venduto_ytd_prec += v; kpiBox[loc].coperti_prec += c; kpiBox[loc].n_prec++ }
+        if (inCurr(r.data)) { kpiBox[loc].venduto_ytd += v; kpiBox[loc].coperti += c; kpiBox[loc].n++ }
+        else if (inPrev(r.data)) { kpiBox[loc].venduto_ytd_prec += v; kpiBox[loc].coperti_prec += c; kpiBox[loc].n_prec++ }
       }
       for (const [loc, d] of Object.entries(kpiBox)) {
         kpiBox[loc] = {
@@ -1207,7 +1227,7 @@ export const analytics = {
           venduto_2m_2025: Math.round(d.venduto_ytd_prec),
           cm_avg_2026: d.coperti > 0 ? Math.round(d.venduto_ytd / d.coperti * 100) / 100 : 0,
           cm_avg_2025: d.coperti_prec > 0 ? Math.round(d.venduto_ytd_prec / d.coperti_prec * 100) / 100 : 0,
-          periodo_label: mesiCompletati === 1 ? MESI_IT_SHORT[0] : `${MESI_IT_SHORT[0]}–${MESI_IT_SHORT[mesiCompletati-1]}`,
+          periodo_label: rangeLabel(from, to),
           anno_corrente: annoCorrente,
           anno_prec: annoPrec,
         }
@@ -1226,6 +1246,8 @@ export const analytics = {
       const sede = locationToSede(p.location)
       if (sede) q = q.eq('sede', sede)
       if (p.year) q = q.like('mese', `${p.year}-%`)
+      if (p.from) q = q.gte('mese', p.from.substring(0, 7))
+      if (p.to)   q = q.lte('mese', p.to.substring(0, 7))
       return sbFetch(q)
     } catch { return [] }
   },
@@ -1236,6 +1258,8 @@ export const analytics = {
       let q = supabase.from('kpi_revenues').select('sede,period,op,totale,coperti,coperto_medio')
         .order('period', { ascending: false }).limit(200)
       if (sede) q = q.eq('sede', sede)
+      if (p.from) q = q.gte('period', p.from.substring(0, 7))
+      if (p.to)   q = q.lte('period', p.to.substring(0, 7))
       return sbFetch(q)
     } catch { return [] }
   },
@@ -1264,10 +1288,19 @@ export const analytics = {
 
       const avgMonthly = Object.keys(byMn).length > 0 ? totalVenduto / Object.keys(byMn).length : 1
 
+      // Mesi che intersecano il range selezionato (se passato)
+      const mnFrom = p.from ? parseInt(p.from.substring(5, 7)) : 1
+      const mnTo   = p.to   ? parseInt(p.to.substring(5, 7))   : 12
+      const sameYear = !p.from || !p.to || p.from.substring(0, 4) === p.to.substring(0, 4)
+      const inRangeMn = mn => !sameYear || (mn >= mnFrom && mn <= mnTo)
+
       const combined = []
       for (let mn = 1; mn <= 12; mn++) {
         const d = byMn[mn]
-        combined.push({ mese_num: mn, indice_combined: d && avgMonthly > 0 ? Math.round(d.venduto / avgMonthly * 100) / 100 : null })
+        combined.push({
+          mese_num: mn,
+          indice_combined: d && avgMonthly > 0 && inRangeMn(mn) ? Math.round(d.venduto / avgMonthly * 100) / 100 : null,
+        })
       }
 
       // byLocation: coperto medio per mese e sede
@@ -1282,7 +1315,9 @@ export const analytics = {
       }
       const byLocation = {}
       for (const [loc, byMnL] of Object.entries(byLoc)) {
-        byLocation[loc] = Object.values(byMnL).sort((a,b)=>a.mese_num-b.mese_num).map(d => ({
+        byLocation[loc] = Object.values(byMnL)
+          .filter(d => inRangeMn(d.mese_num))
+          .sort((a,b)=>a.mese_num-b.mese_num).map(d => ({
           mese_num: d.mese_num, avg_cm: d.coperti > 0 ? Math.round((d.venduto_sum||0)/d.coperti*100)/100 : 0, tot_coperti: d.coperti,
         }))
       }
@@ -1291,8 +1326,9 @@ export const analytics = {
     } catch { return null }
   },
 
-  // Previsioni prossimi 3 mesi via regressione lineare + stagionalità 2025
-  forecast: async () => {
+  // Previsioni prossimi 3 mesi via regressione lineare + stagionalità anno prec.
+  // p.from/p.to: lo storico mostrato è filtrato sul periodo; la regressione usa tutta la serie.
+  forecast: async (p = {}) => {
     try {
       const { data: rows } = await supabase.from('chiusure_giornaliere')
         .select('sede, data, totale_venduto_ipratico, coperti').order('data').range(0, 4999) // bypass limite 1000
@@ -1370,14 +1406,22 @@ export const analytics = {
             coeff_stagionale: String(coeff),
           })
         }
-        result[loc] = { storico, forecasts, regressione: { r2 } }
+        // Filtra lo storico mostrato sul periodo selezionato (mesi che intersecano il range)
+        const meseFrom = p.from ? p.from.substring(0, 7) : null
+        const meseTo   = p.to   ? p.to.substring(0, 7)   : null
+        const storicoFiltrato = storico.filter(s =>
+          (!meseFrom || s.mese >= meseFrom) && (!meseTo || s.mese <= meseTo)
+        )
+
+        result[loc] = { storico: storicoFiltrato.length ? storicoFiltrato : storico, forecasts, regressione: { r2 } }
       }
       return result
     } catch { return null }
   },
 
   // Target operatori — fonte: kpi_revenues (coperti e fatturato reali per operatore)
-  operatorTargets: async () => {
+  // p.from/p.to: limita i mesi kpi_revenues considerati al periodo selezionato
+  operatorTargets: async (p = {}) => {
     try {
       const now = new Date()
       // Mese target = prossimo mese
@@ -1385,12 +1429,16 @@ export const analytics = {
       const targetAnno = targetD.getFullYear()
       const targetMeseNum = targetD.getMonth() + 1 // 1-12
 
-      // Tutti i dati kpi_revenues 2026
-      const { data: kpiRows } = await supabase
+      // Dati kpi_revenues nel periodo selezionato (default: anno corrente)
+      const periodFrom = p.from ? p.from.substring(0, 7) : `${now.getFullYear()}-01`
+      const periodTo   = p.to   ? p.to.substring(0, 7)   : null
+      let qKpi = supabase
         .from('kpi_revenues')
         .select('sede, period, op, totale, coperti, coperto_medio')
-        .gte('period', '2026-01')
+        .gte('period', periodFrom)
         .order('period')
+      if (periodTo) qKpi = qKpi.lte('period', periodTo)
+      const { data: kpiRows } = await qKpi
 
       if (!kpiRows?.length) return []
 
@@ -1527,11 +1575,12 @@ export const analytics = {
   },
 
   // Heatmap per giorno della settimana + top 5 giorni storici
-  heatmap: async () => {
+  heatmap: async (p = {}) => {
     try {
-      const { data: rows } = await supabase.from('chiusure_giornaliere')
+      let qHm = supabase.from('chiusure_giornaliere')
         .select('sede, data, totale_venduto_ipratico, coperti, coperto_medio')
-        .range(0, 4999) // bypass limite default 1000 righe
+      qHm = applyDateRange(qHm, p.from, p.to)
+      const { data: rows } = await qHm.range(0, 4999) // bypass limite default 1000 righe
 
       const DOW = ['Dom','Lun','Mar','Mer','Gio','Ven','Sab']
       const byDow = {}
@@ -1562,17 +1611,21 @@ export const analytics = {
   // Regola: costo_personale e costo_fatture sono CONDIVISI tra i 2 locali
   // → ogni sede mostra il 50% del totale mensile (media equa)
   // I costi_fissi rimangono per-sede (affitti, indennizzi specifici)
-  beMensile: async () => {
+  beMensile: async (p = {}) => {
     try {
       const now = new Date()
-      const annoCorrente = now.getFullYear()
-      const meseCorrente = now.getMonth() + 1  // 1-12
+      // Anno e mesi derivati dal periodo selezionato (default: anno corrente fino a oggi)
+      const annoCorrente = p.to ? parseInt(p.to.substring(0, 4)) : now.getFullYear()
+      const meseCorrente = p.to ? parseInt(p.to.substring(5, 7)) : now.getMonth() + 1  // 1-12
+      const meseFromNum  = p.from && p.from.substring(0, 4) === String(annoCorrente)
+        ? parseInt(p.from.substring(5, 7)) : 1
+      const meseFromPad = String(meseFromNum).padStart(2, '0')
       const mesePad = String(meseCorrente).padStart(2, '0')
 
       const [{ data: costiRows }, { data: chiusureRows }] = await Promise.all([
         supabase.from('v_costi_mensili').select('*').eq('anno', annoCorrente).order('mese'),
         supabase.from('v_chiusure_mensile').select('sede, mese, tot_venduto, tot_coperti, n_giorni')
-          .gte('mese', `${annoCorrente}-01`).lte('mese', `${annoCorrente}-${mesePad}`),
+          .gte('mese', `${annoCorrente}-${meseFromPad}`).lte('mese', `${annoCorrente}-${mesePad}`),
       ])
 
       // Lookup incasso per sede-mese
@@ -1592,7 +1645,7 @@ export const analytics = {
       // --- Step 1: costruisci righe grezze per sede ---
       const rawBySede = {}   // { mese: { MA: {...}, PN: {...} } }
       for (const r of costiRows ?? []) {
-        if (r.mese > meseCorrente) continue
+        if (r.mese > meseCorrente || r.mese < meseFromNum) continue
         const mn = r.mese
         if (!rawBySede[mn]) rawBySede[mn] = {}
         rawBySede[mn][r.sede] = {

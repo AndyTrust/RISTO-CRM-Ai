@@ -14,6 +14,7 @@ import {
   AlertCircle, ChevronDown, ChevronUp, Tag
 } from 'lucide-react'
 import PageAssistant from '../components/PageAssistant'
+import PeriodFilter from '../components/PeriodFilter'
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 const COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#ef4444', '#14b8a6', '#f97316', '#3b82f6', '#06b6d4']
@@ -234,7 +235,9 @@ function Tabella({ rows }) {
 export default function MenuEngineering() {
   const [sede, setSede]   = useState('all')
   const [tipo, setTipo]   = useState('all')
+  const [period, setPeriod] = useState('month')
   const [dates, setDates] = useState(meseCorrente())
+  const handlePeriodChange = (pid, d) => { setPeriod(pid); if (d?.from && d?.to) setDates(d) }
   const [rows, setRows]   = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)
@@ -390,18 +393,11 @@ Righe totali: ${rows.length}`
               </button>
             ))}
           </div>
-          {/* Date */}
-          <div className="flex items-center gap-1 bg-white border border-gray-200 rounded-lg px-2 py-1.5 text-xs text-gray-600">
-            <input type="date" value={dates.from}
-              onChange={e => setDates(d => ({ ...d, from: e.target.value }))}
-              className="outline-none bg-transparent" />
-            <span className="text-gray-400">→</span>
-            <input type="date" value={dates.to}
-              onChange={e => setDates(d => ({ ...d, to: e.target.value }))}
-              className="outline-none bg-transparent" />
-          </div>
         </div>
       </div>
+
+      {/* Filtro periodo condiviso */}
+      <PeriodFilter period={period} dates={dates} onChange={handlePeriodChange} />
 
       {/* Errore */}
       {error && (

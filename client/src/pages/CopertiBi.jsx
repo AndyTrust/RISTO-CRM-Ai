@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import supabase from '../supabase'
 import PageAssistant from '../components/PageAssistant'
+import PeriodFilter from '../components/PeriodFilter'
 import {
   LineChart, Line, BarChart, Bar, ScatterChart, Scatter,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, Cell,
@@ -71,8 +72,10 @@ export default function CopertiBi() {
   const todayStr = today.toISOString().split('T')[0]
 
   const [sede, setSede] = useState('MA')
+  const [period, setPeriod] = useState('month')
   const [dateFrom, setDateFrom] = useState(firstOfMonth)
   const [dateTo, setDateTo] = useState(todayStr)
+  const handlePeriodChange = (pid, d) => { setPeriod(pid); if (d?.from) setDateFrom(d.from); if (d?.to) setDateTo(d.to) }
   const [chiusureData, setChiusureData] = useState([])
   const [tavoliData, setTavoliData] = useState([])
   const [turniData, setTurniData] = useState([])
@@ -245,25 +248,17 @@ export default function CopertiBi() {
         <p className="text-gray-500 text-sm mt-1">Andamento coperti, performance tavoli, distribuzione settimanale</p>
       </div>
 
-      {/* FILTRI */}
-      <div className="bg-white rounded-xl border border-gray-200 p-4 mb-6 flex flex-wrap gap-4 items-end">
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Sede</label>
-          <select className="border border-gray-300 rounded-lg px-3 py-2 text-sm" value={sede} onChange={e=>setSede(e.target.value)}>
-            {SEDE_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Dal</label>
-          <input type="date" className="border border-gray-300 rounded-lg px-3 py-2 text-sm" value={dateFrom} onChange={e=>setDateFrom(e.target.value)}/>
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Al</label>
-          <input type="date" className="border border-gray-300 rounded-lg px-3 py-2 text-sm" value={dateTo} onChange={e=>setDateTo(e.target.value)}/>
-        </div>
-        <button onClick={fetchData} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 flex items-center gap-1">
-          <Filter size={14}/> Aggiorna
-        </button>
+      {/* FILTRI — componente periodo condiviso */}
+      <div className="mb-6">
+        <PeriodFilter period={period} dates={{ from: dateFrom, to: dateTo }} onChange={handlePeriodChange}
+          extra={
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Sede</label>
+              <select className="border border-gray-300 rounded-lg px-3 py-2 text-sm" value={sede} onChange={e=>setSede(e.target.value)}>
+                {SEDE_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+          } />
       </div>
 
       {/* KPI CARDS */}

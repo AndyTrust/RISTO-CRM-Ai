@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import supabase from '../supabase'
 import PageAssistant from '../components/PageAssistant'
+import PeriodFilter from '../components/PeriodFilter'
 import {
   ComposedChart, Bar, Line, BarChart, LineChart, Area, AreaChart,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, Cell,
@@ -86,8 +87,14 @@ export default function ContabilitaBi() {
   const [anno, setAnno] = useState(now.getFullYear())
   // Filtro periodo Dal/Al (default: anno intero) — filtra i mesi client-side
   const pad2 = n => String(n).padStart(2,'0')
+  const [period, setPeriod] = useState('ytd')
   const [dateFrom, setDateFrom] = useState(`${now.getFullYear()}-01-01`)
   const [dateTo, setDateTo]     = useState(`${now.getFullYear()}-${pad2(now.getMonth()+1)}-${pad2(now.getDate())}`)
+  const handlePeriodChange = (pid, d) => {
+    setPeriod(pid)
+    if (d?.from) { setDateFrom(d.from); const y = Number(d.from.split('-')[0]); if (y) setAnno(y) }
+    if (d?.to) setDateTo(d.to)
+  }
   const meseFrom = Number((dateFrom||'').split('-')[1]) || 1
   const meseTo   = Number((dateTo||'').split('-')[1]) || 12
   const [trendData, setTrendData] = useState([])
@@ -205,34 +212,25 @@ export default function ContabilitaBi() {
         <p className="text-gray-500 text-sm mt-1">Fatturato, costi, margine, break-even — andamento mensile</p>
       </div>
 
-      {/* FILTRI */}
-      <div className="bg-white rounded-xl border border-gray-200 p-4 mb-6 flex flex-wrap gap-4 items-end">
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Sede</label>
-          <select className="border border-gray-300 rounded-lg px-3 py-2 text-sm" value={sede} onChange={e=>setSede(e.target.value)}>
-            {SEDE_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Anno</label>
-          <select className="border border-gray-300 rounded-lg px-3 py-2 text-sm" value={anno} onChange={e=>setAnno(Number(e.target.value))}>
-            {[2024,2025,2026].map(y=><option key={y} value={y}>{y}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Dal</label>
-          <input type="date" className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-300 outline-none"
-            value={dateFrom} onChange={e=>setDateFrom(e.target.value)}/>
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Al</label>
-          <input type="date" className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-300 outline-none"
-            value={dateTo} onChange={e=>setDateTo(e.target.value)}/>
-        </div>
-        <button onClick={fetchData} className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 flex items-center gap-1">
-          <Filter size={14}/> Aggiorna
-        </button>
-        <span className="text-xs text-gray-400 pb-2.5">Periodo attivo: {dateFrom} → {dateTo} (mesi {meseFrom}–{meseTo})</span>
+      {/* FILTRI — componente periodo condiviso */}
+      <div className="mb-6">
+        <PeriodFilter period={period} dates={{ from: dateFrom, to: dateTo }} onChange={handlePeriodChange}
+          extra={
+            <>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Sede</label>
+                <select className="border border-gray-300 rounded-lg px-3 py-2 text-sm" value={sede} onChange={e=>setSede(e.target.value)}>
+                  {SEDE_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Anno</label>
+                <select className="border border-gray-300 rounded-lg px-3 py-2 text-sm" value={anno} onChange={e=>setAnno(Number(e.target.value))}>
+                  {[2024,2025,2026].map(y=><option key={y} value={y}>{y}</option>)}
+                </select>
+              </div>
+            </>
+          } />
       </div>
 
       {/* KPI CARDS */}

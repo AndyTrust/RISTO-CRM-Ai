@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import supabase from '../supabase'
 import PageAssistant from '../components/PageAssistant'
+import PeriodFilter from '../components/PeriodFilter'
 import {
   ScatterChart, Scatter, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, Cell, ResponsiveContainer, LabelList
@@ -83,8 +84,10 @@ export default function ProdottiBi() {
 
   const [sede, setSede] = useState('MA')
   const [tipologia, setTipologia] = useState('ALL')
+  const [period, setPeriod] = useState('month')
   const [dateFrom, setDateFrom] = useState(firstOfMonth)
   const [dateTo, setDateTo] = useState(todayStr)
+  const handlePeriodChange = (pid, d) => { setPeriod(pid); if (d?.from) setDateFrom(d.from); if (d?.to) setDateTo(d.to) }
   const [data, setData] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -242,30 +245,24 @@ export default function ProdottiBi() {
         <p className="text-gray-500 text-sm mt-1">Analisi BCG, food cost e performance prodotti</p>
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 p-4 mb-6 flex flex-wrap gap-4 items-end">
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Sede</label>
-          <select className="border border-gray-300 rounded-lg px-3 py-2 text-sm" value={sede} onChange={e=>setSede(e.target.value)}>
-            {SEDE_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Tipologia</label>
-          <select className="border border-gray-300 rounded-lg px-3 py-2 text-sm" value={tipologia} onChange={e=>setTipologia(e.target.value)}>
-            {TIPO_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Dal</label>
-          <input type="date" className="border border-gray-300 rounded-lg px-3 py-2 text-sm" value={dateFrom} onChange={e=>setDateFrom(e.target.value)} />
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Al</label>
-          <input type="date" className="border border-gray-300 rounded-lg px-3 py-2 text-sm" value={dateTo} onChange={e=>setDateTo(e.target.value)} />
-        </div>
-        <button onClick={fetchData} className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 flex items-center gap-1">
-          <Filter size={14} /> Applica
-        </button>
+      <div className="mb-6">
+        <PeriodFilter period={period} dates={{ from: dateFrom, to: dateTo }} onChange={handlePeriodChange}
+          extra={
+            <>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Sede</label>
+                <select className="border border-gray-300 rounded-lg px-3 py-2 text-sm" value={sede} onChange={e=>setSede(e.target.value)}>
+                  {SEDE_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Tipologia</label>
+                <select className="border border-gray-300 rounded-lg px-3 py-2 text-sm" value={tipologia} onChange={e=>setTipologia(e.target.value)}>
+                  {TIPO_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+            </>
+          } />
       </div>
 
       {loading ? (

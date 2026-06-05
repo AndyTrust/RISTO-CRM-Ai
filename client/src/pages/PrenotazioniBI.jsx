@@ -13,6 +13,7 @@ import {
   Loader, AlertCircle, ChevronDown, ChevronUp, MapPin
 } from 'lucide-react'
 import PageAssistant from '../components/PageAssistant'
+import PeriodFilter from '../components/PeriodFilter'
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 const COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#ef4444', '#14b8a6']
@@ -162,7 +163,9 @@ function Tabella({ rows }) {
 // ── Componente principale ─────────────────────────────────────────────────────
 export default function PrenotazioniBI() {
   const [sede, setSede]             = useState('all')
+  const [period, setPeriod]         = useState('month')
   const [dates, setDates]           = useState(meseCorrente())
+  const handlePeriodChange = (pid, d) => { setPeriod(pid); if (d?.from && d?.to) setDates(d) }
   const [prenotazioni, setPrenotazioni] = useState([])
   const [clientiStats, setClientiStats] = useState([])
   const [loading, setLoading]       = useState(true)
@@ -281,9 +284,11 @@ Righe tabella: ${prenotazioni.length}`
           </p>
         </div>
 
-        {/* Controlli */}
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Selettore sede */}
+      </div>
+
+      {/* Filtro periodo condiviso + selettore sede */}
+      <PeriodFilter period={period} dates={dates} onChange={handlePeriodChange}
+        extra={
           <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
             {SEDE_OPTS.map(o => (
               <button key={o.value} onClick={() => setSede(o.value)}
@@ -294,25 +299,7 @@ Righe tabella: ${prenotazioni.length}`
               </button>
             ))}
           </div>
-
-          {/* DateRange semplice */}
-          <div className="flex items-center gap-1 bg-white border border-gray-200 rounded-lg px-2 py-1.5 text-xs text-gray-600">
-            <input
-              type="date"
-              value={dates.from}
-              onChange={e => setDates(d => ({ ...d, from: e.target.value }))}
-              className="outline-none bg-transparent"
-            />
-            <span className="text-gray-400">→</span>
-            <input
-              type="date"
-              value={dates.to}
-              onChange={e => setDates(d => ({ ...d, to: e.target.value }))}
-              className="outline-none bg-transparent"
-            />
-          </div>
-        </div>
-      </div>
+        } />
 
       {/* Errore */}
       {error && (

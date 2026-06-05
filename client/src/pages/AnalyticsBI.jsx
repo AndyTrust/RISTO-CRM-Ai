@@ -11,7 +11,8 @@ import {
   DollarSign, TrendingDown as CostIcon, Info
 } from 'lucide-react'
 import { analytics as analyticsApi, data as dataApi } from '../api/client'
-import DateRangePicker, { periodToDates } from '../components/DateRangePicker'
+import { periodToDates } from '../components/DateRangePicker'
+import PeriodFilter from '../components/PeriodFilter'
 import PageAssistant from '../components/PageAssistant'
 import PageStatsWidget from '../components/PageStatsWidget'
 
@@ -402,7 +403,7 @@ function OverviewSection({ overview, loading, meseRange, periodoAttivo }) {
 }
 
 // ── Sezione: Stagionalità ────────────────────────────────────────────────────
-function SeasonalitySection({ seasonality, loading }) {
+function SeasonalitySection({ seasonality, loading, periodoAttivo }) {
   if (loading) return <div className="animate-pulse bg-gray-100 rounded-xl h-48" />
   if (!seasonality) return null
 
@@ -420,7 +421,10 @@ function SeasonalitySection({ seasonality, loading }) {
 
   return (
     <div>
-      <SectionTitle icon={Calendar} label={`Stagionalità — Indici Mensili ${new Date().getFullYear() - 1}`} color={C.warn} />
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <SectionTitle icon={Calendar} label={`Stagionalità — Indici Mensili ${new Date().getFullYear() - 1}`} color={C.warn} />
+        {periodoAttivo && <span className="text-xs px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-600 font-medium mb-4">Periodo: {periodoAttivo}</span>}
+      </div>
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 mb-4">
         <p className="text-xs text-gray-500 mb-3">Indice &gt;1 = mese sopra la media annuale · &lt;1 = sotto media (usato per correggere le previsioni)</p>
         <div className="grid grid-cols-6 md:grid-cols-12 gap-2">
@@ -477,7 +481,7 @@ function SeasonalitySection({ seasonality, loading }) {
 }
 
 // ── Sezione: Forecast ────────────────────────────────────────────────────────
-function ForecastSection({ forecast, loading }) {
+function ForecastSection({ forecast, loading, periodoAttivo }) {
   const [loc, setLoc] = useState('MAMELI')
   if (loading) return <div className="animate-pulse bg-gray-100 rounded-xl h-48" />
   if (!forecast) return null
@@ -494,7 +498,10 @@ function ForecastSection({ forecast, loading }) {
   const reg = data.regressione || {}
   return (
     <div>
-      <SectionTitle icon={Zap} label={`Previsioni — Prossimi 3 Mesi (con stagionalità ${new Date().getFullYear() - 1})`} color={C.forecast} />
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <SectionTitle icon={Zap} label={`Previsioni — Prossimi 3 Mesi (con stagionalità ${new Date().getFullYear() - 1})`} color={C.forecast} />
+        {periodoAttivo && <span className="text-xs px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-600 font-medium mb-4">Storico: {periodoAttivo}</span>}
+      </div>
       <TabBar
         tabs={[{ id: 'MAMELI', label: 'Sede MA' }, { id: 'PREDDA_NIEDDA', label: '🟢 Sede PN' }]}
         active={loc} onChange={setLoc}
@@ -539,7 +546,7 @@ function ForecastSection({ forecast, loading }) {
 }
 
 // ── Sezione: Target Operatori ────────────────────────────────────────────────
-function OperatorTargetsSection({ targets, loading }) {
+function OperatorTargetsSection({ targets, loading, periodoAttivo }) {
   const [loc, setLoc] = useState('MAMELI')
   const [sortBy, setSortBy] = useState('coperti')
 
@@ -570,7 +577,10 @@ function OperatorTargetsSection({ targets, loading }) {
 
   return (
     <div>
-      <SectionTitle icon={Target} label={`Target Smart per Operatore — ${targets[0]?.target?.periodo || 'Prossimo Mese'}`} color={C.MA} />
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <SectionTitle icon={Target} label={`Target Smart per Operatore — ${targets[0]?.target?.periodo || 'Prossimo Mese'}`} color={C.MA} />
+        {periodoAttivo && <span className="text-xs px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-600 font-medium mb-4">Base dati: {periodoAttivo}</span>}
+      </div>
       <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-4">
         <p className="text-xs text-blue-700">
           <strong>Fonte:</strong> kpi_revenues (coperti reali da iPratico) ·
@@ -704,7 +714,7 @@ function OperatorTargetsSection({ targets, loading }) {
 }
 
 // ── Sezione: Heatmap Settimanale ─────────────────────────────────────────────
-function HeatmapSection({ heatmap, loading }) {
+function HeatmapSection({ heatmap, loading, periodoAttivo }) {
   if (loading) return <div className="animate-pulse bg-gray-100 rounded-xl h-48" />
   if (!heatmap) return null
 
@@ -714,7 +724,10 @@ function HeatmapSection({ heatmap, loading }) {
 
   return (
     <div>
-      <SectionTitle icon={BarChart2} label="Pattern Settimanale — Performance per Giorno" color={C.PN} />
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <SectionTitle icon={BarChart2} label="Pattern Settimanale — Performance per Giorno" color={C.PN} />
+        {periodoAttivo && <span className="text-xs px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-600 font-medium mb-4">Periodo: {periodoAttivo}</span>}
+      </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
           <p className="text-xs font-semibold text-gray-600 mb-3">Venduto Medio per Giorno della Settimana (MA+PN)</p>
@@ -773,27 +786,21 @@ export default function AnalyticsBI() {
   const [period, setPeriod] = useState('ytd')
   const [dates, setDates] = useState(periodToDates('ytd'))
   const handlePeriodChange = (pid, d) => { setPeriod(pid); if (d) setDates(d) }
-  const setTrimestre = () => {
-    const now = new Date()
-    const q = Math.floor(now.getMonth() / 3)
-    const pad = n => String(n).padStart(2, '0')
-    const from = `${now.getFullYear()}-${pad(q * 3 + 1)}-01`
-    const to = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
-    setPeriod('custom'); setDates({ from, to })
-  }
   const meseRange = monthsInRange(dates)
   const periodoAttivo = periodLabel(period, dates)
 
   const loadAll = useCallback(async () => {
     setError(null)
+    setLoading({ overview: true, seasonality: true, forecast: true, targets: true, heatmap: true, be: true })
+    const range = { from: dates?.from, to: dates?.to }
     try {
       const [overview, seasonality, forecast, targets, heatmap, be] = await Promise.all([
-        analyticsApi.overview().catch(() => null),
-        analyticsApi.seasonality().catch(() => null),
-        analyticsApi.forecast().catch(() => null),
-        analyticsApi.operatorTargets().catch(() => null),
-        analyticsApi.heatmap().catch(() => null),
-        analyticsApi.beMensile().catch(() => null),
+        analyticsApi.overview(range).catch(() => null),
+        analyticsApi.seasonality(range).catch(() => null),
+        analyticsApi.forecast(range).catch(() => null),
+        analyticsApi.operatorTargets(range).catch(() => null),
+        analyticsApi.heatmap(range).catch(() => null),
+        analyticsApi.beMensile(range).catch(() => null),
       ])
       setData({ overview, seasonality, forecast, targets, heatmap, be })
     } catch (e) {
@@ -801,7 +808,7 @@ export default function AnalyticsBI() {
     } finally {
       setLoading({ overview: false, seasonality: false, forecast: false, targets: false, heatmap: false, be: false })
     }
-  }, [])
+  }, [dates?.from, dates?.to])
 
   useEffect(() => { loadAll() }, [loadAll])
 
@@ -849,44 +856,18 @@ export default function AnalyticsBI() {
         </button>
       </div>
 
-      {/* Barra filtro periodo */}
-      <div className="bg-white rounded-xl border border-gray-200 p-4 flex flex-wrap items-end gap-4">
-        <div>
-          <label className="block text-xs font-medium text-gray-500 mb-1">Periodo</label>
-          <div className="flex items-center gap-2">
-            <DateRangePicker period={period} dates={dates} onChange={handlePeriodChange} />
-            <button onClick={setTrimestre}
-              className="px-3 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-200 rounded-xl hover:border-indigo-400 hover:text-indigo-600 transition-all">
-              Trimestre
-            </button>
-          </div>
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-500 mb-1">Dal</label>
-          <input type="date" value={dates?.from || ''}
-            onChange={e => { setPeriod('custom'); setDates(d => ({ ...d, from: e.target.value })) }}
-            className="border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-700 focus:ring-2 focus:ring-blue-300 focus:border-blue-400 outline-none" />
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-500 mb-1">Al</label>
-          <input type="date" value={dates?.to || ''}
-            onChange={e => { setPeriod('custom'); setDates(d => ({ ...d, to: e.target.value })) }}
-            className="border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-700 focus:ring-2 focus:ring-blue-300 focus:border-blue-400 outline-none" />
-        </div>
-        <span className="text-xs text-gray-400 pb-2.5">
-          Le sezioni con dati mensili (Costi &amp; BE, Anno su Anno) sono filtrate sul periodo · le altre restano YTD
-        </span>
-      </div>
+      {/* Barra filtro periodo (componente condiviso) */}
+      <PeriodFilter period={period} dates={dates} onChange={handlePeriodChange} />
 
       {kpi && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <KPICard title="Venduto totale YTD" value={`€${((totalVendutoYTD||0)/1000).toFixed(0)}k`}
-            sub="entrambi i locali" icon={TrendingUp} color="#6366f1" />
-          <KPICard title="Cop. Medio MA (YTD)" value={`€${(kpi.MAMELI?.cm_avg||0).toFixed(2)}`}
+          <KPICard title="Venduto totale (periodo)" value={`€${((totalVendutoYTD||0)/1000).toFixed(0)}k`}
+            sub={`entrambi i locali · ${periodoAttivo}`} icon={TrendingUp} color="#6366f1" />
+          <KPICard title="Cop. Medio MA (periodo)" value={`€${(kpi.MAMELI?.cm_avg||0).toFixed(2)}`}
             sub={`vs €${(kpi.MAMELI?.cm_avg_prec||0).toFixed(2)} anno fa`}
             delta={kpi.MAMELI?.cm_avg_prec > 0 ? Math.round(((kpi.MAMELI.cm_avg - kpi.MAMELI.cm_avg_prec) / kpi.MAMELI.cm_avg_prec) * 1000) / 10 : null}
             icon={Target} color={C.MA} />
-          <KPICard title="Cop. Medio PN (YTD)" value={`€${(kpi.PREDDA_NIEDDA?.cm_avg||0).toFixed(2)}`}
+          <KPICard title="Cop. Medio PN (periodo)" value={`€${(kpi.PREDDA_NIEDDA?.cm_avg||0).toFixed(2)}`}
             sub={`vs €${(kpi.PREDDA_NIEDDA?.cm_avg_prec||0).toFixed(2)} anno fa`}
             delta={kpi.PREDDA_NIEDDA?.cm_avg_prec > 0 ? Math.round(((kpi.PREDDA_NIEDDA.cm_avg - kpi.PREDDA_NIEDDA.cm_avg_prec) / kpi.PREDDA_NIEDDA.cm_avg_prec) * 1000) / 10 : null}
             icon={Target} color={C.PN} />
@@ -920,10 +901,10 @@ export default function AnalyticsBI() {
       <div className="min-h-64">
         {activeSection === 'be'         && <BESection beMensile={data.be} loading={loading.be} meseRange={meseRange} periodoAttivo={periodoAttivo} />}
         {activeSection === 'overview'   && <OverviewSection overview={data.overview} loading={loading.overview} meseRange={meseRange} periodoAttivo={periodoAttivo} />}
-        {activeSection === 'seasonality'&& <SeasonalitySection seasonality={data.seasonality} loading={loading.seasonality} />}
-        {activeSection === 'forecast'   && <ForecastSection forecast={data.forecast} loading={loading.forecast} />}
-        {activeSection === 'targets'    && <OperatorTargetsSection targets={data.targets} loading={loading.targets} />}
-        {activeSection === 'heatmap'    && <HeatmapSection heatmap={data.heatmap} loading={loading.heatmap} />}
+        {activeSection === 'seasonality'&& <SeasonalitySection seasonality={data.seasonality} loading={loading.seasonality} periodoAttivo={periodoAttivo} />}
+        {activeSection === 'forecast'   && <ForecastSection forecast={data.forecast} loading={loading.forecast} periodoAttivo={periodoAttivo} />}
+        {activeSection === 'targets'    && <OperatorTargetsSection targets={data.targets} loading={loading.targets} periodoAttivo={periodoAttivo} />}
+        {activeSection === 'heatmap'    && <HeatmapSection heatmap={data.heatmap} loading={loading.heatmap} periodoAttivo={periodoAttivo} />}
       </div>
     </div>
     <PageAssistant

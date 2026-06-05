@@ -7,7 +7,8 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend, ComposedChart, Line
 } from 'recharts'
-import DateRangePicker, { periodToDates } from '../components/DateRangePicker'
+import { periodToDates } from '../components/DateRangePicker'
+import PeriodFilter from '../components/PeriodFilter'
 import PageAssistant from '../components/PageAssistant'
 import { TrendingUp, Users, ShoppingBag, BarChart2, Calendar, ArrowUpRight } from 'lucide-react'
 import PageStatsWidget from '../components/PageStatsWidget'
@@ -1319,14 +1320,9 @@ export default function VendutoPage() {
         </div>
       </div>
 
-      {/* Date range picker */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <DateRangePicker period={period} dates={dates} onChange={handleDateChange} />
-        {dates?.from && dates?.to && (
-          <span className="text-xs text-gray-400">{dates.from} → {dates.to}</span>
-        )}
-        {loading && <span className="text-xs text-gray-400 animate-pulse">Caricamento...</span>}
-      </div>
+      {/* Filtro periodo condiviso */}
+      <PeriodFilter period={period} dates={dates} onChange={handleDateChange}
+        extra={loading ? <span className="text-xs text-gray-400 animate-pulse pb-2">Caricamento...</span> : null} />
 
       {/* KPI Summary Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">

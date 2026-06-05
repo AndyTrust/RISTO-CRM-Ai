@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import supabase from '../supabase'
 import PageAssistant from '../components/PageAssistant'
+import PeriodFilter from '../components/PeriodFilter'
 import {
   ComposedChart, Bar, Line, BarChart, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, Cell, ResponsiveContainer, ReferenceLine
@@ -75,8 +76,10 @@ export default function TurniAnalysisBi() {
   const todayStr = today.toISOString().split('T')[0]
 
   const [sede, setSede] = useState('MA')
+  const [period, setPeriod] = useState('month')
   const [dateFrom, setDateFrom] = useState(firstOfMonth)
   const [dateTo, setDateTo] = useState(todayStr)
+  const handlePeriodChange = (pid, d) => { setPeriod(pid); if (d?.from) setDateFrom(d.from); if (d?.to) setDateTo(d.to) }
   const [viewMode, setViewMode] = useState('mensile')
   const [turniData, setTurniData] = useState([])
   const [chiusureData, setChiusureData] = useState([])
@@ -232,33 +235,27 @@ export default function TurniAnalysisBi() {
         </div>
       )}
 
-      {/* FILTRI */}
-      <div className="bg-white rounded-xl border border-gray-200 p-4 mb-6 flex flex-wrap gap-4 items-end">
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Sede</label>
-          <select className="border border-gray-300 rounded-lg px-3 py-2 text-sm" value={sede} onChange={e=>setSede(e.target.value)}>
-            {SEDE_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Dal</label>
-          <input type="date" className="border border-gray-300 rounded-lg px-3 py-2 text-sm" value={dateFrom} onChange={e=>setDateFrom(e.target.value)}/>
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Al</label>
-          <input type="date" className="border border-gray-300 rounded-lg px-3 py-2 text-sm" value={dateTo} onChange={e=>setDateTo(e.target.value)}/>
-        </div>
-        <div className="flex border border-gray-300 rounded-lg overflow-hidden text-sm">
-          {['settimanale','mensile'].map(v=>(
-            <button key={v} onClick={()=>setViewMode(v)}
-              className={`px-3 py-2 font-medium capitalize ${viewMode===v?'bg-blue-600 text-white':'bg-white text-gray-600 hover:bg-gray-50'}`}>
-              {v}
-            </button>
-          ))}
-        </div>
-        <button onClick={fetchData} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 flex items-center gap-1">
-          <Filter size={14}/> Aggiorna
-        </button>
+      {/* FILTRI — componente periodo condiviso */}
+      <div className="mb-6">
+        <PeriodFilter period={period} dates={{ from: dateFrom, to: dateTo }} onChange={handlePeriodChange}
+          extra={
+            <>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Sede</label>
+                <select className="border border-gray-300 rounded-lg px-3 py-2 text-sm" value={sede} onChange={e=>setSede(e.target.value)}>
+                  {SEDE_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+              <div className="flex border border-gray-300 rounded-lg overflow-hidden text-sm">
+                {['settimanale','mensile'].map(v=>(
+                  <button key={v} onClick={()=>setViewMode(v)}
+                    className={`px-3 py-2 font-medium capitalize ${viewMode===v?'bg-blue-600 text-white':'bg-white text-gray-600 hover:bg-gray-50'}`}>
+                    {v}
+                  </button>
+                ))}
+              </div>
+            </>
+          } />
       </div>
 
       {/* KPI COMPARATIVI */}

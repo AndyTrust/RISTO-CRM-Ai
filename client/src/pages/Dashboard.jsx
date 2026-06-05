@@ -9,7 +9,8 @@ import {
   TrendingUp, TrendingDown, Users, Euro, Target, BarChart2,
   ArrowRight, RefreshCw, Minus, Info
 } from 'lucide-react'
-import DateRangePicker, { periodToDates, PERIODS } from '../components/DateRangePicker'
+import { periodToDates } from '../components/DateRangePicker'
+import PeriodFilter from '../components/PeriodFilter'
 import PageAssistant from '../components/PageAssistant'
 import PageStatsWidget from '../components/PageStatsWidget'
 
@@ -147,8 +148,8 @@ export default function Dashboard() {
         chiusureApi.stats({ from: prev.from, to: prev.to }).catch(() => []),
         chiusureApi.getAll({ from: d.from, to: d.to, limit: 90 }).catch(() => []),
         chiusureApi.mensile(mensileParams).catch(() => []),
-        analyticsApi.overview().catch(() => null),
-        kpiApi.quantum().catch(() => []),
+        analyticsApi.overview({ from: d.from, to: d.to }).catch(() => null),
+        kpiApi.quantum({ from: d.from, to: d.to }).catch(() => []),
       ])
 
       setCurrStats(Array.isArray(curr) ? curr : [])
@@ -267,16 +268,12 @@ export default function Dashboard() {
             ))}
           </div>
 
-          {/* Period picker */}
-          <DateRangePicker
-            period={period}
-            dates={dates}
-            onChange={handleApply}
-          />
-
           {loading && <RefreshCw size={16} className="animate-spin text-gray-400" />}
         </div>
       </div>
+
+      {/* ── Filtro periodo condiviso ── */}
+      <PeriodFilter period={period} dates={dates} onChange={handleApply} />
 
       {/* ── Avviso nessun dato nel periodo ── */}
       {showNoData && (

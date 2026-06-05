@@ -5,7 +5,8 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell
 } from 'recharts'
 import { MapPin, RefreshCw, TrendingUp, Users, Clock, ReceiptText, CalendarDays, ChefHat, Sliders } from 'lucide-react'
-import DateRangePicker, { periodToDates } from '../components/DateRangePicker'
+import { periodToDates } from '../components/DateRangePicker'
+import PeriodFilter from '../components/PeriodFilter'
 import PageAssistant from '../components/PageAssistant'
 import supabase from '../supabase'
 import PageStatsWidget from '../components/PageStatsWidget'
@@ -578,40 +579,22 @@ export default function StatisticheSala() {
         </button>
       </div>
 
-      {/* Filters */}
-      <div className="bg-white rounded-xl border border-gray-200 p-4 flex flex-wrap items-end gap-4">
-        <div>
-          <label className="block text-xs font-medium text-gray-500 mb-1">Periodo</label>
-          <DateRangePicker period={period} dates={dates} onChange={handleDateChange} />
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-500 mb-1">Dal</label>
-          <input type="date" value={fromDate}
-            onChange={e => { setPeriod('custom'); setDates(d => ({ ...d, from: e.target.value })) }}
-            className="border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-700 focus:ring-2 focus:ring-blue-300 focus:border-blue-400 outline-none" />
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-500 mb-1">Al</label>
-          <input type="date" value={toDate}
-            onChange={e => { setPeriod('custom'); setDates(d => ({ ...d, to: e.target.value })) }}
-            className="border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-700 focus:ring-2 focus:ring-blue-300 focus:border-blue-400 outline-none" />
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-500 mb-1">Sede</label>
-          <select
-            value={location}
-            onChange={e => setLocation(e.target.value)}
-            className="border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-700 bg-white focus:ring-2 focus:ring-blue-300 outline-none"
-          >
-            <option value="">Tutte le sedi</option>
-            <option value="MA">Sede MA</option>
-            <option value="PN">Sede PN</option>
-          </select>
-        </div>
-        {fromDate && toDate && (
-          <span className="text-xs text-gray-400 pb-2.5">Periodo attivo: {fromDate} → {toDate}</span>
-        )}
-      </div>
+      {/* Filtro periodo condiviso */}
+      <PeriodFilter period={period} dates={dates} onChange={handleDateChange}
+        extra={
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Sede</label>
+            <select
+              value={location}
+              onChange={e => setLocation(e.target.value)}
+              className="border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-700 bg-white focus:ring-2 focus:ring-blue-300 outline-none"
+            >
+              <option value="">Tutte le sedi</option>
+              <option value="MA">Sede MA</option>
+              <option value="PN">Sede PN</option>
+            </select>
+          </div>
+        } />
 
       {/* KPI Cards */}
       {kpiData && (

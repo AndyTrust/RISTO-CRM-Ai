@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import PageAssistant from '../components/PageAssistant'
 import PageStatsWidget from '../components/PageStatsWidget'
+import PeriodFilter from '../components/PeriodFilter'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const eur = n => n != null
@@ -88,32 +89,20 @@ function CategoriaSelect({ fornitore, onChange }) {
 
 // ─── DateRangeBar ─────────────────────────────────────────────────────────────
 function DateRangeBar({ from, to, onChange }) {
-  const [open, setOpen] = useState(false)
-  const activePeriod = PERIODI.find(p => p.from === from && p.to === to)
-
+  const [period, setPeriod] = useState('custom')
   return (
-    <div className="flex items-center gap-2 flex-wrap">
+    <div className="space-y-2">
       <PageStatsWidget />
-      <div className="flex rounded-xl overflow-hidden border border-gray-200 text-xs font-medium">
-        {PERIODI.map(p => (
-          <button key={p.label}
-            onClick={() => { onChange(p.from, p.to); setOpen(false) }}
-            className={`px-3 py-1.5 transition-colors whitespace-nowrap ${activePeriod?.label === p.label ? 'bg-violet-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
-            {p.label}
+      <PeriodFilter
+        period={period}
+        dates={{ from, to }}
+        onChange={(pid, d) => { setPeriod(pid); onChange(d?.from || '', d?.to || '') }}
+        extra={(from || to) && (
+          <button onClick={() => onChange('','')}
+            className="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1 pb-2">
+            <X size={11}/> Reset
           </button>
-        ))}
-      </div>
-      <div className="flex items-center gap-1.5 border border-gray-200 rounded-xl px-3 py-1.5 bg-white text-xs">
-        <Calendar size={12} className="text-gray-400"/>
-        <input type="date" value={from} onChange={e => onChange(e.target.value, to)}
-          className="border-0 outline-none text-gray-700 bg-transparent w-[110px]"/>
-        <span className="text-gray-300">→</span>
-        <input type="date" value={to} onChange={e => onChange(from, e.target.value)}
-          className="border-0 outline-none text-gray-700 bg-transparent w-[110px]"/>
-        {(from || to) && (
-          <button onClick={() => onChange('','')} className="text-gray-400 hover:text-gray-600 ml-1"><X size={11}/></button>
-        )}
-      </div>
+        )} />
     </div>
   )
 }
