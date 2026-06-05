@@ -3,6 +3,7 @@
  * Shared context, 6 tab collegate, planning AI, ore tracking, dedup dipendenti
  */
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { turni as turniApi, employees as empApi, repartiApi } from '../api/client'
 import { bustePaga as bustePagaApi, venduto as vendutoApi } from '../api/client'
 import supabase from '../supabase'
@@ -107,6 +108,7 @@ function useTurniData(selectedSede, selectedWeek, selectedMonth) {
   const [monthlyHours, setMonthlyHours] = useState({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [biData, setBiData] = useState({ weekPattern: {}, kpiOps: {}, monthRevenue: {} })
 
   useEffect(() => {
     const load = async () => {
@@ -193,6 +195,77 @@ function useTurniData(selectedSede, selectedWeek, selectedMonth) {
     load()
   }, [])
 
+  // ── BI Data: pattern settimanale revenue + quantum operatori ──────────────
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const since6m = new Date(); since6m.setMonth(since6m.getMonth() - 6)
+        const since6mStr = since6m.toISOString().slice(0, 10)
+        const since3m = new Date(); since3m.setMonth(since3m.getMonth() - 3)
+        const since3mStr = since3m.toISOString().slice(0, 10)
+
+        const [{ data: chiusure }, { data: kpiRaw }] = await Promise.all([
+          supabase.from('chiusure_giornaliere')
+            .select('sede,data,totale_venduto_ipratico,coperti')
+            .gte('data', since6mStr),
+          supabase.from('kpi_revenues')
+            .select('sede,op,coperto_medio,coperti,totale,period')
+            .gte('period', since3mStr),
+        ])
+
+        // weekPattern: avg revenue+coperti per giorno settimana (0=Dom..6=Sab) per sede
+        const wpAcc = {}
+        for (const r of (chiusure || [])) {
+          const dow = new Date(r.data + 'T12:00:00').getDay()
+          if (!wpAcc[r.sede]) wpAcc[r.sede] = Array(7).fill(null).map(() => ({ rev: 0, cop: 0, n: 0 }))
+          wpAcc[r.sede][dow].rev += parseFloat(r.totale_venduto_ipratico) || 0
+          wpAcc[r.sede][dow].cop += r.coperti || 0
+          wpAcc[r.sede][dow].n++
+        }
+        const weekPattern = {}
+        for (const sede of Object.keys(wpAcc)) {
+          weekPattern[sede] = wpAcc[sede].map(d =>
+            d.n ? { revenue: Math.round(d.rev / d.n), coperti: Math.round(d.cop / d.n) } : null
+          )
+        }
+
+        // monthRevenue: somma revenue per sede+YYYY-MM
+        const monthRevenue = {}
+        for (const r of (chiusure || [])) {
+          const key = `${r.sede}|${r.data.slice(0, 7)}`
+          monthRevenue[key] = (monthRevenue[key] || 0) + (parseFloat(r.totale_venduto_ipratico) || 0)
+        }
+        for (const k of Object.keys(monthRevenue)) monthRevenue[k] = Math.round(monthRevenue[k])
+
+        // kpiOps: avg quantum per operatore per sede (ultimi 3 mesi)
+        const kpiAcc = {}
+        for (const r of (kpiRaw || [])) {
+          if (!kpiAcc[r.sede]) kpiAcc[r.sede] = {}
+          if (!kpiAcc[r.sede][r.op]) kpiAcc[r.sede][r.op] = { sumQ: 0, sumCop: 0, sumTot: 0, n: 0 }
+          kpiAcc[r.sede][r.op].sumQ += parseFloat(r.coperto_medio) || 0
+          kpiAcc[r.sede][r.op].sumCop += r.coperti || 0
+          kpiAcc[r.sede][r.op].sumTot += parseFloat(r.totale) || 0
+          kpiAcc[r.sede][r.op].n++
+        }
+        const kpiOps = {}
+        for (const sede of Object.keys(kpiAcc)) {
+          kpiOps[sede] = {}
+          for (const op of Object.keys(kpiAcc[sede])) {
+            const d = kpiAcc[sede][op]
+            kpiOps[sede][op] = {
+              quantum: Math.round((d.sumQ / d.n) * 10) / 10,
+              copertiMedi: Math.round(d.sumCop / d.n),
+              fatturato: Math.round(d.sumTot),
+            }
+          }
+        }
+
+        setBiData({ weekPattern, kpiOps, monthRevenue })
+      } catch (e) { console.error('biData load', e) }
+    }
+    load()
+  }, [])
+
   const filteredEmps = useMemo(() =>
     selectedSede === 'ALL' ? employees : employees.filter(e => e.sede === selectedSede),
   [employees, selectedSede])
@@ -254,10 +327,11 @@ function useTurniData(selectedSede, selectedWeek, selectedMonth) {
   [filteredEmps])
 
   return {
-    employees: filteredEmps, enrichedEmps, reparti, fabbisogno, shifts,
+    employees: filteredEmps, allEmployees: employees, enrichedEmps, reparti, setReparti, fabbisogno, setFabbisogno, shifts,
     bozzaShifts, setBozzaShifts,
     bustePaga, vendutoOps, regole, monthlyHours, loading, error,
     shiftsMap, repartoById, empsWithoutReparto,
+    biData,
     reload: loadShifts,
     reloadBozza: loadBozza,
     setRegole,
@@ -341,9 +415,8 @@ function ShiftModal({ shift, employee, date, onSave, onDelete, onClose }) {
     ? date.toLocaleDateString('it-IT', {weekday:'long', day:'numeric', month:'long'})
     : new Date(date+'T12:00:00').toLocaleDateString('it-IT', {weekday:'long', day:'numeric', month:'long'})
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <PageStatsWidget />
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-md" onClick={e => e.stopPropagation()}>
         <div className="p-4 border-b flex items-center justify-between">
           <div>
@@ -356,7 +429,20 @@ function ShiftModal({ shift, employee, date, onSave, onDelete, onClose }) {
           <div>
             <label className="text-sm font-medium text-gray-700 mb-2 block">Tipo Turno</label>
             <div className="grid grid-cols-4 gap-2">
-              {TURNO_TYPES.map(t => {
+              {TURNO_TYPES.slice(0, 4).map(t => {
+                const meta = TURNO_META[t]
+                return (
+                  <button key={t} onClick={() => setTipo(t)}
+                    style={tipo===t ? {backgroundColor:meta.colore,color:meta.testo,borderColor:meta.testo} : {}}
+                    className={`p-2 rounded-lg border-2 text-center transition-all ${tipo===t ? 'border-2 font-bold' : 'border-gray-200 hover:border-gray-300'}`}>
+                    <div className="text-lg">{meta.ico}</div>
+                    <div className="text-[10px] font-medium">{t}</div>
+                  </button>
+                )
+              })}
+            </div>
+            <div className="grid grid-cols-3 gap-2 mt-2">
+              {TURNO_TYPES.slice(4).map(t => {
                 const meta = TURNO_META[t]
                 return (
                   <button key={t} onClick={() => setTipo(t)}
@@ -407,14 +493,19 @@ function ShiftModal({ shift, employee, date, onSave, onDelete, onClose }) {
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }
 
 // ─── TAB: SETTIMANA ───────────────────────────────────────────────────────────
 
 function SettimanaTab({ ctx }) {
-  const { enrichedEmps, reparti, fabbisogno, shifts, shiftsMap, reload } = ctx
+  const { enrichedEmps, reparti, fabbisogno, shifts, shiftsMap, reload, biData } = ctx
+  // BI: pattern per giorno della settimana (0=Dom..6=Sab). i=0 → Lun → JS dow=1
+  const sedeBI = ctx.selectedSede === 'ALL' ? 'MA' : ctx.selectedSede
+  const wp = biData?.weekPattern?.[sedeBI] || []
+  const maxRev = wp.length ? Math.max(...wp.filter(Boolean).map(d => d.revenue), 1) : 1
   const [modal, setModal] = useState(null)
   const [filterReparto, setFilterReparto] = useState('ALL')
   const weekDays = getWeekDays(ctx.selectedWeek)
@@ -501,12 +592,27 @@ function SettimanaTab({ ctx }) {
               {weekDays.map((d,i) => {
                 const isToday = toYMD(d) === toYMD(new Date())
                 const isWeekend = [5,6].includes(i)
+                const dow = (i + 1) % 7 // Lun(0)→1, Sab(5)→6, Dom(6)→0
+                const dayBI = wp[dow]
+                const barW = dayBI ? Math.round((dayBI.revenue / maxRev) * 100) : 0
+                const pressure = !dayBI ? null : dayBI.revenue > 4500 ? 'alta' : dayBI.revenue > 3200 ? 'media' : 'bassa'
+                const pressureColor = pressure === 'alta' ? 'bg-red-400' : pressure === 'media' ? 'bg-amber-400' : 'bg-green-400'
                 return (
-                  <th key={i} className={`px-2 py-3 text-center text-sm ${isWeekend ? 'bg-amber-50' : ''} ${isToday ? 'bg-blue-50' : ''}`}>
+                  <th key={i} className={`px-2 py-2 text-center text-sm ${isWeekend ? 'bg-amber-50' : ''} ${isToday ? 'bg-blue-50' : ''}`}>
                     <div className={`font-semibold ${isToday ? 'text-blue-700' : 'text-gray-700'}`}>{GIORNI[i]}</div>
                     <div className={`text-xs ${isToday ? 'text-blue-600 font-bold' : 'text-gray-500'}`}>
                       {d.toLocaleDateString('it-IT',{day:'numeric',month:'short'})}
                     </div>
+                    {dayBI && (
+                      <div className="mt-1 px-1">
+                        <div className="text-[9px] text-gray-500 tabular-nums leading-tight">
+                          ~{dayBI.coperti} cop · €{(dayBI.revenue/1000).toFixed(1)}K
+                        </div>
+                        <div className="w-full bg-gray-200 rounded-full h-1 mt-0.5 overflow-hidden" title={`Pressione ${pressure}`}>
+                          <div className={`h-1 rounded-full transition-all ${pressureColor}`} style={{width:`${barW}%`}}/>
+                        </div>
+                      </div>
+                    )}
                   </th>
                 )
               })}
@@ -514,17 +620,40 @@ function SettimanaTab({ ctx }) {
             </tr>
           </thead>
           <tbody>
+            {wp.some(Boolean) && (
+              <tr className="border-t-2 bg-blue-50/40">
+                <td className="px-4 py-1.5 sticky left-0 bg-blue-50/40 z-20">
+                  <span className="text-[10px] font-bold text-blue-600 uppercase tracking-wider">📊 Storico</span>
+                  <div className="text-[9px] text-blue-400">~cop · €K</div>
+                </td>
+                {weekDays.map((d, i) => {
+                  const dow = (i + 1) % 7
+                  const dayBI = wp[dow]
+                  return (
+                    <td key={i} className="px-1 py-1 text-center">
+                      {dayBI && (
+                        <div className="text-[9px] text-blue-700 font-semibold leading-tight">
+                          {dayBI.coperti}
+                          <div className="text-[9px] text-blue-400 font-normal">€{(dayBI.revenue/1000).toFixed(1)}K</div>
+                        </div>
+                      )}
+                    </td>
+                  )
+                })}
+                <td className="px-3 py-1"/>
+              </tr>
+            )}
             {byReparto.map(({ reparto, emps }) => (
-              <>
-                <tr key={`hdr-${reparto.id}`} className="bg-gray-50 border-y">
-                  <td colSpan={9} className="px-4 py-2">
+              <React.Fragment key={reparto.id}>
+                <tr className="bg-gray-50 border-y">
+                  <td colSpan={weekDays.length + 2} className="px-4 py-2">
                     <span className="text-sm font-bold" style={{color:reparto.colore}}>{reparto.icona} {reparto.nome}</span>
                     <span className="ml-2 text-xs text-gray-400">({emps.length})</span>
                   </td>
                 </tr>
                 {emps.map(emp => (
                   <tr key={emp.id} className="border-b hover:bg-gray-50/50 transition-colors">
-                    <td className="px-4 py-2 sticky left-0 bg-white z-10">
+                    <td className="px-4 py-2 sticky left-0 bg-white z-20">
                       <div className="font-medium text-sm text-gray-900 truncate max-w-[160px]">{emp.name}</div>
                       <div className="text-xs text-gray-500">{emp.role}</div>
                     </td>
@@ -546,7 +675,7 @@ function SettimanaTab({ ctx }) {
                   </tr>
                 ))}
                 <tr key={`fab-${reparto.id}`} className="border-b border-dashed bg-gray-50/40">
-                  <td className="px-4 py-1 sticky left-0 bg-gray-50/40 z-10">
+                  <td className="px-4 py-1 sticky left-0 bg-gray-50/40 z-20">
                     <span className="text-[10px] text-gray-400 font-medium uppercase tracking-wider">Copertura</span>
                   </td>
                   {weekDays.map((d, i) => {
@@ -563,9 +692,9 @@ function SettimanaTab({ ctx }) {
                       </td>
                     )
                   })}
-                  <td/>
+                  <td className="px-3 py-1"/>
                 </tr>
-              </>
+              </React.Fragment>
             ))}
           </tbody>
         </table>
@@ -598,7 +727,7 @@ function SettimanaTab({ ctx }) {
 // ─── TAB: RIEPILOGO + COSTI ───────────────────────────────────────────────────
 
 function RiepilogoTab({ ctx }) {
-  const { enrichedEmps } = ctx
+  const { enrichedEmps, biData } = ctx
   const [showSplit, setShowSplit] = useState(false)
   const [filterRole, setFilterRole] = useState('ALL')
 
@@ -616,6 +745,24 @@ function RiepilogoTab({ ctx }) {
   }), {netto:0,costo:0,costoMA:0,costoPN:0,ore:0}), [displayed])
 
   const monthLabel = `${MESI_IT[ctx.selectedMonth.mese-1]} ${ctx.selectedMonth.anno}`
+  const monthKey = `${ctx.selectedMonth.anno}-${String(ctx.selectedMonth.mese).padStart(2,'0')}`
+  const sedeRef = ctx.selectedSede === 'ALL' ? null : ctx.selectedSede
+  const revenueMA = biData?.monthRevenue?.[`MA|${monthKey}`] || 0
+  const revenuePN = biData?.monthRevenue?.[`PN|${monthKey}`] || 0
+  const revenueMonth = sedeRef ? (biData?.monthRevenue?.[`${sedeRef}|${monthKey}`] || 0) : (revenueMA + revenuePN)
+  const ratioPerc = revenueMonth > 0 ? Math.round(totals.costo / revenueMonth * 100) : null
+  const kpiOpsRef = sedeRef ? (biData?.kpiOps?.[sedeRef] || {}) : {}
+
+  const getEmpQuantum = (emp) => {
+    const alias = emp.vendutoAlias
+    if (!alias) return null
+    const sedeKey = emp.sede
+    const ops = biData?.kpiOps?.[sedeKey] || {}
+    const found = Object.entries(ops).find(([op]) =>
+      op.toUpperCase().trim() === alias.toUpperCase().trim()
+    )
+    return found ? found[1].quantum : null
+  }
 
   return (
     <div className="space-y-4">
@@ -642,16 +789,26 @@ function RiepilogoTab({ ctx }) {
         </select>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         {[
-          {label:'Dipendenti',   val:displayed.length,                                                           ico:'👥'},
-          {label:'Netto totale', val:`€${totals.netto.toLocaleString('it-IT',{maximumFractionDigits:0})}`,       ico:'💶'},
-          {label:'Costo azienda',val:`€${totals.costo.toLocaleString('it-IT',{maximumFractionDigits:0})}`,       ico:'🏢'},
-          {label:'Ore pianificate',val:`${Math.round(totals.ore)}h`,                                             ico:'⏰'},
+          {label:'Dipendenti',    val:displayed.length,                                                                    ico:'👥', sub:null},
+          {label:'Netto totale',  val:`€${totals.netto.toLocaleString('it-IT',{maximumFractionDigits:0})}`,                ico:'💶', sub:null},
+          {label:'Costo azienda', val:`€${totals.costo.toLocaleString('it-IT',{maximumFractionDigits:0})}`,                ico:'🏢', sub:null},
+          {label:'Ore pianificate',val:`${Math.round(totals.ore)}h`,                                                       ico:'⏰', sub:null},
+          {label:'Revenue mese',  val:revenueMonth>0?`€${Math.round(revenueMonth/1000)}K`:'–',                             ico:'📈',
+            sub: revenueMonth>0 ? (ctx.selectedSede==='ALL' ? `MA €${Math.round(revenueMA/1000)}K · PN €${Math.round(revenuePN/1000)}K` : null) : null,
+            highlight: revenueMonth>0 ? 'text-emerald-700' : null},
+          {label:'% Costo Lavoro', val:ratioPerc!=null?`${ratioPerc}%`:'–',                                                ico:'⚖️',
+            sub: ratioPerc!=null ? (ratioPerc>35 ? '⚠️ Alto' : ratioPerc>28 ? '✓ Nella norma' : '✅ Ottimale') : 'dati mancanti',
+            highlight: ratioPerc==null ? null : ratioPerc>35 ? 'text-red-600' : ratioPerc>28 ? 'text-amber-600' : 'text-green-600'},
         ].map(k => (
           <div key={k.label} className="bg-white rounded-xl border shadow-sm p-4 flex items-center gap-3">
             <div className="text-2xl">{k.ico}</div>
-            <div><div className="text-xs text-gray-500">{k.label}</div><div className="font-bold text-gray-900">{k.val}</div></div>
+            <div>
+              <div className="text-xs text-gray-500">{k.label}</div>
+              <div className={`font-bold ${k.highlight||'text-gray-900'}`}>{k.val}</div>
+              {k.sub && <div className="text-[10px] text-gray-400 mt-0.5">{k.sub}</div>}
+            </div>
           </div>
         ))}
       </div>
@@ -667,6 +824,7 @@ function RiepilogoTab({ ctx }) {
               <th className="text-center px-3 py-3">Busta</th>
               <th className="text-right px-4 py-3">Netto</th>
               <th className="text-right px-4 py-3">Costo az.</th>
+              <th className="text-right px-3 py-3 text-emerald-600" title="Coperto medio storico (3 mesi)">Quantum</th>
               {showSplit && <><th className="text-right px-3 py-3 text-blue-600">MA</th><th className="text-right px-3 py-3 text-purple-600">PN</th></>}
             </tr>
           </thead>
@@ -725,6 +883,14 @@ function RiepilogoTab({ ctx }) {
                   </td>
                   <td className="px-4 py-3 text-right font-medium text-sm">{emp.netto>0?`€${emp.netto.toLocaleString('it-IT',{maximumFractionDigits:0})}`:'–'}</td>
                   <td className="px-4 py-3 text-right font-bold text-sm">{emp.costoAzienda>0?`€${emp.costoAzienda.toLocaleString('it-IT',{maximumFractionDigits:0})}`:'–'}</td>
+                  <td className="px-3 py-3 text-right">
+                    {(() => { const q = getEmpQuantum(emp); return q ? (
+                      <div>
+                        <div className={`text-sm font-semibold ${q>=40?'text-emerald-600':q>=30?'text-blue-600':'text-gray-500'}`}>€{q}</div>
+                        <div className="text-[9px] text-gray-400">cop.medio</div>
+                      </div>
+                    ) : <span className="text-gray-300 text-xs">–</span> })()}
+                  </td>
                   {showSplit && <>
                     <td className="px-3 py-3 text-right text-sm text-blue-700">{emp.costoMA>0?`€${emp.costoMA.toLocaleString('it-IT',{maximumFractionDigits:0})}`:'–'}</td>
                     <td className="px-3 py-3 text-right text-sm text-purple-700">{emp.costoPN>0?`€${emp.costoPN.toLocaleString('it-IT',{maximumFractionDigits:0})}`:'–'}</td>
@@ -738,6 +904,13 @@ function RiepilogoTab({ ctx }) {
               <td colSpan={5} className="px-4 py-3 text-sm">Totale ({displayed.length})</td>
               <td className="px-4 py-3 text-right">€{totals.netto.toLocaleString('it-IT',{maximumFractionDigits:0})}</td>
               <td className="px-4 py-3 text-right">€{totals.costo.toLocaleString('it-IT',{maximumFractionDigits:0})}</td>
+              <td className="px-3 py-3 text-right">
+                {ratioPerc!=null && (
+                  <span className={`text-xs font-semibold ${ratioPerc>35?'text-red-600':ratioPerc>28?'text-amber-600':'text-green-600'}`}>
+                    {ratioPerc}%
+                  </span>
+                )}
+              </td>
               {showSplit && <>
                 <td className="px-3 py-3 text-right text-blue-700">€{totals.costoMA.toLocaleString('it-IT',{maximumFractionDigits:0})}</td>
                 <td className="px-3 py-3 text-right text-purple-700">€{totals.costoPN.toLocaleString('it-IT',{maximumFractionDigits:0})}</td>
@@ -802,18 +975,20 @@ function GestioneTab({ ctx }) {
           {enrichedEmps.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
         </select>
         <span className="text-sm text-gray-500">{displayed.length} turni</span>
-        {selected.size > 0 && (
-          <div className="ml-auto flex gap-2 items-center">
-            <span className="text-sm font-medium text-blue-600">{selected.size} sel.</span>
-            <button onClick={bulkDelete} disabled={deleting}
-              className="px-3 py-1.5 bg-red-600 text-white rounded-lg text-sm hover:bg-red-700 disabled:opacity-50">🗑</button>
-            <button onClick={clearSel} className="px-2 py-1.5 border rounded-lg text-sm">✕</button>
-          </div>
-        )}
-        <button onClick={() => setModal({shift:null,employee:enrichedEmps[0]||{},date:new Date()})}
-          className="ml-auto px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 font-medium">
-          + Nuovo
-        </button>
+        <div className="ml-auto flex gap-2 items-center">
+          {selected.size > 0 && (
+            <>
+              <span className="text-sm font-medium text-blue-600">{selected.size} sel.</span>
+              <button onClick={bulkDelete} disabled={deleting}
+                className="px-3 py-1.5 bg-red-600 text-white rounded-lg text-sm hover:bg-red-700 disabled:opacity-50">🗑</button>
+              <button onClick={clearSel} className="px-2 py-1.5 border rounded-lg text-sm">✕</button>
+            </>
+          )}
+          <button onClick={() => setModal({shift:null,employee:enrichedEmps[0]||{},date:new Date()})}
+            className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 font-medium">
+            + Nuovo
+          </button>
+        </div>
       </div>
 
       <div className="bg-white rounded-xl border shadow-sm overflow-x-auto">
@@ -838,7 +1013,7 @@ function GestioneTab({ ctx }) {
               const emp = enrichedEmps.find(e => e.id === s.employee_id) || {id:s.employee_id,name:s.employee_name,code:s.employee_code,sede:s.sede,role:s.ruolo}
               return (
                 <tr key={s.id} className={`border-b hover:bg-gray-50/50 ${selected.has(s.id)?'bg-blue-50':''}`}>
-                  <td className="px-4 py-3"><input type="checkbox" checked={selected.has(s.id)} onChange={()=>toggleSelect(s.id)} className="rounded"/></td>
+                  <td className="px-4 py-3 w-8"><input type="checkbox" checked={selected.has(s.id)} onChange={()=>toggleSelect(s.id)} className="rounded"/></td>
                   <td className="px-4 py-3 text-sm text-gray-700">
                     {new Date(s.date+'T12:00:00').toLocaleDateString('it-IT',{weekday:'short',day:'numeric',month:'short'})}
                   </td>
@@ -951,13 +1126,11 @@ function FabCell({ fab, repartoId, sede, turno, giorno, onSave }) {
 }
 
 function RepartiTab({ ctx }) {
-  const { reparti, fabbisogno, enrichedEmps } = ctx
-  const [editingRep, setEditingRep]   = useState(null)
-  const [form, setForm]               = useState({nome:'',colore:'#f59e0b',icona:'🍽️',sede:null,attivo:true,ruoli:[],note:'',ordine:10})
-  const [saving, setSaving]           = useState(false)
-  const [newRuolo, setNewRuolo]       = useState('')
-  const [tipoGiorno, setTipoGiorno]   = useState('feriale') // feriale | weekend
-  const [fabSede, setFabSede]         = useState('MA')
+  const { reparti, fabbisogno, allEmployees } = ctx
+  const [editingRep, setEditingRep] = useState(null)
+  const [form, setForm]             = useState({nome:'',colore:'#f59e0b',icona:'🍽️',sede:null,attivo:true,ruoli:[],note:'',ordine:10})
+  const [saving, setSaving]         = useState(false)
+  const [tipoGiorno, setTipoGiorno] = useState('feriale')
   const COLORI = ['#f59e0b','#ef4444','#8b5cf6','#3b82f6','#10b981','#f97316','#06b6d4','#6366f1']
   const ICONE  = ['🍽️','👨‍🍳','🍺','🧹','📦','🎯','⭐','🏃','🥘','🔪','🧊','🍷']
 
@@ -977,9 +1150,24 @@ function RepartiTab({ ctx }) {
   }
 
   const deleteReparto = async id => {
-    if (!window.confirm('Eliminare questo reparto?')) return
-    await repartiApi.remove(id)
-    ctx.setReparti(await repartiApi.getAll())
+    const rep = ctx.reparti.find(r => r.id === id)
+    if (!window.confirm(`Eliminare il reparto "${rep?.nome}"?`)) return
+    try {
+      const { data: empCheck } = await supabase
+        .from('employees').select('id,name').eq('reparto_id', id).limit(5)
+      if (empCheck?.length > 0) {
+        alert(`❌ Impossibile eliminare: ${empCheck.length} dipendenti assegnati a "${rep?.nome}" (${empCheck.map(e=>e.name).join(', ')}).\nRimuovi prima l'associazione dal profilo dipendente.`)
+        return
+      }
+      const fab = ctx.fabbisogno.filter(f => f.reparto_id === id)
+      await Promise.all(fab.map(f => repartiApi.deleteFabbisogno(f.id)))
+      await repartiApi.remove(id)
+      const [reps, newFab] = await Promise.all([repartiApi.getAll(), repartiApi.getFabbisogno()])
+      ctx.setReparti(reps)
+      ctx.setFabbisogno(newFab)
+    } catch (e) {
+      alert('❌ Errore: ' + (e?.message || String(e)))
+    }
   }
 
   const saveFab = async d => {
@@ -990,18 +1178,26 @@ function RepartiTab({ ctx }) {
   const getFab = (rid, sede, turno, giorno) =>
     fabbisogno.find(f => f.reparto_id===rid && f.sede===sede && f.turno_tipo===turno && f.giorno_tipo===giorno) || null
 
-  const TURNI_LABEL = [
-    { tipo:'Pranzo', ico:'🌞', orario:'~12:00–15:30', colore:'#fef3c7', testo:'#92400e' },
-    { tipo:'Cena',   ico:'🌙', orario:'~19:00–23:30', colore:'#dbeafe', testo:'#1e40af' },
+  const empsMA = (repId) => (allEmployees||[]).filter(e=>e.reparto_id===repId && e.sede==='MA')
+  const empsPN = (repId) => (allEmployees||[]).filter(e=>e.reparto_id===repId && e.sede==='PN')
+
+  const TURNI_FAB = [
+    { tipo:'Pranzo', ico:'🌞', bg:'#fef3c7', col:'#92400e' },
+    { tipo:'Cena',   ico:'🌙', bg:'#dbeafe', col:'#1e40af' },
+  ]
+
+  const SEDI = [
+    { key:'MA', label:'MA — Cagliari',  bg:'bg-blue-50',   border:'border-blue-200',   text:'text-blue-800',   dot:'bg-blue-500' },
+    { key:'PN', label:'PN — Sassari',   bg:'bg-purple-50', border:'border-purple-200', text:'text-purple-800', dot:'bg-purple-500' },
   ]
 
   return (
     <div className="space-y-5">
+
       {/* Header */}
       <div className="flex flex-wrap items-center gap-3">
         <h3 className="font-semibold text-gray-800 flex-1">Reparti e Fabbisogno</h3>
-        {/* Controlli globali */}
-        <div className="flex items-center gap-2 border rounded-lg p-0.5 bg-gray-50">
+        <div className="flex items-center gap-1 border rounded-lg p-0.5 bg-gray-50">
           {['feriale','weekend'].map(g=>(
             <button key={g} onClick={()=>setTipoGiorno(g)}
               className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${tipoGiorno===g?'bg-white shadow text-gray-900':'text-gray-500 hover:text-gray-700'}`}>
@@ -1009,47 +1205,35 @@ function RepartiTab({ ctx }) {
             </button>
           ))}
         </div>
-        <div className="flex items-center gap-2 border rounded-lg p-0.5 bg-gray-50">
-          {[{v:'MA',l:'Sede MA'},{v:'PN',l:'Sede PN'},{v:'ALL',l:'Entrambe'}].map(s=>(
-            <button key={s.v} onClick={()=>setFabSede(s.v)}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${fabSede===s.v?'bg-white shadow text-gray-900':'text-gray-500'}`}>
-              {s.l}
-            </button>
-          ))}
-        </div>
         <button onClick={openNew} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 font-medium">+ Reparto</button>
       </div>
 
-      {/* Info note */}
-      <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-2.5 text-xs text-blue-800 flex items-start gap-2">
+      <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 text-xs text-amber-800 flex items-start gap-2">
         <span className="text-base mt-0.5">💡</span>
         <div>
-          <strong>Full Time</strong> (turno Intero/Split) copre <strong>sia Pranzo che Cena</strong> nella stessa giornata.
-          Indica quante persone minimo e massimo servono per ogni turno e il range di orario di ingresso — usati dall'AI per ottimizzare i costi.
+          Ogni reparto mostra le impostazioni di fabbisogno <strong>separate per sede</strong> (MA e PN).
+          Le modifiche di un locale non influenzano l'altro.
         </div>
       </div>
 
-      {/* Form CRUD Reparto */}
+      {/* Form CRUD */}
       {editingRep && (
         <div className="bg-white rounded-xl border shadow-sm p-5 space-y-4">
           <h4 className="font-semibold text-gray-800">{editingRep==='NEW'?'Nuovo Reparto':`Modifica: ${form.nome}`}</h4>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-            <div className="col-span-2 md:col-span-1">
+            <div>
               <label className="text-xs text-gray-600 font-medium">Nome *</label>
               <input value={form.nome} onChange={e=>setForm(f=>({...f,nome:e.target.value}))}
                 className="w-full border rounded-lg px-3 py-2 text-sm mt-1" placeholder="es. Sala"/>
             </div>
             <div>
-              <label className="text-xs text-gray-600 font-medium">Sede</label>
-              <select value={form.sede||''} onChange={e=>setForm(f=>({...f,sede:e.target.value||null}))} className="w-full border rounded-lg px-2 py-2 text-sm mt-1">
-                <option value="">Entrambe</option>
-                <option value="MA">Sede MA</option>
-                <option value="PN">Sede PN</option>
-              </select>
-            </div>
-            <div>
               <label className="text-xs text-gray-600 font-medium">Ordine</label>
               <input type="number" value={form.ordine} onChange={e=>setForm(f=>({...f,ordine:parseInt(e.target.value)||0}))}
+                className="w-full border rounded-lg px-3 py-2 text-sm mt-1"/>
+            </div>
+            <div>
+              <label className="text-xs text-gray-600 font-medium">Note</label>
+              <input value={form.note||''} onChange={e=>setForm(f=>({...f,note:e.target.value}))}
                 className="w-full border rounded-lg px-3 py-2 text-sm mt-1"/>
             </div>
           </div>
@@ -1073,11 +1257,6 @@ function RepartiTab({ ctx }) {
               </div>
             </div>
           </div>
-          <div>
-            <label className="text-xs text-gray-600 font-medium">Note</label>
-            <input value={form.note||''} onChange={e=>setForm(f=>({...f,note:e.target.value}))}
-              className="w-full border rounded-lg px-3 py-2 text-sm mt-1"/>
-          </div>
           <div className="flex gap-2 justify-end">
             <button onClick={cancel} className="px-4 py-2 border rounded-lg text-sm">Annulla</button>
             <button onClick={saveReparto} disabled={saving||!form.nome}
@@ -1088,86 +1267,104 @@ function RepartiTab({ ctx }) {
         </div>
       )}
 
-      {/* Schede reparti */}
-      <div className="grid md:grid-cols-2 gap-4">
+      {/* Grid reparti — ogni card mostra MA e PN side by side */}
+      <div className="space-y-4">
         {reparti.map(rep => {
-          const repEmps = enrichedEmps.filter(e=>e.reparto_id===rep.id)
-          const sedi = fabSede === 'ALL' ? ['MA','PN'] : [fabSede]
+          const ma = empsMA(rep.id)
+          const pn = empsPN(rep.id)
           return (
             <div key={rep.id} className="bg-white rounded-xl border shadow-sm overflow-hidden">
+
               {/* Header reparto */}
-              <div className="p-4 flex items-center gap-3 border-b" style={{borderLeftColor:rep.colore,borderLeftWidth:4}}>
+              <div className="px-4 py-3 flex items-center gap-3 border-b bg-gray-50"
+                style={{borderLeftColor:rep.colore,borderLeftWidth:4}}>
                 <span className="text-2xl">{rep.icona}</span>
                 <div className="flex-1 min-w-0">
                   <h4 className="font-bold text-gray-900">{rep.nome}</h4>
-                  {rep.note && <p className="text-xs text-gray-500 truncate">{rep.note}</p>}
-                  <div className="flex gap-1 mt-1 flex-wrap">
-                    <span className="text-[10px] px-1.5 py-0.5 rounded-full text-white font-medium" style={{backgroundColor:rep.colore}}>{repEmps.length} dipendenti</span>
+                  {rep.note && <p className="text-xs text-gray-400 truncate">{rep.note}</p>}
+                  <div className="flex gap-2 mt-0.5">
+                    <span className="text-[10px] text-blue-700 font-medium">MA: {ma.length} dip.</span>
+                    <span className="text-[10px] text-gray-300">·</span>
+                    <span className="text-[10px] text-purple-700 font-medium">PN: {pn.length} dip.</span>
                   </div>
                 </div>
-                <div className="flex gap-1 shrink-0">
-                  <button onClick={()=>openEdit(rep)} className="p-1.5 border rounded-lg hover:bg-gray-50 text-sm">✏️</button>
-                  <button onClick={()=>deleteReparto(rep.id)} className="p-1.5 border border-red-200 rounded-lg hover:bg-red-50 text-sm">🗑</button>
+                <div className="flex gap-1.5 shrink-0">
+                  <button onClick={()=>openEdit(rep)} className="px-2.5 py-1.5 border rounded-lg hover:bg-white text-xs font-medium text-gray-600">✏️ Modifica</button>
+                  <button onClick={()=>deleteReparto(rep.id)} className="px-2.5 py-1.5 border border-red-200 rounded-lg hover:bg-red-50 text-xs font-medium text-red-500">🗑 Elimina</button>
                 </div>
               </div>
 
-              {/* Matrice fabbisogno Pranzo / Cena per sede */}
-              <div className="p-4 space-y-3">
-                {sedi.map(sede => (
-                  <div key={sede}>
-                    {fabSede === 'ALL' && (
-                      <div className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">
-                        {sede === 'MA' ? 'Sede MA' : 'Sede PN'}
+              {/* Corpo: MA | PN side by side */}
+              <div className="grid grid-cols-2 divide-x">
+                {SEDI.map(({key, label, bg, border, text, dot}) => {
+                  const sedeEmps = key === 'MA' ? ma : pn
+                  return (
+                    <div key={key} className="p-4 space-y-3">
+
+                      {/* Intestazione sede */}
+                      <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg ${bg} border ${border}`}>
+                        <span className={`w-2 h-2 rounded-full shrink-0 ${dot}`}/>
+                        <span className={`text-xs font-bold ${text}`}>{label}</span>
+                        <span className={`ml-auto text-[10px] ${text} opacity-70`}>{sedeEmps.length} persone</span>
                       </div>
-                    )}
-                    <div className="grid grid-cols-2 gap-2">
-                      {TURNI_LABEL.map(({tipo, ico, orario, colore, testo}) => (
-                        <div key={tipo} className="rounded-lg border overflow-hidden">
-                          <div className="px-3 py-1.5 flex items-center gap-1.5 border-b" style={{backgroundColor:colore}}>
-                            <span>{ico}</span>
-                            <span className="text-xs font-bold" style={{color:testo}}>{tipo}</span>
-                            <span className="text-[10px] ml-auto opacity-60" style={{color:testo}}>{orario}</span>
+
+                      {/* FabCell per turno */}
+                      <div className="space-y-2">
+                        {TURNI_FAB.map(({tipo,ico,bg:tbg,col})=>(
+                          <div key={tipo} className="rounded-lg border overflow-hidden">
+                            <div className="px-3 py-1 flex items-center gap-1.5 border-b text-xs font-semibold"
+                              style={{backgroundColor:tbg,color:col}}>
+                              <span>{ico}</span>
+                              <span>{tipo}</span>
+                            </div>
+                            <div className="p-1.5">
+                              <FabCell
+                                fab={getFab(rep.id,key,tipo,tipoGiorno)}
+                                repartoId={rep.id}
+                                sede={key}
+                                turno={tipo}
+                                giorno={tipoGiorno}
+                                onSave={saveFab}
+                              />
+                            </div>
                           </div>
-                          <div className="p-1.5">
-                            <FabCell
-                              fab={getFab(rep.id, sede, tipo, tipoGiorno)}
-                              repartoId={rep.id}
-                              sede={sede}
-                              turno={tipo}
-                              giorno={tipoGiorno}
-                              onSave={saveFab}
-                            />
+                        ))}
+                      </div>
+
+                      {/* Team */}
+                      {sedeEmps.length > 0 && (
+                        <div className="border-t pt-2">
+                          <div className="flex flex-wrap gap-1">
+                            {sedeEmps.slice(0,8).map(e=>(
+                              <span key={e.id} className="text-[10px] px-2 py-0.5 rounded-full font-medium"
+                                style={{backgroundColor:rep.colore+'22',color:rep.colore}}>
+                                {e.name.split(' ')[0]}
+                              </span>
+                            ))}
+                            {sedeEmps.length>8 && <span className="text-[10px] text-gray-400">+{sedeEmps.length-8}</span>}
                           </div>
                         </div>
-                      ))}
+                      )}
+                      {sedeEmps.length === 0 && (
+                        <p className="text-[10px] text-gray-400 italic border-t pt-2">Nessuno assegnato</p>
+                      )}
                     </div>
-                    {/* Full time note */}
-                    <div className="mt-1.5 text-[10px] text-gray-400 flex items-center gap-1">
-                      <span>🔴</span>
-                      Full Time copre entrambi i turni in un giorno
-                    </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
 
-              {/* Dipendenti */}
-              <div className="px-4 pb-4">
-                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Team</p>
-                <div className="flex flex-wrap gap-1">
-                  {repEmps.slice(0,10).map(e=>(
-                    <span key={e.id} className="text-[10px] px-2 py-0.5 rounded-full font-medium"
-                      style={{backgroundColor:rep.colore+'22',color:rep.colore}}>
-                      {e.name.split(' ')[0]}
-                    </span>
-                  ))}
-                  {repEmps.length>10 && <span className="text-[10px] text-gray-400">+{repEmps.length-10}</span>}
-                  {!repEmps.length && <span className="text-xs text-gray-400 italic">Nessuno assegnato</span>}
-                </div>
-              </div>
             </div>
           )
         })}
+        {reparti.length === 0 && (
+          <div className="text-center py-12 text-gray-400">
+            <div className="text-4xl mb-2">📋</div>
+            <p className="text-sm">Nessun reparto configurato</p>
+            <button onClick={openNew} className="mt-3 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">+ Crea primo reparto</button>
+          </div>
+        )}
       </div>
+
     </div>
   )
 }
@@ -1531,7 +1728,7 @@ function extractJsonFromAI(text) {
 }
 
 function AIPlannerTab({ ctx }) {
-  const { enrichedEmps, reparti, fabbisogno, regole, shifts, bozzaShifts, reloadBozza, reload } = ctx
+  const { enrichedEmps, reparti, fabbisogno, regole, shifts, bozzaShifts, reloadBozza, reload, biData } = ctx
   const { callClaude } = useClaudeAI()
   const [prompt, setPrompt]         = useState('')
   const [aiSede, setAiSede]         = useState(ctx.selectedSede === 'ALL' ? 'MA' : ctx.selectedSede)
@@ -1627,15 +1824,29 @@ function AIPlannerTab({ ctx }) {
       return `${toYMD(d)} ${dow}`
     }).join(', ')
 
+    const wp = biData?.weekPattern?.[aiSede] || []
+    const biLines = weekDays.map((d,i) => {
+      const jsDay = (i + 1) % 7 // Lun→1 … Dom→0
+      const day = wp[jsDay]
+      const label = ['Lun','Mar','Mer','Gio','Ven','Sab','Dom'][i]
+      if (!day) return `  ${label}: n/d`
+      const pressure = day.revenue > 4500 ? 'ALTA' : day.revenue > 3200 ? 'MEDIA' : 'BASSA'
+      return `  ${label}: ~${day.coperti} coperti · €${Math.round(day.revenue/100)*100} · pressione ${pressure}`
+    }).join('\n')
+
     return `SEDE: ${aiSede==='MA'?'Sede MA':'Sede PN'}
 SETTIMANA: ${dateList}
+
+DATI STORICI AFFLUENZA (media ultimi 6 mesi — usa per calibrare la copertura):
+${biLines}
 
 REGOLE:
 - Pranzo: ingresso 11:00-12:30, fine ~15:30
 - Cena: ingresso 18:00-19:30, fine ~23:30
 - Intero/Split=Full Time: copre ENTRAMBI pranzo+cena (solo non-PT)
 - PT: un turno al giorno (Pranzo O Cena)
-- Sab/Dom = alta affluenza → copertura massima
+- Pressione ALTA (Dom/Sab) → copertura massima, evita riposi
+- Pressione BASSA (Lun-Gio) → puoi concentrare i riposi
 - Min 1 riposo/sett per dipendente, non superare ore settimanali contratto
 - PAIRING: max 1 Responsabile per turno (Pranzo/Cena separati)
 
@@ -1897,7 +2108,7 @@ IMPORTANTE: includi SOLO i turni lavorativi (Pranzo/Cena/Intero/Ferie). NON incl
             <summary className="px-4 py-3 text-sm font-medium text-gray-600 cursor-pointer hover:bg-gray-100 rounded-xl">
               📋 Contesto inviato all'AI ({sedeEmps.length} dipendenti · storico 8 settimane)
             </summary>
-            <pre className="p-4 text-xs text-gray-500 overflow-auto max-h-64 whitespace-pre-wrap">{buildContext()}</pre>
+            <pre className="p-4 text-xs text-gray-500 overflow-auto max-h-64 whitespace-pre-wrap">{buildContext(historicalContext)}</pre>
           </details>
 
           {/* Errore separato — non sovrascrive l'analisi */}

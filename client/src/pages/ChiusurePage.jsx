@@ -42,6 +42,12 @@ export default function ChiusurePage() {
   const [period, setPeriod] = useState('ytd')
   const [dates, setDates] = useState(periodToDates('ytd'))
 
+  // Fix: Recharts ResponsiveContainer ha width=0 quando il tab non è quello iniziale
+  useEffect(() => {
+    const t = setTimeout(() => window.dispatchEvent(new Event('resize')), 50)
+    return () => clearTimeout(t)
+  }, [tab])
+
   const loc = location === 'all' ? undefined : location
 
   const handleDateChange = (pid, d) => {

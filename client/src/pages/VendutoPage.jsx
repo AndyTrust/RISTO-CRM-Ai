@@ -52,11 +52,11 @@ async function loadOperatori(sede, from, to) {
 async function loadCategorie(sede, from, to) {
   let q = supabase.from('venduto_camerieri').select('categoria, quantita')
   if (sede) q = q.eq('sede', sede)
-  // Overlap interval filter: il record [data_inizio, data_fine] si sovrappone con [from, to]
   if (to)   q = q.lte('data_inizio', to)
   if (from) q = q.gte('data_fine', from)
-  q = q.not('operatore', 'ilike', 'pienissimo')  // escludi operatore di sistema
-  q = q.range(0, 4999)                            // bypass limite default 1000 righe
+  q = q.not('operatore', 'ilike', 'pienissimo')
+  q = q.not('prodotto', 'ilike', '[STIMA]%')  // escludi stime proporzionali
+  q = q.range(0, 4999)
   const rows = await sbq(q)
   const byCat = {}
   for (const r of rows) {
@@ -71,11 +71,13 @@ async function loadCategorie(sede, from, to) {
 async function loadProdotti(sede, from, to, limit = 20) {
   let q = supabase.from('venduto_camerieri').select('prodotto, categoria, quantita, operatore')
   if (sede) q = q.eq('sede', sede)
-  // Overlap interval filter: il record [data_inizio, data_fine] si sovrappone con [from, to]
   if (to)   q = q.lte('data_inizio', to)
   if (from) q = q.gte('data_fine', from)
-  q = q.not('operatore', 'ilike', 'pienissimo')  // escludi operatore di sistema
-  q = q.range(0, 4999)                            // bypass limite default 1000 righe
+  q = q.not('operatore', 'ilike', 'pienissimo')
+  q = q.not('prodotto', 'ilike', '[STIMA]%')  // escludi stime
+  q = q.not('prodotto', 'eq', 'TOTALE PERIODO')
+  q = q.not('prodotto', 'eq', 'COPERTO')
+  q = q.range(0, 4999)
   const rows = await sbq(q)
   const byP = {}
   for (const r of rows) {
@@ -1155,6 +1157,11 @@ export default function VendutoPage() {
   const [dates, setDates] = useState(periodToDates('month'))
   const [loading, setLoading] = useState(true)
 
+  useEffect(() => {
+    const t = setTimeout(() => window.dispatchEvent(new Event('resize')), 50)
+    return () => clearTimeout(t)
+  }, [tab])
+
   const sede = locationToSede(location)
   const from = dates?.from
   const to   = dates?.to
@@ -1494,20 +1501,24 @@ export default function VendutoPage() {
       {tab === 'categorie' && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <div className="card">
-            <div className="card-header"><h2 className="font-semibold">Categorie — Distribuzione pezzi</h2></div>
+            <div className="card-header flex items-center justify-between">
+              <h2 className="font-semibold">Categorie — Distribuzione pezzi</h2>
+            </div>
             <div className="card-body">
               {categorie.length === 0 ? (
                 <p className="text-sm text-gray-400 text-center py-8">Nessun dato</p>
               ) : (
                 <ResponsiveContainer width="100%" height={300}>
-                  <PieChart>
-                    <Pie data={categorie} dataKey="tot_quantita" nameKey="categoria" cx="50%" cy="50%" outerRadius={100}
-                      label={({ percent }) => `${(percent*100).toFixed(0)}%`}>
-                      {categorie.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-                    </Pie>
-                    <Tooltip formatter={v => v.toLocaleString('it-IT')} />
-                    <Legend />
-                  </PieChart>
+                  <BarChart data={categorie.filter(c => c.categoria && c.categoria !== '(senza categoria)').slice(0,12)}
+                    layout="vertical" margin={{ left: 8, right: 32, top: 4, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                    <XAxis type="number" tick={{ fontSize: 10 }} tickFormatter={v => v.toLocaleString('it-IT')} />
+                    <YAxis type="category" dataKey="categoria" width={110} tick={{ fontSize: 10 }} />
+                    <Tooltip formatter={v => [`${v.toLocaleString('it-IT')} pz`, 'Pezzi']} />
+                    <Bar dataKey="tot_quantita" radius={[0, 4, 4, 0]}>
+                      {categorie.slice(0,12).map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
+                    </Bar>
+                  </BarChart>
                 </ResponsiveContainer>
               )}
             </div>
@@ -1548,54 +1559,89 @@ export default function VendutoPage() {
 
       {/* ─── TOP PRODOTTI ──────────────────────────────────────── */}
       {tab === 'prodotti' && (
-        <div className="card">
-          <div className="card-header">
-            <h2 className="font-semibold">Top 20 Prodotti per quantità</h2>
-            <p className="text-xs text-gray-400 mt-0.5">Pezzi venduti per prodotto nel periodo</p>
+        <div className="space-y-4">
+          {/* Grafico orizzontale Top 15 */}
+          <div className="card">
+            <div className="card-header flex items-center justify-between">
+              <div>
+                <h2 className="font-semibold">Top 15 Prodotti per pezzi venduti</h2>
+                <p className="text-xs text-gray-400 mt-0.5">Esclusi prodotti di sistema e stime</p>
+              </div>
+            </div>
+            <div className="card-body">
+              {prodotti.length === 0 ? (
+                <p className="text-sm text-gray-400 text-center py-8">Nessun dato per il periodo selezionato</p>
+              ) : (
+                <ResponsiveContainer width="100%" height={Math.max(300, prodotti.slice(0,15).length * 28 + 60)}>
+                  <BarChart data={prodotti.slice(0,15)} layout="vertical"
+                    margin={{ left: 8, right: 60, top: 4, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                    <XAxis type="number" tick={{ fontSize: 10 }} tickFormatter={v => v.toLocaleString('it-IT')} />
+                    <YAxis type="category" dataKey="prodotto" width={180} tick={{ fontSize: 10 }}
+                      tickFormatter={v => v.length > 22 ? v.slice(0,22) + '…' : v} />
+                    <Tooltip formatter={(v, n) => [v.toLocaleString('it-IT') + ' pz', 'Pezzi']}
+                      labelFormatter={l => l} />
+                    <Bar dataKey="tot_quantita" radius={[0, 4, 4, 0]} label={{ position: 'right', fontSize: 10, formatter: v => v > 0 ? v : '' }}>
+                      {prodotti.slice(0,15).map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </div>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50 text-xs text-gray-500">
-                <tr>
-                  <th className="text-left px-4 py-3 w-8">#</th>
-                  <th className="text-left px-4 py-3">Prodotto</th>
-                  <th className="text-left px-4 py-3">Categoria</th>
-                  <th className="text-right px-4 py-3">Pezzi</th>
-                  <th className="text-right px-4 py-3">Quota</th>
-                  <th className="text-right px-4 py-3">Operatori</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {prodotti.length === 0 && (
-                  <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">
-                    {loading ? 'Caricamento...' : 'Nessun dato per il periodo selezionato'}
-                  </td></tr>
-                )}
-                {prodotti.map((p, i) => {
-                  const maxQ = prodotti[0]?.tot_quantita || 1
-                  const barPct = (p.tot_quantita / maxQ * 100).toFixed(1)
-                  return (
-                    <tr key={i} className="hover:bg-gray-50">
-                      <td className="px-4 py-2.5 text-gray-400">{i+1}</td>
-                      <td className="px-4 py-2.5 font-medium">{p.prodotto}</td>
-                      <td className="px-4 py-2.5">
-                        {p.categoria && p.categoria !== 'nan'
-                          ? <span className="badge badge-gray">{p.categoria}</span>
-                          : <span className="text-gray-300">—</span>
-                        }
-                      </td>
-                      <td className="px-4 py-2.5 text-right font-semibold">{(p.tot_quantita || 0).toLocaleString('it-IT')}</td>
-                      <td className="px-4 py-2.5 text-right">
-                        <div className="w-20 h-1.5 bg-gray-100 rounded-full overflow-hidden ml-auto">
-                          <div className="h-full rounded-full bg-blue-400" style={{ width: `${barPct}%` }} />
-                        </div>
-                      </td>
-                      <td className="px-4 py-2.5 text-right text-gray-400">{p.n_operatori}</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+          {/* Tabella completa */}
+          <div className="card">
+            <div className="card-header">
+              <h2 className="font-semibold">Elenco completo prodotti</h2>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 text-xs text-gray-500">
+                  <tr>
+                    <th className="text-left px-4 py-3 w-8">#</th>
+                    <th className="text-left px-4 py-3">Prodotto</th>
+                    <th className="text-left px-4 py-3">Categoria</th>
+                    <th className="text-right px-4 py-3">Pezzi</th>
+                    <th className="text-right px-4 py-3">Quota %</th>
+                    <th className="text-right px-4 py-3">Operatori</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {prodotti.length === 0 && (
+                    <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">
+                      {loading ? 'Caricamento...' : 'Nessun dato'}
+                    </td></tr>
+                  )}
+                  {prodotti.map((p, i) => {
+                    const totale = prodotti.reduce((s, x) => s + (x.tot_quantita || 0), 0)
+                    const pct = totale > 0 ? ((p.tot_quantita / totale) * 100).toFixed(1) : '—'
+                    const maxQ = prodotti[0]?.tot_quantita || 1
+                    const barPct = (p.tot_quantita / maxQ * 100).toFixed(1)
+                    return (
+                      <tr key={i} className="hover:bg-gray-50">
+                        <td className="px-4 py-2.5 text-gray-400 text-xs">{i+1}</td>
+                        <td className="px-4 py-2.5 font-medium">{p.prodotto}</td>
+                        <td className="px-4 py-2.5">
+                          {p.categoria && p.categoria !== 'nan' && !p.categoria.includes('STIMA')
+                            ? <span className="badge badge-gray text-xs">{p.categoria}</span>
+                            : <span className="text-gray-300">—</span>}
+                        </td>
+                        <td className="px-4 py-2.5 text-right font-semibold">{(p.tot_quantita || 0).toLocaleString('it-IT')}</td>
+                        <td className="px-4 py-2.5 text-right">
+                          <div className="flex items-center gap-2 justify-end">
+                            <div className="w-16 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                              <div className="h-full rounded-full bg-violet-400" style={{ width: `${barPct}%` }} />
+                            </div>
+                            <span className="text-gray-400 text-xs w-10 text-right">{pct}%</span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-2.5 text-right text-gray-400">{p.n_operatori}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
@@ -1670,20 +1716,130 @@ export default function VendutoPage() {
         </div>
       )}
 
-      {/* ─── CALENDARIO HEATMAP ───────────────────────────────── */}
+      {/* ─── CALENDARIO + STAFFING ─────────────────────────────── */}
       {tab === 'calendario' && (
-        <div className="card p-6">
-          <div className="mb-4">
-            <h2 className="font-semibold">Calendario venduto giornaliero</h2>
-            <p className="text-xs text-gray-400 mt-0.5">
-              Ogni giorno colorato in base all'intensità del venduto — dati da chiusure cassa
-            </p>
+        <div className="space-y-4">
+          {/* Heatmap */}
+          <div className="card p-6">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h2 className="font-semibold">Calendario venduto giornaliero</h2>
+                <p className="text-xs text-gray-400 mt-0.5">Ogni giorno colorato per intensità — da chiusure cassa</p>
+              </div>
+            </div>
+            {loading ? (
+              <p className="text-center text-gray-400 py-10 text-sm animate-pulse">Caricamento...</p>
+            ) : (
+              <CalendarioHeatmap dailyData={dailyData} />
+            )}
           </div>
-          {loading ? (
-            <p className="text-center text-gray-400 py-10 text-sm animate-pulse">Caricamento...</p>
-          ) : (
-            <CalendarioHeatmap dailyData={dailyData} />
-          )}
+
+          {/* Staffing suggerito */}
+          <div className="card">
+            <div className="card-header">
+              <h2 className="font-semibold flex items-center gap-2">
+                <Users size={16} className="text-violet-500" />
+                Staffing suggerito per turno
+              </h2>
+              <p className="text-xs text-gray-400 mt-0.5">
+                Sala: 2 fissi ≤50 cop · +1 variabile (esce 14:00 / 21:30 se affluenza stabile) ·
+                Cucina: 2 cuochi + 1 lavapiatti fino a 60 cop
+              </p>
+            </div>
+            <div className="p-4">
+              <div className="grid grid-cols-2 gap-3 mb-4 text-xs">
+                <div className="bg-blue-50 rounded-lg p-3 border border-blue-100">
+                  <p className="font-semibold text-blue-700 mb-1">🍽️ Regole Sala</p>
+                  <div className="space-y-1 text-blue-600">
+                    <p>≤25 coperti → <strong>1 cameriere</strong></p>
+                    <p>26–50 cop → <strong>2 fissi</strong></p>
+                    <p>51–75 cop → <strong>2 fissi + 1</strong> (esce h14/21:30)</p>
+                    <p>&gt;75 cop → <strong>3+ camerieri</strong></p>
+                    <p className="text-blue-400">Target: ≤25 cop/operatore</p>
+                  </div>
+                </div>
+                <div className="bg-orange-50 rounded-lg p-3 border border-orange-100">
+                  <p className="font-semibold text-orange-700 mb-1">👨‍🍳 Regole Cucina</p>
+                  <div className="space-y-1 text-orange-600">
+                    <p>≤60 cop → <strong>2 cuochi + 1 lavapiatti</strong></p>
+                    <p>&gt;60 cop → <strong>3 cuochi + 1 lavapiatti</strong></p>
+                    <p>Max 5 operatori in sala</p>
+                    <p className="text-orange-400">Target: ≤30 cop/cuoco</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Tabella staffing per giorno */}
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 text-xs text-gray-500 border-b border-gray-100">
+                    <tr>
+                      <th className="text-left px-3 py-2">Data</th>
+                      <th className="text-right px-3 py-2">Coperti</th>
+                      <th className="text-right px-3 py-2">Sala fissi</th>
+                      <th className="text-right px-3 py-2">Sala variabile</th>
+                      <th className="text-right px-3 py-2">Cucina</th>
+                      <th className="text-right px-3 py-2">Lavapiatti</th>
+                      <th className="text-right px-3 py-2">Tot. staff</th>
+                      <th className="text-right px-3 py-2">Cop/op</th>
+                      <th className="text-left px-3 py-2">Nota</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {dailyData.length === 0 && (
+                      <tr><td colSpan={9} className="px-3 py-6 text-center text-gray-400">Nessun dato nel periodo</td></tr>
+                    )}
+                    {dailyData
+                      .filter(r => (parseInt(r.coperti) || 0) > 0)
+                      .sort((a, b) => a.data.localeCompare(b.data))
+                      .map((r, i) => {
+                        const cop = parseInt(r.coperti) || 0
+                        const salaFissi = cop <= 25 ? 1 : 2
+                        const salaVar = cop >= 51 ? 1 : 0
+                        const cuochi = cop > 60 ? 3 : 2
+                        const lavapiatti = 1
+                        const totStaff = salaFissi + salaVar + cuochi + lavapiatti
+                        const ratio = totStaff > 0 ? (cop / totStaff).toFixed(1) : '—'
+                        const isEfficient = cop / totStaff <= 20
+                        const isOverloaded = cop / totStaff > 25
+                        const dataIt = new Date(r.data + 'T12:00:00').toLocaleDateString('it-IT', { weekday: 'short', day: '2-digit', month: '2-digit' })
+                        return (
+                          <tr key={i} className="hover:bg-gray-50">
+                            <td className="px-3 py-2 font-medium text-gray-700">{dataIt}</td>
+                            <td className="px-3 py-2 text-right font-semibold">{cop}</td>
+                            <td className="px-3 py-2 text-right">
+                              <span className="bg-blue-100 text-blue-700 text-xs px-2 py-0.5 rounded-full">{salaFissi}</span>
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              {salaVar > 0
+                                ? <span className="bg-violet-100 text-violet-700 text-xs px-2 py-0.5 rounded-full">+1 (esce h14/21:30)</span>
+                                : <span className="text-gray-300 text-xs">—</span>
+                              }
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              <span className="bg-orange-100 text-orange-700 text-xs px-2 py-0.5 rounded-full">{cuochi}</span>
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              <span className="bg-gray-100 text-gray-600 text-xs px-2 py-0.5 rounded-full">{lavapiatti}</span>
+                            </td>
+                            <td className="px-3 py-2 text-right font-bold">{totStaff}</td>
+                            <td className="px-3 py-2 text-right">
+                              <span className={`text-xs font-semibold ${isOverloaded ? 'text-red-600' : isEfficient ? 'text-green-600' : 'text-amber-600'}`}>
+                                {ratio}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 text-xs text-gray-500">
+                              {isOverloaded ? '⚠️ Sovraccarico' : isEfficient ? '✅ Ottimale' : '🟡 Nella norma'}
+                            </td>
+                          </tr>
+                        )
+                      })
+                    }
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>

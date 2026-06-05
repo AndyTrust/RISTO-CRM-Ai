@@ -36,11 +36,31 @@ const NAV_GROUPS = [
     label: 'Sala & Analisi',
     defaultOpen: false,
     items: [
-      { id: 'statistiche',  path: '/statistiche',  icon: UtensilsCrossed, label: 'Statistiche Sala',   desc: 'Tavoli e coperti' },
-      { id: 'analytics_bi', path: '/analytics',    icon: BarChart2,       label: 'Analytics & BI',     desc: 'Reportistica avanzata' },
-      { id: 'fornitori',    path: '/fornitori',     icon: Building2,       label: 'Fornitori & Costi',  desc: 'Fatture e costi fornitore' },
-      { id: 'costi_fissi',  path: '/costi-fissi',   icon: Wallet,          label: 'Costi Fissi',        desc: 'Affitti, consulenze, oneri', alwaysEnabled: true },
-      { id: 'chat_claude',  path: '/chat',          icon: Bot,             label: 'Chat Claude AI',     desc: 'Assistente AI integrato' },
+      { id: 'statistiche',      path: '/statistiche',       icon: UtensilsCrossed, label: 'Statistiche Sala',     desc: 'Tavoli e coperti' },
+      { id: 'coperti_bi',       path: '/coperti-bi',        icon: UtensilsCrossed, label: 'Coperti & Tavoli BI',  desc: 'Analisi tavoli, durate, rotazioni', alwaysEnabled: true },
+      { id: 'turni_bi',         path: '/turni-bi',          icon: CalendarDays,    label: 'Turni Pranzo/Cena BI', desc: 'Pranzo vs cena, BE per turno', alwaysEnabled: true },
+      { id: 'prenotazioni',     path: '/prenotazioni',      icon: CalendarDays,    label: 'Prenotazioni BI',      desc: 'Filling rate, canali, no-show', alwaysEnabled: true },
+    ]
+  },
+  {
+    label: 'Business Intelligence',
+    defaultOpen: false,
+    items: [
+      { id: 'prodotti_bi',      path: '/prodotti-bi',       icon: Tag,             label: 'Prodotti BI',          desc: 'Menu engineering, food cost, BCG', alwaysEnabled: true },
+      { id: 'camerieri_bi',     path: '/camerieri-bi',      icon: Users,           label: 'Camerieri BI',         desc: 'Performance, target, quantum', alwaysEnabled: true },
+      { id: 'contabilita_bi',   path: '/contabilita-bi',    icon: BarChart3,       label: 'Contabilità BI',       desc: 'BE, costi, margini, proiezioni', alwaysEnabled: true },
+      { id: 'menu_engineering', path: '/menu-engineering',  icon: Tag,             label: 'Menu Engineering',     desc: 'Categorie, food cost, top seller', alwaysEnabled: true },
+      { id: 'forecast',         path: '/forecast',          icon: Cloud,           label: 'Forecast Revenue',     desc: 'Previsioni incasso prossimi giorni', alwaysEnabled: true },
+      { id: 'analytics_bi',     path: '/analytics',         icon: BarChart2,       label: 'Analytics & BI',       desc: 'Reportistica avanzata' },
+    ]
+  },
+  {
+    label: 'Costi & Fornitori',
+    defaultOpen: false,
+    items: [
+      { id: 'fornitori',        path: '/fornitori',         icon: Building2,       label: 'Fornitori & Costi',    desc: 'Fatture e costi fornitore' },
+      { id: 'costi_fissi',      path: '/costi-fissi',       icon: Wallet,          label: 'Costi Fissi',          desc: 'Affitti, consulenze, oneri', alwaysEnabled: true },
+      { id: 'chat_claude',      path: '/chat',              icon: Bot,             label: 'Chat Claude AI',       desc: 'Assistente AI integrato' },
     ]
   },
   {

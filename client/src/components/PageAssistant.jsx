@@ -33,6 +33,12 @@ const QUERY_CRM_ALLOWED_TABLES = [
   'kpi_targets_team',
   'target_venduto_operatori',
   'fatture_importate',
+  // Nuove tabelle BI connettori Pienissimo
+  'prenotazioni_summary',
+  'venduto_categorie',
+  'revenue_forecast',
+  'clienti_stats',
+  'chiusure_turni',
 ]
 
 // Colonne consentite per tabella (esclude dati sensibili come importi paga)
@@ -45,6 +51,15 @@ const QUERY_CRM_ALLOWED_COLUMNS = {
   kpi_targets_team:          ['sede', 'anno', 'mese', 'target'],
   target_venduto_operatori:  ['sede', 'operatore', 'anno', 'mese', 'target_pezzi', 'target_pezzi_valorizzati'],
   fatture_importate:         ['id', 'denominazione', 'piva', 'numero_fattura', 'data_fattura', 'imponibile', 'iva', 'totale', 'sede', 'totale_pagato'],
+  prenotazioni_summary:      ['sede', 'data_inizio', 'data_fine', 'periodo', 'turno', 'stato', 'canale', 'n_prenotazioni', 'n_persone'],
+  venduto_categorie:         ['sede', 'data_inizio', 'data_fine', 'categoria', 'tipologia', 'quantita', 'prezzo_medio', 'totale', 'food_cost_pct', 'n_documenti'],
+  revenue_forecast:          ['sede', 'data_competenza', 'previsione_coperti', 'previsione_incasso', 'valutazione', 'note_meteo', 'aggiornato_il'],
+  clienti_stats:             ['sede', 'periodo', 'grouping_tipo', 'valore', 'n_clienti'],
+  chiusure_turni:            ['sede', 'data', 'turno', 'incasso', 'quantita'],
+  prodotti_venduti_live:     ['sede', 'data_inizio', 'data_fine', 'prodotto', 'categoria', 'tipologia', 'quantita', 'prezzo_medio', 'importo_venduto', 'food_cost_medio', 'food_cost_pct', 'n_documenti'],
+  revenue_shift:             ['sede', 'data_inizio', 'data_fine', 'periodo', 'turno', 'incassato', 'coperti', 'coperto_medio', 'food_cost', 'food_cost_pct', 'break_even', 'margine', 'n_documenti'],
+  sondaggi_strutturati:      ['sede', 'id_sondaggio', 'data_prenotazione', 'nps', 'sala', 'pulizia', 'qualita_piatti', 'qualita_prezzo', 'atmosfera', 'tornera', 'canale_conoscenza', 'feedback_negativo'],
+  bookings_filling:          ['sede', 'periodo', 'giorno_settimana', 'turno', 'n_prenotazioni', 'n_persone'],
 }
 
 // Operatori consentiti (no ilike su tabelle sensibili; esclude operatori non standard)
@@ -109,7 +124,12 @@ Tabelle disponibili:
 - kpi_targets_team: sede, anno, mese, target — target KPI team
 - target_venduto_operatori: sede, operatore, anno, mese, target_pezzi, target_pezzi_valorizzati — target venduto
 - fatture_importate: denominazione, piva, numero_fattura, data_fattura, imponibile, iva, totale, sede — fatture fornitori
-Le sedi disponibili si trovano nella tabella 'sedi' (colonne: codice, nome).
+- prenotazioni_summary: sede, periodo, turno, stato, n_prenotazioni, n_persone — prenotazioni aggregate da Pienissimo
+- venduto_categorie: sede, data_inizio, data_fine, categoria, tipologia, quantita, totale, food_cost_pct — venduto per categoria (menu engineering)
+- revenue_forecast: sede, data_competenza, previsione_incasso, valutazione, note_meteo — previsioni revenue prossimi giorni
+- clienti_stats: sede, periodo, grouping_tipo, valore, n_clienti — statistiche clienti per canale/provenienza
+- chiusure_turni: sede, data, turno, incasso, quantita — chiusure per turno pranzo/cena
+Le sedi disponibili: MA (Mameli - Cagliari), PN (Predda Niedda - Sassari).
 Usa questo tool per rispondere a qualsiasi domanda sui dati reali del CRM.`,
   input_schema: {
     type: 'object',

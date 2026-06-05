@@ -61,6 +61,14 @@ import SetupWizard from './pages/SetupWizard'
 import KPIConfig from './pages/KPIConfig'
 import KpiTeamPage from './pages/KpiTeamPage'
 import CostiFissiPage from './pages/CostiFissiPage'
+import PrenotazioniBI from './pages/PrenotazioniBI'
+import MenuEngineering from './pages/MenuEngineering'
+import ForecastPage from './pages/ForecastPage'
+import ProdottiBi from './pages/ProdottiBi'
+import CamerieriBi from './pages/CamerieriBi'
+import TurniAnalysisBi from './pages/TurniAnalysisBi'
+import ContabilitaBi from './pages/ContabilitaBi'
+import CopertiBi from './pages/CopertiBi'
 import { modules as modulesApi, crmConfig } from './api/client'
 
 export const ModulesContext = React.createContext({})
@@ -150,6 +158,14 @@ export default function App() {
           <Route path="/turni" element={isEnabled('turni') ? <TurniPage /> : <DisabledModule name="Turni" />} />
           <Route path="/impostazioni" element={<Settings />} />
           <Route path="/costi-fissi" element={<CostiFissiPage />} />
+          <Route path="/prenotazioni" element={<PrenotazioniBI />} />
+          <Route path="/menu-engineering" element={<MenuEngineering />} />
+          <Route path="/forecast" element={<ForecastPage />} />
+          <Route path="/prodotti-bi" element={<ProdottiBi />} />
+          <Route path="/camerieri-bi" element={<CamerieriBi />} />
+          <Route path="/turni-bi" element={<TurniAnalysisBi />} />
+          <Route path="/contabilita-bi" element={<ContabilitaBi />} />
+          <Route path="/coperti-bi" element={<CopertiBi />} />
           <Route path="/admin" element={<Navigate to="/admin/dipendenti" replace />} />
           <Route path="/admin/:tab" element={<AdminPanel />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />

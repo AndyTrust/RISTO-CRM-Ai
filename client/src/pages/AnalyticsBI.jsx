@@ -288,6 +288,10 @@ function BESection({ beMensile, loading }) {
 // ── Sezione: Overview YoY ────────────────────────────────────────────────────
 function OverviewSection({ overview, loading }) {
   const [tab, setTab] = useState('venduto')
+  useEffect(() => {
+    const t = setTimeout(() => window.dispatchEvent(new Event('resize')), 50)
+    return () => clearTimeout(t)
+  }, [tab])
   if (loading) return <div className="animate-pulse bg-gray-100 rounded-xl h-48" />
   if (!overview) return null
 

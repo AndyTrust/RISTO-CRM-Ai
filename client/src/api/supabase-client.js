@@ -1663,9 +1663,9 @@ export const analytics = {
 }
 
 // ─── BUSTE PAGA ───────────────────────────────────────────────────────────
-// Moltiplicatore RAL-based: paga_base × 1.33 (contributi INPS ~33% a carico azienda)
+// Moltiplicatore CCNL: netto × 1.9653 (contributi INPS + TFR + oneri c/ditta ~96.5%)
 // Usato SOLO come fallback quando costo_azienda non è salvato nel DB
-const COSTO_AZ_MULTIPLIER_FALLBACK = 1.33
+const COSTO_AZ_MULTIPLIER_FALLBACK = 1.9653
 const MESI_IT = ['Gennaio','Febbraio','Marzo','Aprile','Maggio','Giugno',
                  'Luglio','Agosto','Settembre','Ottobre','Novembre','Dicembre']
 
@@ -1679,8 +1679,8 @@ export const bustePaga = {
     if (p.sede && p.sede !== 'Tutte') q = q.eq('sede', p.sede)
     const rows = await sbFetch(q)
     return rows.map(r => {
-      // Usa costo_azienda salvato (= paga_base × 1.33 dal LUL PDF).
-      // Fallback: paga_base × 1.33, poi netto × 1.33 (mai più × 1.9653)
+      // Usa costo_azienda salvato dal LUL PDF.
+      // Fallback CCNL: paga_base × 1.9653, poi netto × 1.9653
       const pagoBase = r.paga_base ? parseFloat(r.paga_base) : 0
       const costoAz = r.costo_azienda
         ? parseFloat(r.costo_azienda)
@@ -1718,7 +1718,7 @@ export const bustePaga = {
       const key = `${r.sede}-${r.anno}-${r.mese}`
       if (!map[key]) map[key] = { sede: r.sede, location: r.sede === 'MA' ? 'MA' : 'PN', anno: r.anno, mese: r.mese, totale_netto: 0, totale_costo: 0, n_dipendenti: 0, emps: new Set() }
       map[key].totale_netto += parseFloat(r.netto) || 0
-      // Usa costo_azienda salvato (RAL-based), fallback paga_base×1.33, mai netto×1.9653
+      // Usa costo_azienda salvato dal LUL, fallback CCNL: paga_base×1.9653 o netto×1.9653
       const pagoBase = r.paga_base ? parseFloat(r.paga_base) : 0
       const costoAz = r.costo_azienda
         ? parseFloat(r.costo_azienda)
@@ -1803,7 +1803,7 @@ export const bustePaga = {
       const key = `${r.sede}-${r.anno}-${r.mese}`
       if (!map[key]) map[key] = { sede: r.sede, location: r.sede, anno: r.anno, mese: r.mese, netto_totale: 0, costo_totale: 0 }
       map[key].netto_totale += parseFloat(r.netto) || 0
-      // Usa costo_azienda dal DB se disponibile, altrimenti paga_base×1.33, altrimenti netto×1.33
+      // Usa costo_azienda dal DB se disponibile, altrimenti fallback CCNL ×1.9653
       const pagoBase = parseFloat(r.paga_base) || 0
       const costoAz = parseFloat(r.costo_azienda) > 0
         ? parseFloat(r.costo_azienda)
