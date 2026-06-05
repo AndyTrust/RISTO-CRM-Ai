@@ -46,9 +46,8 @@ class ErrorBoundary extends React.Component {
 import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
 import PersonalePage from './pages/PersonalePage'
-import KPIWaiters from './pages/KPIWaiters'
+import KpiHub from './pages/KpiHub'
 import VendutoPage from './pages/VendutoPage'
-import PerformancePage from './pages/PerformancePage'
 import ChiusurePage from './pages/ChiusurePage'
 import ChatClaude from './pages/ChatClaude'
 import FornitoriPage from './pages/FornitoriPage'
@@ -59,13 +58,10 @@ import TurniPage from './pages/TurniPage'
 import AdminPanel from './pages/AdminPanel'
 import SetupWizard from './pages/SetupWizard'
 import KPIConfig from './pages/KPIConfig'
-import KpiTeamPage from './pages/KpiTeamPage'
 import CostiFissiPage from './pages/CostiFissiPage'
 import PrenotazioniBI from './pages/PrenotazioniBI'
-import MenuEngineering from './pages/MenuEngineering'
 import ForecastPage from './pages/ForecastPage'
-import ProdottiBi from './pages/ProdottiBi'
-import CamerieriBi from './pages/CamerieriBi'
+import ProdottiHub from './pages/ProdottiHub'
 import TurniAnalysisBi from './pages/TurniAnalysisBi'
 import ContabilitaBi from './pages/ContabilitaBi'
 import CopertiBi from './pages/CopertiBi'
@@ -144,10 +140,10 @@ export default function App() {
           <Route path="/setup" element={<SetupWizard onComplete={() => setSetupCompleted(true)} />} />
           <Route path="/dashboard" element={isEnabled('dashboard') ? <Dashboard /> : <DisabledModule name="Dashboard" />} />
           <Route path="/dipendenti" element={<Navigate to="/buste-paga?tab=dipendenti" replace />} />
-          <Route path="/performance" element={<PerformancePage />} />
-          <Route path="/kpi" element={isEnabled('kpi_camerieri') ? <KPIWaiters /> : <DisabledModule name="KPI Camerieri" />} />
+          <Route path="/performance" element={<Navigate to="/kpi?tab=performance" replace />} />
+          <Route path="/kpi" element={isEnabled('kpi_camerieri') ? <KpiHub /> : <DisabledModule name="KPI & Performance" />} />
           <Route path="/kpi-config" element={<KPIConfig />} />
-          <Route path="/kpi-team" element={<KpiTeamPage />} />
+          <Route path="/kpi-team" element={<Navigate to="/kpi?tab=team" replace />} />
           <Route path="/venduto" element={isEnabled('venduto') ? <VendutoPage /> : <DisabledModule name="Venduto" />} />
           <Route path="/chiusure" element={isEnabled('chiusure') ? <ChiusurePage /> : <DisabledModule name="Chiusure" />} />
           <Route path="/chat" element={isEnabled('chat_claude') ? <ChatClaude /> : <DisabledModule name="Chat Claude AI" />} />
@@ -159,10 +155,10 @@ export default function App() {
           <Route path="/impostazioni" element={<Settings />} />
           <Route path="/costi-fissi" element={<CostiFissiPage />} />
           <Route path="/prenotazioni" element={<PrenotazioniBI />} />
-          <Route path="/menu-engineering" element={<MenuEngineering />} />
+          <Route path="/menu-engineering" element={<Navigate to="/prodotti-bi?tab=menu" replace />} />
           <Route path="/forecast" element={<ForecastPage />} />
-          <Route path="/prodotti-bi" element={<ProdottiBi />} />
-          <Route path="/camerieri-bi" element={<CamerieriBi />} />
+          <Route path="/prodotti-bi" element={<ProdottiHub />} />
+          <Route path="/camerieri-bi" element={<Navigate to="/kpi?tab=bi" replace />} />
           <Route path="/turni-bi" element={<TurniAnalysisBi />} />
           <Route path="/contabilita-bi" element={<ContabilitaBi />} />
           <Route path="/coperti-bi" element={<CopertiBi />} />

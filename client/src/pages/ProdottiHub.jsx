@@ -1,0 +1,41 @@
+import { useSearchParams } from 'react-router-dom'
+import { Tag, UtensilsCrossed } from 'lucide-react'
+import ProdottiBi from './ProdottiBi'
+import MenuEngineering from './MenuEngineering'
+
+const TABS = [
+  { id: 'bi', label: 'Prodotti BI', icon: Tag, desc: 'Food cost, matrice BCG, top seller' },
+  { id: 'menu', label: 'Menu Engineering', icon: UtensilsCrossed, desc: 'Categorie, food cost, classificazione menu' },
+]
+
+export default function ProdottiHub() {
+  const [params, setParams] = useSearchParams()
+  const tab = params.get('tab') || 'bi'
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      <div className="sticky top-0 z-20 bg-white border-b border-gray-200 px-6 pt-4">
+        <div className="flex items-center gap-2 mb-3">
+          <Tag className="text-blue-600" size={22}/>
+          <h1 className="text-xl font-bold text-gray-900">Prodotti &amp; Menu</h1>
+          <span className="text-xs text-gray-400 ml-2 hidden md:inline">
+            {TABS.find(t=>t.id===tab)?.desc}
+          </span>
+        </div>
+        <div className="flex gap-1">
+          {TABS.map(t => (
+            <button key={t.id} onClick={() => setParams({ tab: t.id })}
+              className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 whitespace-nowrap transition-colors ${
+                tab === t.id
+                  ? 'border-blue-600 text-blue-700 bg-blue-50'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+              }`}>
+              <t.icon size={15}/>{t.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {tab === 'bi' ? <ProdottiBi /> : <MenuEngineering />}
+    </div>
+  )
+}

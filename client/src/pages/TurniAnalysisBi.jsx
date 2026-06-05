@@ -102,23 +102,8 @@ export default function TurniAnalysisBi() {
       if (sede !== 'ALL') qc = qc.eq('sede', sede)
       const { data: crows } = await qc.order('data')
       setChiusureData(crows || [])
-    } catch {
-      // fallback: revenue_shift
-      try {
-        let q2 = supabase.from('revenue_shift').select('*')
-          .gte('data_inizio', dateFrom).lte('data_fine', dateTo)
-        if (sede !== 'ALL') q2 = q2.eq('sede', sede)
-        const { data: rows2, error: err2 } = await q2.order('data_inizio', { ascending: false })
-        if (err2) throw err2
-        const withBe = (rows2||[]).map(r=>({
-          ...r,
-          be_raggiunto: r.incassato >= r.break_even,
-          incasso_per_coperto: r.coperti > 0 ? r.incassato/r.coperti : 0
-        }))
-        setTurniData(withBe)
-      } catch (e2) {
-        setError(e2.message)
-      }
+    } catch (e) {
+      setError(e.message)
     } finally {
       setLoading(false)
     }
@@ -223,8 +208,29 @@ export default function TurniAnalysisBi() {
           <Clock className="text-blue-600" size={26}/>
           Analisi Turni &amp; Fasce Orarie
         </h1>
-        <p className="text-gray-500 text-sm mt-1">Pranzo vs Cena — incasso, coperti, food cost, break-even</p>
+        <p className="text-gray-500 text-sm mt-1">
+          Pranzo vs Cena — incasso, coperti, food cost, break-even.{' '}
+          <span className="text-gray-400">Turni: Pranzo 12:00–18:00 · Cena 19:00–11:59 del giorno dopo (gli scontrini dopo mezzanotte sono attribuiti alla cena del giorno precedente). Dati per giorno/turno dalle chiusure iPratico.</span>
+        </p>
       </div>
+
+      {/* INSIGHTS AUTOMATICI */}
+      {!loading && turniData.length > 0 && (
+        <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 mb-6 text-sm text-blue-900 space-y-1">
+          <div className="font-semibold flex items-center gap-1"><TrendingUp size={14}/> Analisi del periodo</div>
+          <p>
+            {(avgPranzo.incasso||0) >= (avgCena.incasso||0)
+              ? <>Il <b>pranzo</b> rende in media di più ({(avgPranzo.incasso||0).toLocaleString('it-IT',{style:'currency',currency:'EUR'})} vs {(avgCena.incasso||0).toLocaleString('it-IT',{style:'currency',currency:'EUR'})} a turno)</>
+              : <>La <b>cena</b> rende in media di più ({(avgCena.incasso||0).toLocaleString('it-IT',{style:'currency',currency:'EUR'})} vs {(avgPranzo.incasso||0).toLocaleString('it-IT',{style:'currency',currency:'EUR'})} a turno)</>},
+            {' '}ma il coperto medio è più alto a {((avgCena.copMedio||0) >= (avgPranzo.copMedio||0)) ? 'cena' : 'pranzo'}
+            {' '}({Math.max(avgCena.copMedio||0, avgPranzo.copMedio||0).toLocaleString('it-IT',{style:'currency',currency:'EUR'})} a persona).
+          </p>
+          <p>
+            Break-even raggiunto in <b>{avgPranzo.be||0}/{avgPranzo.tot||0}</b> turni pranzo e <b>{avgCena.be||0}/{avgCena.tot||0}</b> turni cena.
+            Il BE per turno è calcolato dividendo i costi totali del mese (personale + fatture + costi fissi) per il numero di turni del mese: se mancano fatture o buste paga del mese il BE risulterà sottostimato.
+          </p>
+        </div>
+      )}
 
       {/* FILTRI */}
       <div className="bg-white rounded-xl border border-gray-200 p-4 mb-6 flex flex-wrap gap-4 items-end">

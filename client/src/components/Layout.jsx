@@ -17,7 +17,6 @@ const NAV_GROUPS = [
     items: [
       { id: 'dashboard',    path: '/dashboard',    icon: LayoutDashboard, label: 'Statistiche',      desc: 'KPI e andamento sedi' },
       { id: 'chiusure',     path: '/chiusure',     icon: Receipt,         label: 'Chiusure Cassa',   desc: 'Corrispettivi giornalieri' },
-      { id: 'performance',  path: '/performance',  icon: BarChart3,       label: 'Performance',      desc: 'Venduto · Obiettivi · Team · Tavoli', alwaysEnabled: true },
       { id: 'venduto',      path: '/venduto',      icon: TrendingUp,      label: 'Venduto BI',       desc: 'Analisi avanzata venduto + heatmap' },
     ]
   },
@@ -26,9 +25,8 @@ const NAV_GROUPS = [
     defaultOpen: false,
     items: [
       { id: 'buste_paga',    path: '/buste-paga',  icon: Users,           label: 'Dipendenti & Paga',  desc: 'Anagrafica, cedolini e costi' },
-      { id: 'kpi_camerieri', path: '/kpi',          icon: Target,          label: 'KPI Camerieri',      desc: 'Performance operatori dettagliata' },
+      { id: 'kpi_camerieri', path: '/kpi',          icon: Target,          label: 'KPI & Performance',  desc: 'Camerieri · Team · BI · Performance' },
       { id: 'kpi_config',    path: '/kpi-config',   icon: Target,          label: 'KPI Config',         desc: 'BE, target team, bonus, prodotti', alwaysEnabled: true },
-      { id: 'kpi_team',      path: '/kpi-team',     icon: Award,           label: 'KPI Team',           desc: 'BE, obiettivi prodotto, bonus', alwaysEnabled: true },
       { id: 'turni',         path: '/turni',        icon: CalendarDays,    label: 'Turni',              desc: 'Pianificazione orari' },
     ]
   },
@@ -46,10 +44,8 @@ const NAV_GROUPS = [
     label: 'Business Intelligence',
     defaultOpen: false,
     items: [
-      { id: 'prodotti_bi',      path: '/prodotti-bi',       icon: Tag,             label: 'Prodotti BI',          desc: 'Menu engineering, food cost, BCG', alwaysEnabled: true },
-      { id: 'camerieri_bi',     path: '/camerieri-bi',      icon: Users,           label: 'Camerieri BI',         desc: 'Performance, target, quantum', alwaysEnabled: true },
+      { id: 'prodotti_bi',      path: '/prodotti-bi',       icon: Tag,             label: 'Prodotti & Menu',      desc: 'Food cost, BCG, menu engineering', alwaysEnabled: true },
       { id: 'contabilita_bi',   path: '/contabilita-bi',    icon: BarChart3,       label: 'Contabilità BI',       desc: 'BE, costi, margini, proiezioni', alwaysEnabled: true },
-      { id: 'menu_engineering', path: '/menu-engineering',  icon: Tag,             label: 'Menu Engineering',     desc: 'Categorie, food cost, top seller', alwaysEnabled: true },
       { id: 'forecast',         path: '/forecast',          icon: Cloud,           label: 'Forecast Revenue',     desc: 'Previsioni incasso prossimi giorni', alwaysEnabled: true },
       { id: 'analytics_bi',     path: '/analytics',         icon: BarChart2,       label: 'Analytics & BI',       desc: 'Reportistica avanzata' },
     ]
