@@ -11,8 +11,29 @@ import {
   DollarSign, TrendingDown as CostIcon, Info
 } from 'lucide-react'
 import { analytics as analyticsApi, data as dataApi } from '../api/client'
+import DateRangePicker, { periodToDates } from '../components/DateRangePicker'
 import PageAssistant from '../components/PageAssistant'
 import PageStatsWidget from '../components/PageStatsWidget'
+
+// ── Helpers periodo ──────────────────────────────────────────────────────────
+// Range mesi (1-12) coperto dal periodo selezionato, solo per l'anno corrente
+function monthsInRange(dates) {
+  const year = new Date().getFullYear()
+  if (!dates?.from || !dates?.to) return { from: 1, to: 12 }
+  const [fy, fm] = dates.from.split('-').map(Number)
+  const [ty, tm] = dates.to.split('-').map(Number)
+  if (ty < year || fy > year) return { from: 0, to: 0 } // periodo fuori dall'anno corrente
+  return { from: fy < year ? 1 : fm, to: ty > year ? 12 : tm }
+}
+
+function periodLabel(period, dates) {
+  if (period === 'custom' && dates?.from && dates?.to) {
+    const f = s => s.split('-').reverse().join('/')
+    return `${f(dates.from)} → ${f(dates.to)}`
+  }
+  const map = { month: 'Mese corrente', last_month: 'Mese precedente', ytd: 'Anno corrente' }
+  return map[period] || `${dates?.from || ''} → ${dates?.to || ''}`
+}
 
 // ── Colori ──────────────────────────────────────────────────────────────────
 const C = {
@@ -99,7 +120,7 @@ function CustomTooltip({ active, payload, label, prefix = '€', suffix = '' }) 
 }
 
 // ── Sezione: Costi & BE Mensile ──────────────────────────────────────────────
-function BESection({ beMensile, loading }) {
+function BESection({ beMensile, loading, meseRange, periodoAttivo }) {
   const [sede, setSede] = useState('MA')
   if (loading) return <div className="animate-pulse bg-gray-100 rounded-xl h-64" />
   if (!beMensile?.length) return (
@@ -111,7 +132,9 @@ function BESection({ beMensile, loading }) {
   )
 
   // Mesi con almeno 25 giorni = mese completo (esclude mese corrente parziale)
-  const filtered = beMensile.filter(r => r.sede === sede && r.incasso > 0 && r.giorni >= 25)
+  // + filtro client-side sul periodo selezionato (i dati API sono mensili YTD)
+  const inPeriodo = r => !meseRange || (r.mese >= meseRange.from && r.mese <= meseRange.to)
+  const filtered = beMensile.filter(r => r.sede === sede && r.incasso > 0 && r.giorni >= 25 && inPeriodo(r))
 
   // Dati per il grafico stacked bar: costi vs incasso
   const chartData = filtered.map(r => ({
@@ -130,7 +153,14 @@ function BESection({ beMensile, loading }) {
 
   return (
     <div>
-      <SectionTitle icon={DollarSign} label={`Costi & Break-Even Mensile ${new Date().getFullYear()}`} color={C.MA} />
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <SectionTitle icon={DollarSign} label={`Costi & Break-Even Mensile ${new Date().getFullYear()}`} color={C.MA} />
+        {periodoAttivo && (
+          <span className="text-xs px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-600 font-medium mb-4">
+            Periodo: {periodoAttivo}
+          </span>
+        )}
+      </div>
 
       <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-4 flex items-start gap-2">
         <Info size={14} className="text-blue-600 mt-0.5 flex-shrink-0" />
@@ -286,7 +316,7 @@ function BESection({ beMensile, loading }) {
 }
 
 // ── Sezione: Overview YoY ────────────────────────────────────────────────────
-function OverviewSection({ overview, loading }) {
+function OverviewSection({ overview, loading, meseRange, periodoAttivo }) {
   const [tab, setTab] = useState('venduto')
   useEffect(() => {
     const t = setTimeout(() => window.dispatchEvent(new Event('resize')), 50)
@@ -295,7 +325,13 @@ function OverviewSection({ overview, loading }) {
   if (loading) return <div className="animate-pulse bg-gray-100 rounded-xl h-48" />
   if (!overview) return null
 
-  const { yoy, kpiBox } = overview
+  const { yoy: yoyAll, kpiBox } = overview
+  // Filtro client-side sul periodo selezionato (dati mensili)
+  const yoy = (yoyAll || []).filter(m => {
+    if (!meseRange) return true
+    const idx = MESI_IT.indexOf((m.mese_label || '').slice(0, 3)) + 1
+    return idx >= meseRange.from && idx <= meseRange.to
+  })
   const ma = kpiBox?.MAMELI || {}
   const pn = kpiBox?.PREDDA_NIEDDA || {}
   const periodoLabel = ma.periodo_label || pn.periodo_label || 'YTD'
@@ -307,7 +343,14 @@ function OverviewSection({ overview, loading }) {
 
   return (
     <div>
-      <SectionTitle icon={TrendingUp} label={`Anno su Anno — ${periodoLabel} ${annoC} vs ${annoP}`} color={C.MA} />
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <SectionTitle icon={TrendingUp} label={`Anno su Anno — ${periodoLabel} ${annoC} vs ${annoP}`} color={C.MA} />
+        {periodoAttivo && (
+          <span className="text-xs px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-600 font-medium mb-4">
+            Periodo: {periodoAttivo}
+          </span>
+        )}
+      </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
         <KPICard title={`Venduto MA ${periodoLabel}`} value={`€${((ma.venduto_ytd||0)/1000).toFixed(0)}k`}
           sub={`vs €${((ma.venduto_ytd_prec||0)/1000).toFixed(0)}k anno fa`} delta={deltaMA_v} icon={TrendingUp} color={C.MA} />
@@ -726,6 +769,21 @@ export default function AnalyticsBI() {
   const [lastSync, setLastSync] = useState(null)
   const [error, setError] = useState(null)
 
+  // ── Periodo selezionato (default: anno corrente, comportamento storico YTD)
+  const [period, setPeriod] = useState('ytd')
+  const [dates, setDates] = useState(periodToDates('ytd'))
+  const handlePeriodChange = (pid, d) => { setPeriod(pid); if (d) setDates(d) }
+  const setTrimestre = () => {
+    const now = new Date()
+    const q = Math.floor(now.getMonth() / 3)
+    const pad = n => String(n).padStart(2, '0')
+    const from = `${now.getFullYear()}-${pad(q * 3 + 1)}-01`
+    const to = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+    setPeriod('custom'); setDates({ from, to })
+  }
+  const meseRange = monthsInRange(dates)
+  const periodoAttivo = periodLabel(period, dates)
+
   const loadAll = useCallback(async () => {
     setError(null)
     try {
@@ -791,6 +849,35 @@ export default function AnalyticsBI() {
         </button>
       </div>
 
+      {/* Barra filtro periodo */}
+      <div className="bg-white rounded-xl border border-gray-200 p-4 flex flex-wrap items-end gap-4">
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-1">Periodo</label>
+          <div className="flex items-center gap-2">
+            <DateRangePicker period={period} dates={dates} onChange={handlePeriodChange} />
+            <button onClick={setTrimestre}
+              className="px-3 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-200 rounded-xl hover:border-indigo-400 hover:text-indigo-600 transition-all">
+              Trimestre
+            </button>
+          </div>
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-1">Dal</label>
+          <input type="date" value={dates?.from || ''}
+            onChange={e => { setPeriod('custom'); setDates(d => ({ ...d, from: e.target.value })) }}
+            className="border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-700 focus:ring-2 focus:ring-blue-300 focus:border-blue-400 outline-none" />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-1">Al</label>
+          <input type="date" value={dates?.to || ''}
+            onChange={e => { setPeriod('custom'); setDates(d => ({ ...d, to: e.target.value })) }}
+            className="border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-700 focus:ring-2 focus:ring-blue-300 focus:border-blue-400 outline-none" />
+        </div>
+        <span className="text-xs text-gray-400 pb-2.5">
+          Le sezioni con dati mensili (Costi &amp; BE, Anno su Anno) sono filtrate sul periodo · le altre restano YTD
+        </span>
+      </div>
+
       {kpi && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <KPICard title="Venduto totale YTD" value={`€${((totalVendutoYTD||0)/1000).toFixed(0)}k`}
@@ -831,8 +918,8 @@ export default function AnalyticsBI() {
       </div>
 
       <div className="min-h-64">
-        {activeSection === 'be'         && <BESection beMensile={data.be} loading={loading.be} />}
-        {activeSection === 'overview'   && <OverviewSection overview={data.overview} loading={loading.overview} />}
+        {activeSection === 'be'         && <BESection beMensile={data.be} loading={loading.be} meseRange={meseRange} periodoAttivo={periodoAttivo} />}
+        {activeSection === 'overview'   && <OverviewSection overview={data.overview} loading={loading.overview} meseRange={meseRange} periodoAttivo={periodoAttivo} />}
         {activeSection === 'seasonality'&& <SeasonalitySection seasonality={data.seasonality} loading={loading.seasonality} />}
         {activeSection === 'forecast'   && <ForecastSection forecast={data.forecast} loading={loading.forecast} />}
         {activeSection === 'targets'    && <OperatorTargetsSection targets={data.targets} loading={loading.targets} />}

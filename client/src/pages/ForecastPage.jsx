@@ -132,7 +132,25 @@ export default function ForecastPage() {
 
   // Date di riferimento
   const nextDays = useMemo(() => nextNDays(7), [])
-  const lastDays = useMemo(() => lastNDays(7), [])
+
+  // Periodo storico personalizzabile (default: ultimi 7 giorni incluso oggi)
+  const defaultLast = useMemo(() => lastNDays(7), [])
+  const [histFrom, setHistFrom] = useState(defaultLast[0])
+  const [histTo, setHistTo]     = useState(defaultLast[defaultLast.length - 1])
+  const lastDays = useMemo(() => {
+    if (!histFrom || !histTo || histFrom > histTo) return defaultLast
+    const pad = x => String(x).padStart(2, '0')
+    const days = []
+    const d = new Date(histFrom + 'T00:00:00')
+    const end = new Date(histTo + 'T00:00:00')
+    let guard = 0
+    while (d <= end && guard < 366) {
+      days.push(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`)
+      d.setDate(d.getDate() + 1)
+      guard++
+    }
+    return days
+  }, [histFrom, histTo, defaultLast])
 
   // Carica dati
   useEffect(() => {
@@ -269,6 +287,23 @@ Valutazioni disponibili: ${[...new Set(forecast.filter(r => r.valutazione).map(r
             </button>
           ))}
         </div>
+      </div>
+
+      {/* Filtro periodo storico */}
+      <div className="bg-white rounded-xl border border-gray-200 p-4 flex flex-wrap items-end gap-4">
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-1">Storico dal</label>
+          <input type="date" value={histFrom} onChange={e => setHistFrom(e.target.value)}
+            className="border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-700 focus:ring-2 focus:ring-blue-300 focus:border-blue-400 outline-none" />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-1">Al</label>
+          <input type="date" value={histTo} onChange={e => setHistTo(e.target.value)}
+            className="border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-700 focus:ring-2 focus:ring-blue-300 focus:border-blue-400 outline-none" />
+        </div>
+        <span className="text-xs text-gray-400 pb-2.5">
+          Confronto previsioni vs reale sul periodo selezionato · le previsioni future restano sui prossimi 7 giorni
+        </span>
       </div>
 
       {/* Errore */}

@@ -99,28 +99,51 @@ export default function ProdottiBi() {
     setLoading(true)
     setError(null)
     try {
+      // Filtro overlap: il blocco interseca il range selezionato
       let q = supabase
         .from('v_menu_engineering')
         .select('*')
-        .gte('data_inizio', dateFrom)
-        .lte('data_fine', dateTo)
+        .gte('data_fine', dateFrom)
+        .lte('data_inizio', dateTo)
+        .range(0, 9999)
       if (sede !== 'ALL') q = q.eq('sede', sede)
       if (tipologia !== 'ALL') q = q.eq('tipologia', tipologia)
-      const { data: rows, error: err } = await q.order('importo_venduto', { ascending: false })
+      const { data: rows, error: err } = await q
       if (err) throw err
-      setData(rows || [])
-    } catch {
-      try {
-        let q2 = supabase.from('prodotti_venduti_live').select('*')
-          .gte('data_inizio', dateFrom).lte('data_fine', dateTo)
-        if (sede !== 'ALL') q2 = q2.eq('sede', sede)
-        if (tipologia !== 'ALL') q2 = q2.eq('tipologia', tipologia)
-        const { data: rows2, error: err2 } = await q2.order('importo_venduto', { ascending: false })
-        if (err2) throw err2
-        setData((rows2 || []).map(r => ({ ...r, menu_class: getClassLabel(r.food_cost_pct || 0) })))
-      } catch (e2) {
-        setError(e2.message)
-      }
+      // Aggrega lato client per prodotto (il range può coprire più blocchi periodo)
+      const map = {}
+      ;(rows || []).forEach(r => {
+        const key = `${r.prodotto}||${r.categoria}`
+        if (!map[key]) {
+          map[key] = {
+            prodotto: r.prodotto, categoria: r.categoria, tipologia: r.tipologia,
+            quantita: 0, importo_venduto: 0, fcWeight: 0, fcQty: 0,
+          }
+        }
+        const m = map[key]
+        const qta = Number(r.quantita) || 0
+        m.quantita += qta
+        m.importo_venduto += Number(r.importo_venduto) || 0
+        if (r.food_cost_pct != null && qta > 0) {
+          m.fcWeight += Number(r.food_cost_pct) * qta
+          m.fcQty += qta
+        }
+      })
+      const agg = Object.values(map).map(m => {
+        const food_cost_pct = m.fcQty > 0 ? m.fcWeight / m.fcQty : null
+        return {
+          prodotto: m.prodotto, categoria: m.categoria, tipologia: m.tipologia,
+          quantita: m.quantita,
+          importo_venduto: m.importo_venduto,
+          prezzo_medio: m.quantita > 0 ? m.importo_venduto / m.quantita : 0,
+          food_cost_pct,
+          menu_class: food_cost_pct == null ? 'n/a' : getClassLabel(food_cost_pct),
+        }
+      }).sort((a, b) => b.importo_venduto - a.importo_venduto)
+      setData(agg)
+    } catch (e) {
+      setError(e.message)
+      setData([])
     } finally {
       setLoading(false)
     }
@@ -150,9 +173,40 @@ export default function ProdottiBi() {
     if (!data.length) return {}
     const topPcs = [...data].sort((a,b)=>(b.quantita||0)-(a.quantita||0))[0]
     const totalRev = data.reduce((s,d)=>s+(d.importo_venduto||0),0)
-    const avgFc = data.reduce((s,d)=>s+(d.food_cost_pct||0),0)/data.length
-    const highFc = data.filter(d=>(d.food_cost_pct||0)>30).length
+    const fcRows = data.filter(d=>d.food_cost_pct!=null)
+    const fcQty = fcRows.reduce((s,d)=>s+(d.quantita||0),0)
+    const avgFc = fcQty>0 ? fcRows.reduce((s,d)=>s+d.food_cost_pct*(d.quantita||0),0)/fcQty : 0
+    const highFc = data.filter(d=>(d.food_cost_pct??0)>30).length
     return { topPcs, totalRev, avgFc, highFc }
+  }, [data])
+
+  const insights = useMemo(() => {
+    if (!data.length) return []
+    const out = []
+    const totalRev = data.reduce((s,d)=>s+(d.importo_venduto||0),0)
+    const top = [...data].sort((a,b)=>(b.importo_venduto||0)-(a.importo_venduto||0)).slice(0,3)
+    if (top.length && totalRev > 0) {
+      const topPct = top.reduce((s,d)=>s+(d.importo_venduto||0),0)/totalRev*100
+      out.push({
+        tone: 'green',
+        text: `I top 3 prodotti per fatturato (${top.map(t=>t.prodotto).join(', ')}) generano il ${topPct.toFixed(0)}% del revenue prodotti del periodo (${top.reduce((s,d)=>s+(d.importo_venduto||0),0).toLocaleString('it-IT',{style:'currency',currency:'EUR'})}).`,
+      })
+    }
+    const dogs = data.filter(d=>d.menu_class==='dog').sort((a,b)=>(b.importo_venduto||0)-(a.importo_venduto||0))
+    if (dogs.length) {
+      out.push({
+        tone: 'red',
+        text: `${dogs.length} prodotti in classe DOG (food cost > 35%): da rivedere in priorità ${dogs.slice(0,3).map(d=>`${d.prodotto} (FC ${d.food_cost_pct?.toFixed(1)}%)`).join(', ')} — valuta ricalcolo porzioni, prezzo o rimozione dal menù.`,
+      })
+    }
+    const noFc = data.filter(d=>d.food_cost_pct==null).length
+    if (noFc > 0) {
+      out.push({
+        tone: 'orange',
+        text: `Il ${(noFc/data.length*100).toFixed(0)}% dei prodotti (${noFc} su ${data.length}) non ha food cost censito: completa il listino food cost per un'analisi menu engineering affidabile.`,
+      })
+    }
+    return out
   }, [data])
 
   const catColorMap = useMemo(() => {
@@ -232,6 +286,26 @@ export default function ProdottiBi() {
       )}
 
       {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-4 mb-6 text-sm">Errore: {error}</div>}
+
+      {/* ANALISI / INSIGHT */}
+      {!loading && insights.length > 0 && (
+        <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
+          <h2 className="text-base font-semibold text-gray-800 mb-3 flex items-center gap-2">
+            <TrendingUp size={16} className="text-indigo-500" /> Analisi
+          </h2>
+          <ul className="space-y-2">
+            {insights.map((ins, i) => (
+              <li key={i} className={`flex items-start gap-2 text-sm rounded-lg p-3 border ${
+                ins.tone==='green' ? 'bg-green-50 border-green-100 text-green-800'
+                : ins.tone==='red' ? 'bg-red-50 border-red-100 text-red-800'
+                : 'bg-orange-50 border-orange-100 text-orange-800'}`}>
+                {ins.tone==='green' ? <Star size={15} className="mt-0.5 shrink-0" /> : <AlertTriangle size={15} className="mt-0.5 shrink-0" />}
+                <span>{ins.text}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* SCATTER BCG */}
       <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
@@ -346,9 +420,9 @@ export default function ProdottiBi() {
             </thead>
             <tbody>
               {sorted.slice(0,100).map((row,i)=>{
-                const fc = row.food_cost_pct||0
-                const cls = row.menu_class||getClassLabel(fc)
-                const badgeColor = cls==='star'?'bg-green-100 text-green-700':cls==='plowho'?'bg-orange-100 text-orange-700':'bg-red-100 text-red-700'
+                const fc = row.food_cost_pct
+                const cls = row.menu_class || (fc!=null ? getClassLabel(fc) : 'n/a')
+                const badgeColor = cls==='star'?'bg-green-100 text-green-700':cls==='plowho'?'bg-orange-100 text-orange-700':cls==='dog'?'bg-red-100 text-red-700':'bg-gray-100 text-gray-500'
                 return (
                   <tr key={i} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
                     <td className="py-2 pr-4 font-medium text-gray-800">{row.prodotto}</td>
@@ -360,7 +434,9 @@ export default function ProdottiBi() {
                     <td className="py-2 pr-4 text-gray-700">{(row.prezzo_medio||0).toLocaleString('it-IT',{style:'currency',currency:'EUR'})}</td>
                     <td className="py-2 pr-4 font-semibold text-gray-800">{(row.importo_venduto||0).toLocaleString('it-IT',{style:'currency',currency:'EUR'})}</td>
                     <td className="py-2 pr-4">
-                      <span className={`font-semibold ${fc>30?'text-red-600':fc>25?'text-orange-500':'text-green-600'}`}>{fc.toFixed(1)}%</span>
+                      {fc!=null
+                        ? <span className={`font-semibold ${fc>30?'text-red-600':fc>25?'text-orange-500':'text-green-600'}`}>{fc.toFixed(1)}%</span>
+                        : <span className="text-gray-400">—</span>}
                     </td>
                     <td className="py-2 pr-4">
                       <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${badgeColor}`}>{cls?.toUpperCase()}</span>

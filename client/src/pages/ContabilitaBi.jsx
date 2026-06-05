@@ -84,13 +84,19 @@ export default function ContabilitaBi() {
   const now = new Date()
   const [sede, setSede] = useState('MA')
   const [anno, setAnno] = useState(now.getFullYear())
+  // Filtro periodo Dal/Al (default: anno intero) — filtra i mesi client-side
+  const pad2 = n => String(n).padStart(2,'0')
+  const [dateFrom, setDateFrom] = useState(`${now.getFullYear()}-01-01`)
+  const [dateTo, setDateTo]     = useState(`${now.getFullYear()}-${pad2(now.getMonth()+1)}-${pad2(now.getDate())}`)
+  const meseFrom = Number((dateFrom||'').split('-')[1]) || 1
+  const meseTo   = Number((dateTo||'').split('-')[1]) || 12
   const [trendData, setTrendData] = useState([])
   const [beData, setBeData] = useState([])
   const [forecastData, setForecastData] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
-  useEffect(() => { fetchData() }, [sede, anno])
+  useEffect(() => { fetchData() }, [sede, anno, dateFrom, dateTo])
 
   async function fetchData() {
     setLoading(true)
@@ -100,16 +106,16 @@ export default function ContabilitaBi() {
       if (sede !== 'ALL') q = q.eq('sede', sede)
       const { data: rows, error: err } = await q.order('mese')
       if (err) throw err
-      setTrendData(rows || [])
+      setTrendData((rows || []).filter(r => r.mese >= meseFrom && r.mese <= meseTo))
 
       let qb = supabase.from('v_be_mensile').select('*').eq('anno', anno)
       if (sede !== 'ALL') qb = qb.eq('sede', sede)
       const { data: beRows } = await qb.order('mese')
-      setBeData(beRows || [])
+      setBeData((beRows || []).filter(r => r.mese >= meseFrom && r.mese <= meseTo))
 
       let qf = supabase.from('revenue_forecast').select('*')
-        .gte('data_competenza', `${anno}-01-01`)
-        .lte('data_competenza', `${anno}-12-31`)
+        .gte('data_competenza', dateFrom || `${anno}-01-01`)
+        .lte('data_competenza', dateTo || `${anno}-12-31`)
       if (sede !== 'ALL') qf = qf.eq('sede', sede)
       const { data: fRows } = await qf.order('data_competenza')
       setForecastData(fRows || [])
@@ -213,9 +219,20 @@ export default function ContabilitaBi() {
             {[2024,2025,2026].map(y=><option key={y} value={y}>{y}</option>)}
           </select>
         </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Dal</label>
+          <input type="date" className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-300 outline-none"
+            value={dateFrom} onChange={e=>setDateFrom(e.target.value)}/>
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Al</label>
+          <input type="date" className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-300 outline-none"
+            value={dateTo} onChange={e=>setDateTo(e.target.value)}/>
+        </div>
         <button onClick={fetchData} className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 flex items-center gap-1">
           <Filter size={14}/> Aggiorna
         </button>
+        <span className="text-xs text-gray-400 pb-2.5">Periodo attivo: {dateFrom} → {dateTo} (mesi {meseFrom}–{meseTo})</span>
       </div>
 
       {/* KPI CARDS */}

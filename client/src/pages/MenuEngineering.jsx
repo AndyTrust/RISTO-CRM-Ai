@@ -1,6 +1,7 @@
 /**
  * MenuEngineering.jsx — Menu Engineering & Analisi Venduto per Categoria
- * Mostra top categorie per fatturato, food cost%, prezzo medio da venduto_categorie.
+ * Legge v_menu_engineering (storico completo venduto_camerieri) e aggrega per categoria.
+ * Drill-down: click su categoria → top 10 prodotti.
  */
 import React, { useEffect, useState, useMemo } from 'react'
 import supabase from '../supabase'
@@ -99,6 +100,7 @@ function FCTooltip({ active, payload, label }) {
 function Tabella({ rows }) {
   const [sortKey, setSortKey] = useState('totale')
   const [sortDir, setSortDir] = useState('desc')
+  const [expanded, setExpanded] = useState(null)
 
   const sorted = useMemo(() => {
     return [...rows].sort((a, b) => {
@@ -149,33 +151,77 @@ function Tabella({ rows }) {
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-50">
-          {sorted.map((r, i) => {
+          {sorted.map((r) => {
             const fc = r.food_cost_pct
             const fcColor = fc > 35 ? 'text-rose-600' : fc > 28 ? 'text-amber-600' : 'text-emerald-600'
+            const isOpen = expanded === r.categoria
             return (
-              <tr key={i} className="hover:bg-gray-50 transition-colors">
-                <td className="px-3 py-2 font-medium text-gray-800">
-                  <span className="flex items-center gap-1.5">
-                    <Tag size={12} className="text-gray-400" />
-                    {r.categoria || 'Totale'}
-                  </span>
-                </td>
-                <td className="px-3 py-2">
-                  {r.tipologia && (
-                    <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600">
-                      {r.tipologia}
+              <React.Fragment key={r.categoria}>
+                <tr
+                  className="hover:bg-gray-50 transition-colors cursor-pointer"
+                  onClick={() => setExpanded(isOpen ? null : r.categoria)}
+                >
+                  <td className="px-3 py-2 font-medium text-gray-800">
+                    <span className="flex items-center gap-1.5">
+                      {isOpen ? <ChevronUp size={12} className="text-gray-400" /> : <ChevronDown size={12} className="text-gray-400" />}
+                      <Tag size={12} className="text-gray-400" />
+                      {r.categoria || 'Totale'}
                     </span>
-                  )}
-                </td>
-                <td className="px-3 py-2 text-right text-gray-700">{fmt(r.quantita)}</td>
-                <td className="px-3 py-2 text-right font-semibold text-gray-900">{eur(r.totale)}</td>
-                <td className="px-3 py-2 text-right">
-                  {fc != null ? (
-                    <span className={`font-semibold ${fcColor}`}>{pctFmt(fc)}</span>
-                  ) : '—'}
-                </td>
-                <td className="px-3 py-2 text-right text-gray-600">{eur(r.prezzo_medio)}</td>
-              </tr>
+                  </td>
+                  <td className="px-3 py-2">
+                    {r.tipologia && (
+                      <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600">
+                        {r.tipologia}
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-right text-gray-700">{fmt(r.quantita)}</td>
+                  <td className="px-3 py-2 text-right font-semibold text-gray-900">{eur(r.totale)}</td>
+                  <td className="px-3 py-2 text-right">
+                    {fc != null ? (
+                      <span className={`font-semibold ${fcColor}`}>{pctFmt(fc)}</span>
+                    ) : '—'}
+                  </td>
+                  <td className="px-3 py-2 text-right text-gray-600">{eur(r.prezzo_medio)}</td>
+                </tr>
+                {isOpen && (
+                  <tr>
+                    <td colSpan={6} className="px-3 py-3 bg-gray-50/70">
+                      <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 pl-6">
+                        Top 10 prodotti — {r.categoria}
+                      </div>
+                      <table className="min-w-full text-xs ml-0">
+                        <thead>
+                          <tr className="text-gray-400">
+                            <th className="px-3 py-1 text-left font-medium">Prodotto</th>
+                            <th className="px-3 py-1 text-right font-medium">Pezzi</th>
+                            <th className="px-3 py-1 text-right font-medium">Fatturato</th>
+                            <th className="px-3 py-1 text-right font-medium">Food Cost%</th>
+                            <th className="px-3 py-1 text-right font-medium">Prezzo Medio</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(r.topProdotti || []).map((p, j) => {
+                            const pfc = p.food_cost_pct
+                            const pfcColor = pfc > 35 ? 'text-rose-600' : pfc > 28 ? 'text-amber-600' : 'text-emerald-600'
+                            return (
+                              <tr key={j} className="border-t border-gray-100">
+                                <td className="px-3 py-1.5 text-gray-700">{p.prodotto}</td>
+                                <td className="px-3 py-1.5 text-right text-gray-600">{fmt(p.quantita)}</td>
+                                <td className="px-3 py-1.5 text-right font-medium text-gray-800">{eur(p.totale)}</td>
+                                <td className="px-3 py-1.5 text-right">
+                                  {pfc != null ? <span className={`font-semibold ${pfcColor}`}>{pctFmt(pfc)}</span> : '—'}
+                                </td>
+                                <td className="px-3 py-1.5 text-right text-gray-600">{eur(p.prezzo_medio)}</td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
             )
           })}
         </tbody>
@@ -198,12 +244,13 @@ export default function MenuEngineering() {
     setLoading(true)
     setError(null)
 
-    let q = supabase.from('venduto_categorie').select('*')
+    let q = supabase.from('v_menu_engineering').select('*')
     if (sede !== 'all') q = q.eq('sede', sede)
     if (tipo !== 'all') q = q.eq('tipologia', tipo)
-    if (dates.from) q = q.gte('data_inizio', dates.from)
-    if (dates.to)   q = q.lte('data_fine',   dates.to)
-    q = q.range(0, 4999)
+    // Filtro overlap sui blocchi periodo: data_fine >= from AND data_inizio <= to
+    if (dates.from) q = q.gte('data_fine', dates.from)
+    if (dates.to)   q = q.lte('data_inizio', dates.to)
+    q = q.range(0, 9999)
 
     q.then(({ data, error: e }) => {
       if (e) throw e
@@ -212,47 +259,70 @@ export default function MenuEngineering() {
       .finally(() => setLoading(false))
   }, [sede, tipo, dates])
 
-  // ── Aggregazione per categoria ───────────────────────────────────────────
+  // ── Aggregazione per categoria (da righe prodotto v_menu_engineering) ────
+  const EXCLUDED_CATS = useMemo(() => new Set(['Costo servizio', 'Servizio', 'Coperto', 'Rep. 1 (10%)']), [])
+
   const byCategoria = useMemo(() => {
     const map = {}
     rows.forEach(r => {
-      const k = r.categoria || 'Totale'
+      const k = r.categoria || 'Senza categoria'
+      if (EXCLUDED_CATS.has(k)) return
       if (!map[k]) map[k] = {
         categoria: k,
         tipologia: r.tipologia,
         quantita: 0,
         totale: 0,
-        n_doc: 0,
-        fc_sum: 0,
-        fc_count: 0,
-        pm_sum: 0,
-        pm_count: 0,
+        fc_weight: 0,   // somma food_cost_pct × quantità (solo prodotti con fc)
+        fc_qty: 0,      // quantità con fc censito
+        prodotti: {},   // drill-down per prodotto
       }
-      map[k].quantita  += Number(r.quantita)  || 0
-      map[k].totale    += Number(r.totale)     || 0
-      map[k].n_doc     += Number(r.n_documenti) || 0
-      if (r.food_cost_pct != null) { map[k].fc_sum += Number(r.food_cost_pct); map[k].fc_count++ }
-      if (r.prezzo_medio  != null) { map[k].pm_sum += Number(r.prezzo_medio);  map[k].pm_count++ }
+      const m = map[k]
+      const qta = Number(r.quantita) || 0
+      const imp = Number(r.importo_venduto) || 0
+      m.quantita += qta
+      m.totale   += imp
+      if (r.food_cost_pct != null && qta > 0) {
+        m.fc_weight += Number(r.food_cost_pct) * qta
+        m.fc_qty    += qta
+      }
+      const pk = r.prodotto || '—'
+      if (!m.prodotti[pk]) m.prodotti[pk] = { prodotto: pk, quantita: 0, totale: 0, fc_weight: 0, fc_qty: 0 }
+      const p = m.prodotti[pk]
+      p.quantita += qta
+      p.totale   += imp
+      if (r.food_cost_pct != null && qta > 0) { p.fc_weight += Number(r.food_cost_pct) * qta; p.fc_qty += qta }
     })
     return Object.values(map).map(c => ({
-      ...c,
-      food_cost_pct: c.fc_count > 0 ? c.fc_sum / c.fc_count : null,
-      prezzo_medio:  c.pm_count > 0 ? c.pm_sum / c.pm_count : null,
+      categoria: c.categoria,
+      tipologia: c.tipologia,
+      quantita: c.quantita,
+      totale: c.totale,
+      food_cost_pct: c.fc_qty > 0 ? c.fc_weight / c.fc_qty : null,
+      prezzo_medio:  c.quantita > 0 ? c.totale / c.quantita : null,
+      topProdotti: Object.values(c.prodotti)
+        .map(p => ({
+          prodotto: p.prodotto,
+          quantita: p.quantita,
+          totale: p.totale,
+          prezzo_medio: p.quantita > 0 ? p.totale / p.quantita : null,
+          food_cost_pct: p.fc_qty > 0 ? p.fc_weight / p.fc_qty : null,
+        }))
+        .sort((a, b) => b.totale - a.totale)
+        .slice(0, 10),
     })).sort((a, b) => b.totale - a.totale)
-  }, [rows])
+  }, [rows, EXCLUDED_CATS])
 
   // ── KPI aggregati ────────────────────────────────────────────────────────
   const kpi = useMemo(() => {
     const totPezzi   = byCategoria.reduce((s, r) => s + r.quantita, 0)
     const totFattura = byCategoria.reduce((s, r) => s + r.totale,   0)
-    const fcRows     = byCategoria.filter(r => r.food_cost_pct != null)
-    const fcMedio    = fcRows.length > 0
-      ? fcRows.reduce((s, r) => s + r.food_cost_pct, 0) / fcRows.length
+    // Food cost medio ponderato sulla quantità (solo categorie con fc)
+    const fcRows  = byCategoria.filter(r => r.food_cost_pct != null)
+    const fcQty   = fcRows.reduce((s, r) => s + r.quantita, 0)
+    const fcMedio = fcQty > 0
+      ? fcRows.reduce((s, r) => s + r.food_cost_pct * r.quantita, 0) / fcQty
       : null
-    const pmRows = byCategoria.filter(r => r.prezzo_medio != null)
-    const pmMedio = pmRows.length > 0
-      ? pmRows.reduce((s, r) => s + r.prezzo_medio, 0) / pmRows.length
-      : null
+    const pmMedio = totPezzi > 0 ? totFattura / totPezzi : null
     return { totPezzi, totFattura, fcMedio, pmMedio }
   }, [byCategoria])
 
@@ -402,7 +472,7 @@ Righe totali: ${rows.length}`
                       type="category"
                       dataKey="name"
                       tick={{ fontSize: 10 }}
-                      width={55}
+                      width={90}
                     />
                     <Tooltip content={<FattTooltip />} />
                     <Bar dataKey="fatturato" name="Fatturato" radius={[0, 4, 4, 0]}>
@@ -437,7 +507,7 @@ Righe totali: ${rows.length}`
                       type="category"
                       dataKey="name"
                       tick={{ fontSize: 10 }}
-                      width={55}
+                      width={90}
                     />
                     <Tooltip content={<FCTooltip />} />
                     <ReferenceLine x={28} stroke="#ef4444" strokeDasharray="4 3" strokeWidth={2}
@@ -457,7 +527,7 @@ Righe totali: ${rows.length}`
           <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
             <h2 className="text-sm font-bold text-gray-800 mb-1">Dettaglio per Categoria</h2>
             <p className="text-xs text-gray-400 mb-4">
-              Clicca sulle intestazioni per ordinare — food cost
+              Clicca su una categoria per i top 10 prodotti, sulle intestazioni per ordinare — food cost
               <span className="text-emerald-600 font-medium"> verde ≤ 28%</span>,
               <span className="text-amber-600 font-medium"> giallo 28–35%</span>,
               <span className="text-rose-600 font-medium"> rosso &gt; 35%</span>
