@@ -97,16 +97,17 @@ function NavGroup({ group, collapsed, isEnabled }) {
       {group.label && !collapsed && (
         <button
           onClick={() => setOpen(o => !o)}
-          className="w-full flex items-center justify-between px-4 py-1.5 group"
+          className="w-full flex items-center justify-between px-4 py-2.5 group rounded-lg hover:bg-white/5"
         >
-          <span className={`text-[9px] font-bold uppercase tracking-widest transition-colors ${
-            group.isAdmin ? 'text-violet-400 group-hover:text-violet-300' : 'text-gray-500 group-hover:text-gray-300'
+          <span className={`text-sm font-extrabold uppercase tracking-wide transition-colors ${
+            group.isAdmin ? 'text-violet-300 group-hover:text-violet-200' : 'text-amber-300 group-hover:text-amber-200'
           }`}>
             {group.label}
           </span>
           <ChevronDown
-            size={10}
-            className={`text-gray-600 transition-transform duration-200 ${open ? 'rotate-0' : '-rotate-90'}`}
+            size={16}
+            strokeWidth={2.5}
+            className={`${group.isAdmin ? 'text-violet-300' : 'text-amber-300'} transition-transform duration-200 ${open ? 'rotate-0' : '-rotate-90'}`}
           />
         </button>
       )}
@@ -138,7 +139,7 @@ function NavGroup({ group, collapsed, isEnabled }) {
                         ? 'bg-violet-700 text-white font-semibold shadow-lg shadow-violet-900/40'
                         : 'bg-indigo-600 text-white font-semibold shadow-lg shadow-indigo-900/30'
                       : enabled
-                        ? 'text-gray-400 hover:bg-white/8 hover:text-white'
+                        ? 'text-gray-200 hover:bg-white/8 hover:text-white'
                         : 'text-gray-600 cursor-not-allowed opacity-50')
                   )
                 }}
@@ -148,11 +149,11 @@ function NavGroup({ group, collapsed, isEnabled }) {
                 {!collapsed && (
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between gap-1">
-                      <span className="truncate text-[12.5px] font-medium leading-tight">{item.label}</span>
+                      <span className="truncate text-[15px] font-semibold leading-tight">{item.label}</span>
                       {!enabled && <Lock size={9} className="text-gray-600 flex-shrink-0" />}
                     </div>
                     {item.desc && (
-                      <span className="text-[9.5px] leading-tight opacity-60 truncate block mt-0.5">{item.desc}</span>
+                      <span className="text-[11.5px] leading-tight opacity-75 truncate block mt-0.5">{item.desc}</span>
                     )}
                   </div>
                 )}
