@@ -216,6 +216,34 @@ async function loadDailyChiusure(sede, from, to) {
 function eur(n) { return n != null ? `€ ${Number(n).toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—' }
 function fmt(n) { return n != null ? Number(n).toLocaleString('it-IT') : '—' }
 
+// ─── Previsioni giornaliere (tabella previsioni_giornaliere) ────────────────
+async function loadPrevisioni(from, to) {
+  let q = supabase.from('previsioni_giornaliere').select('*')
+  if (from) q = q.gte('data', from)
+  if (to)   q = q.lte('data', to)
+  return sbq(q)
+}
+
+function isoDate(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function mondayOf(date) {
+  const d = new Date(date)
+  d.setHours(0, 0, 0, 0)
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7)) // lunedì
+  return d
+}
+
+// Staffing suggerito dai coperti previsti (stesse regole del box "Regole Sala")
+function staffingDaCoperti(cop) {
+  if (!cop || cop <= 0) return null
+  if (cop <= 25) return '1 sala · 2 cucina'
+  if (cop <= 50) return '2 sala · 2 cucina + lavapiatti'
+  if (cop <= 75) return '2 sala +1 variabile · 3 cucina'
+  return '3+ sala · 3 cucina + lavapiatti'
+}
+
 // ── Tab Obiettivi Team ────────────────────────────────────────────────────
 function TabTarget({ sede, from, to }) {
   // Deriva il mese di riferimento dal date picker (usa `to`, fallback a oggi)
@@ -1001,9 +1029,300 @@ function MatriceCategorie({ sede, from, to }) {
   )
 }
 
+// ─── Previsione Settimana ────────────────────────────────────────────────────
+// Per ogni giorno della settimana e per sede: previsione venduto/coperti,
+// nota turnazione prevista e nota consuntivo. Confronto automatico con le
+// chiusure reali (chiusure_giornaliere) + storico accuratezza per imparare.
+function PrevisioneSettimana({ onSaved }) {
+  const [weekStart, setWeekStart] = useState(() => mondayOf(new Date()))
+  const [sede, setSede] = useState('MA')
+  const [rows, setRows] = useState({})        // { 'YYYY-MM-DD': {previsione_venduto, previsione_coperti, nota_previsione, nota_consuntivo} }
+  const [reali, setReali] = useState({})      // { 'YYYY-MM-DD': {venduto, coperti} }
+  const [medie, setMedie] = useState({})      // media stesso giorno settimana ultime 4 settimane
+  const [storico, setStorico] = useState([])  // v_previsioni_vs_reale ultime 8 settimane
+  const [saving, setSaving] = useState(false)
+  const [msg, setMsg] = useState(null)
+  const [busy, setBusy] = useState(true)
+
+  const days = useMemo(() => Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(weekStart); d.setDate(d.getDate() + i); return d
+  }), [weekStart])
+  const fromW = isoDate(days[0]), toW = isoDate(days[6])
+
+  useEffect(() => {
+    let cancelled = false
+    setBusy(true); setMsg(null)
+    const histFrom = isoDate(new Date(weekStart.getTime() - 56 * 86400000))
+    Promise.all([
+      sbq(supabase.from('previsioni_giornaliere').select('*').eq('sede', sede).gte('data', fromW).lte('data', toW)),
+      sbq(supabase.from('chiusure_giornaliere').select('data, totale_venduto_ipratico, coperti').eq('sede', sede).gte('data', histFrom).lte('data', toW)),
+      sbq(supabase.from('v_previsioni_vs_reale').select('*').eq('sede', sede).gte('data', histFrom).lt('data', fromW).order('data', { ascending: false })),
+    ]).then(([prev, chiusure, hist]) => {
+      if (cancelled) return
+      const r = {}
+      for (const p of prev) r[p.data] = {
+        previsione_venduto: p.previsione_venduto ?? '',
+        previsione_coperti: p.previsione_coperti ?? '',
+        nota_previsione: p.nota_previsione ?? '',
+        nota_consuntivo: p.nota_consuntivo ?? '',
+      }
+      setRows(r)
+      const re = {}, byDow = {}
+      for (const c of chiusure) {
+        if (c.data >= fromW) re[c.data] = { venduto: parseFloat(c.totale_venduto_ipratico) || 0, coperti: parseInt(c.coperti) || 0 }
+        else {
+          const dow = (new Date(c.data + 'T00:00:00').getDay() + 6) % 7
+          if (!byDow[dow]) byDow[dow] = { v: 0, c: 0, n: 0 }
+          byDow[dow].v += parseFloat(c.totale_venduto_ipratico) || 0
+          byDow[dow].c += parseInt(c.coperti) || 0
+          byDow[dow].n += 1
+        }
+      }
+      setReali(re)
+      const m = {}
+      for (const [dow, agg] of Object.entries(byDow)) {
+        if (agg.n > 0) m[dow] = { venduto: agg.v / agg.n, coperti: Math.round(agg.c / agg.n) }
+      }
+      setMedie(m)
+      setStorico(hist)
+    }).catch(e => { if (!cancelled) setMsg({ type: 'err', text: `Errore caricamento: ${e.message}` }) })
+      .finally(() => { if (!cancelled) setBusy(false) })
+    return () => { cancelled = true }
+  }, [sede, fromW, toW])
+
+  const setField = (key, field, value) =>
+    setRows(prev => ({ ...prev, [key]: { ...(prev[key] || {}), [field]: value } }))
+
+  const usaMedia = (key, dow) => {
+    const m = medie[dow]
+    if (!m) return
+    setRows(prev => ({
+      ...prev,
+      [key]: {
+        ...(prev[key] || {}),
+        previsione_venduto: Math.round(m.venduto),
+        previsione_coperti: m.coperti,
+      },
+    }))
+  }
+
+  async function salvaSettimana() {
+    setSaving(true); setMsg(null)
+    try {
+      const payload = Object.entries(rows)
+        .filter(([, r]) => r.previsione_venduto !== '' || r.previsione_coperti !== '' || (r.nota_previsione || '').trim() || (r.nota_consuntivo || '').trim())
+        .map(([data, r]) => ({
+          data, sede,
+          previsione_venduto: r.previsione_venduto === '' ? null : Number(r.previsione_venduto),
+          previsione_coperti: r.previsione_coperti === '' ? null : parseInt(r.previsione_coperti),
+          nota_previsione: (r.nota_previsione || '').trim() || null,
+          nota_consuntivo: (r.nota_consuntivo || '').trim() || null,
+          updated_at: new Date().toISOString(),
+        }))
+      if (payload.length === 0) { setMsg({ type: 'err', text: 'Niente da salvare: compila almeno un campo.' }); return }
+      const { error } = await supabase.from('previsioni_giornaliere').upsert(payload, { onConflict: 'data,sede' })
+      if (error) throw error
+      setMsg({ type: 'ok', text: `Salvati ${payload.length} giorni (${sede}).` })
+      onSaved?.()
+    } catch (e) {
+      setMsg({ type: 'err', text: `Errore salvataggio: ${e.message}` })
+    } finally { setSaving(false) }
+  }
+
+  // Accuratezza storica per giorno settimana (errore medio assoluto %)
+  const accuracy = useMemo(() => {
+    const byDow = {}
+    for (const h of storico) {
+      if (h.scostamento_venduto_pct == null) continue
+      const dow = h.giorno_settimana - 1 // isodow 1..7 → 0..6
+      if (!byDow[dow]) byDow[dow] = { sum: 0, n: 0 }
+      byDow[dow].sum += Math.abs(parseFloat(h.scostamento_venduto_pct))
+      byDow[dow].n += 1
+    }
+    return byDow
+  }, [storico])
+
+  const noteRecenti = useMemo(() => storico.filter(h => h.nota_consuntivo).slice(0, 6), [storico])
+  const oggi = isoDate(new Date())
+  const shiftWeek = (n) => setWeekStart(prev => { const d = new Date(prev); d.setDate(d.getDate() + n * 7); return d })
+
+  return (
+    <div className="card p-6">
+      <div className="mb-4 flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="font-semibold flex items-center gap-2">📝 Previsione Settimana</h2>
+          <p className="text-xs text-gray-400 mt-0.5">
+            Inserisci previsione e turnazione per ogni giorno; a fine giornata aggiungi la nota consuntivo.
+            Fonte reale: chiusure_giornaliere · Confronto: v_previsioni_vs_reale · Suggerimento = media stesso giorno ultime 4 settimane
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {['MA', 'PN'].map(s => (
+            <button key={s} onClick={() => setSede(s)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium border ${sede === s ? 'bg-violet-600 text-white border-violet-600' : 'bg-white text-gray-600 border-gray-200'}`}>
+              Sede {s}
+            </button>
+          ))}
+          <div className="flex items-center gap-1 ml-2">
+            <button onClick={() => shiftWeek(-1)} className="px-2 py-1.5 rounded-lg border border-gray-200 text-xs">◀</button>
+            <button onClick={() => setWeekStart(mondayOf(new Date()))} className="px-2 py-1.5 rounded-lg border border-gray-200 text-xs">Oggi</button>
+            <button onClick={() => shiftWeek(1)} className="px-2 py-1.5 rounded-lg border border-gray-200 text-xs">▶</button>
+          </div>
+        </div>
+      </div>
+
+      <p className="text-sm font-medium text-gray-700 mb-3">
+        Settimana {days[0].getDate()} {MESI_IT[days[0].getMonth()]} → {days[6].getDate()} {MESI_IT[days[6].getMonth()]} {days[6].getFullYear()} · {sede}
+      </p>
+
+      {busy ? (
+        <p className="text-center text-gray-400 py-8 text-sm animate-pulse">Caricamento previsioni...</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
+              <tr>
+                <th className="px-2 py-2 text-left">Giorno</th>
+                <th className="px-2 py-2 text-right" title="Incasso atteso del giorno">Prev. €</th>
+                <th className="px-2 py-2 text-right" title="Ospiti attesi — base per la turnazione">Prev. coperti</th>
+                <th className="px-2 py-2 text-left" title="Calcolato dai coperti previsti con le Regole Sala/Cucina">Staff suggerito</th>
+                <th className="px-2 py-2 text-left" title="Es. 4 sala + 2 cucina, rinforzo cena">Nota turnazione prevista</th>
+                <th className="px-2 py-2 text-right" title="Da chiusure_giornaliere">Reale €</th>
+                <th className="px-2 py-2 text-right" title="(reale − previsto) / previsto">Δ%</th>
+                <th className="px-2 py-2 text-left" title="Cosa è successo davvero: meteo, eventi, no-show — per imparare nel tempo">Nota consuntivo</th>
+              </tr>
+            </thead>
+            <tbody>
+              {days.map((d, i) => {
+                const key = isoDate(d)
+                const r = rows[key] || {}
+                const re = reali[key]
+                const m = medie[i]
+                const prevV = r.previsione_venduto !== '' && r.previsione_venduto != null ? Number(r.previsione_venduto) : null
+                const delta = prevV > 0 && re ? ((re.venduto - prevV) / prevV) * 100 : null
+                const isToday = key === oggi
+                const isFuture = key > oggi
+                return (
+                  <tr key={key} className={`border-t border-gray-50 ${isToday ? 'bg-violet-50/60' : ''}`}>
+                    <td className="px-2 py-2 whitespace-nowrap">
+                      <span className="font-medium">{GIORNI_IT[i]} {d.getDate()}</span>
+                      {isToday && <span className="ml-1 text-[10px] text-violet-600 font-semibold">OGGI</span>}
+                      {m && isFuture && (
+                        <button onClick={() => usaMedia(key, i)}
+                          title={`Media ultime 4 settimane: ${eur(m.venduto)} · ${m.coperti} coperti — clicca per usarla`}
+                          className="block text-[10px] text-blue-500 hover:underline">
+                          ≈ {eur(m.venduto)} · {m.coperti} cop
+                        </button>
+                      )}
+                    </td>
+                    <td className="px-2 py-2 text-right">
+                      <input type="number" min="0" step="50" value={r.previsione_venduto ?? ''}
+                        onChange={e => setField(key, 'previsione_venduto', e.target.value)}
+                        className="w-20 px-2 py-1 border border-gray-200 rounded text-right text-xs" placeholder="—" />
+                    </td>
+                    <td className="px-2 py-2 text-right">
+                      <input type="number" min="0" value={r.previsione_coperti ?? ''}
+                        onChange={e => setField(key, 'previsione_coperti', e.target.value)}
+                        className="w-16 px-2 py-1 border border-gray-200 rounded text-right text-xs" placeholder="—" />
+                    </td>
+                    <td className="px-2 py-2 text-xs text-gray-500 whitespace-nowrap">
+                      {staffingDaCoperti(parseInt(r.previsione_coperti)) || '—'}
+                    </td>
+                    <td className="px-2 py-2">
+                      <input type="text" value={r.nota_previsione ?? ''}
+                        onChange={e => setField(key, 'nota_previsione', e.target.value)}
+                        className="w-full min-w-[140px] px-2 py-1 border border-gray-200 rounded text-xs" placeholder="es. 2 sala + rinforzo cena" />
+                    </td>
+                    <td className="px-2 py-2 text-right text-xs whitespace-nowrap">
+                      {re ? <>{eur(re.venduto)}<span className="block text-[10px] text-gray-400">{fmt(re.coperti)} cop</span></> : <span className="text-gray-300">—</span>}
+                    </td>
+                    <td className={`px-2 py-2 text-right text-xs font-medium ${delta == null ? 'text-gray-300' : delta >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                      {delta != null ? `${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%` : '—'}
+                    </td>
+                    <td className="px-2 py-2">
+                      <input type="text" value={r.nota_consuntivo ?? ''}
+                        onChange={e => setField(key, 'nota_consuntivo', e.target.value)}
+                        disabled={isFuture}
+                        className="w-full min-w-[140px] px-2 py-1 border border-gray-200 rounded text-xs disabled:bg-gray-50"
+                        placeholder={isFuture ? 'a fine giornata' : 'es. pioggia, 2 no-show, evento'} />
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="mt-4 flex items-center gap-3 flex-wrap">
+        <button onClick={salvaSettimana} disabled={saving || busy}
+          className="px-4 py-2 bg-violet-600 text-white rounded-lg text-sm font-medium hover:bg-violet-700 disabled:opacity-50">
+          {saving ? 'Salvataggio...' : `💾 Salva settimana (${sede})`}
+        </button>
+        {msg && <span className={`text-xs ${msg.type === 'ok' ? 'text-green-600' : 'text-red-500'}`}>{msg.text}</span>}
+      </div>
+
+      {/* Storico: quanto ci prendiamo + note recenti per imparare */}
+      {(Object.keys(accuracy).length > 0 || noteRecenti.length > 0) && (
+        <div className="mt-5 grid md:grid-cols-2 gap-3">
+          {Object.keys(accuracy).length > 0 && (
+            <div className="bg-blue-50 rounded-lg p-3 border border-blue-100">
+              <p className="font-semibold text-blue-700 text-xs mb-2">🎯 Accuratezza previsioni · ultime 8 settimane ({sede})</p>
+              <p className="text-[10px] text-blue-400 mb-2">Errore medio assoluto sul venduto: più basso = previsioni più affidabili per quel giorno</p>
+              <div className="flex gap-2 flex-wrap">
+                {GIORNI_IT.map((g, dow) => {
+                  const a = accuracy[dow]
+                  return (
+                    <div key={g} className="text-center px-2 py-1 bg-white rounded border border-blue-100">
+                      <p className="text-[10px] text-gray-400">{g}</p>
+                      <p className={`text-xs font-semibold ${!a ? 'text-gray-300' : a.sum / a.n <= 10 ? 'text-green-600' : a.sum / a.n <= 20 ? 'text-orange-500' : 'text-red-500'}`}>
+                        {a ? `±${(a.sum / a.n).toFixed(0)}%` : '—'}
+                      </p>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+          {noteRecenti.length > 0 && (
+            <div className="bg-amber-50 rounded-lg p-3 border border-amber-100">
+              <p className="font-semibold text-amber-700 text-xs mb-2">📒 Ultime note consuntivo ({sede})</p>
+              <div className="space-y-1">
+                {noteRecenti.map(h => (
+                  <p key={h.data} className="text-[11px] text-amber-800">
+                    <strong>{h.data}</strong> — {h.nota_consuntivo}
+                    {h.scostamento_venduto_pct != null && (
+                      <span className={`ml-1 ${h.scostamento_venduto_pct >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                        ({h.scostamento_venduto_pct >= 0 ? '+' : ''}{h.scostamento_venduto_pct}%)
+                      </span>
+                    )}
+                  </p>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Calendario Heatmap ──────────────────────────────────────────────────────
-function CalendarioHeatmap({ dailyData }) {
+function CalendarioHeatmap({ dailyData, previsioni = [] }) {
   const [hoverDay, setHoverDay] = useState(null)
+
+  // Previsioni aggregate per giorno (somma sedi presenti nel filtro)
+  const prevByDay = useMemo(() => {
+    const m = {}
+    for (const p of previsioni) {
+      if (!m[p.data]) m[p.data] = { venduto: 0, coperti: 0, note: [] }
+      m[p.data].venduto += parseFloat(p.previsione_venduto) || 0
+      m[p.data].coperti += parseInt(p.previsione_coperti) || 0
+      if (p.nota_previsione) m[p.data].note.push(`${p.sede}: ${p.nota_previsione}`)
+      if (p.nota_consuntivo) m[p.data].note.push(`${p.sede} (consuntivo): ${p.nota_consuntivo}`)
+    }
+    return m
+  }, [previsioni])
 
   const grouped = useMemo(() => {
     const byMonth = {}
@@ -1096,19 +1415,26 @@ function CalendarioHeatmap({ dailyData }) {
                 const hKey = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
                 const isHover = hoverDay === hKey
                 const isAboveAvg = info?.venduto > avgV * 1.1
+                const prev = prevByDay[hKey]
+                const prevTitle = prev
+                  ? `\n📝 Previsto: ${eur(prev.venduto)} · ${fmt(prev.coperti)} cop${prev.note.length ? '\n' + prev.note.join('\n') : ''}`
+                  : ''
                 return (
                   <div
                     key={idx}
-                    className={`rounded-md aspect-square flex flex-col items-center justify-center cursor-pointer transition-all border ${
-                      isHover ? 'border-violet-400 scale-105 z-10 relative shadow-md' : 'border-transparent'
+                    className={`relative rounded-md aspect-square flex flex-col items-center justify-center cursor-pointer transition-all border ${
+                      isHover ? 'border-violet-400 scale-105 z-10 shadow-md' : 'border-transparent'
                     }`}
                     style={{ backgroundColor: info ? getColor(info.venduto) : '#f9fafb' }}
                     onMouseEnter={() => setHoverDay(hKey)}
                     onMouseLeave={() => setHoverDay(null)}
-                    title={info
+                    title={(info
                       ? `${d}/${month}/${year}\nVenduto: ${eur(info.venduto)}\nCoperti: ${fmt(info.coperti)}\nCop. medio: ${eur(info.coperto_medio)}`
-                      : `${d}/${month}/${year} — Chiuso`}
+                      : `${d}/${month}/${year} — Chiuso`) + prevTitle}
                   >
+                    {prev && (
+                      <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-violet-600 ring-1 ring-white" title="Previsione/nota presente" />
+                    )}
                     <span className={`text-xs font-medium ${info ? getTextColor(info.venduto) : 'text-gray-400'}`}>
                       {d}
                     </span>
@@ -1152,6 +1478,8 @@ export default function VendutoPage() {
   const [prodotti, setProdotti] = useState([])
   const [varianti, setVarianti] = useState([])
   const [dailyData, setDailyData] = useState([])
+  const [previsioni, setPrevisioni] = useState([])
+  const [prevReload, setPrevReload] = useState(0)
   const [selOp, setSelOp] = useState(null)
   const [tab, setTab] = useState('obiettivi')
   const [period, setPeriod] = useState('month')
@@ -1182,17 +1510,19 @@ export default function VendutoPage() {
       loadProdotti(sede, from, to, 20),
       loadVarianti(sede, from, to),
       loadDailyChiusure(sede, from, to),
-    ]).then(([op, fatOp, cat, prod, var_, daily]) => {
+      loadPrevisioni(from, to).catch(() => []),
+    ]).then(([op, fatOp, cat, prod, var_, daily, prev]) => {
       if (cancelled) return
       setOperatori(op)
       setFatturatoOp(fatOp)
       setCategorie(cat); setProdotti(prod); setVarianti(var_)
       setDailyData(daily)
+      setPrevisioni(sede ? prev.filter(p => p.sede === sede) : prev)
       setSelOp(null)
     }).catch(e => { if (!cancelled) console.error(e) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [location, from, to])
+  }, [location, from, to, prevReload])
 
   // Merge pezzi (venduto_camerieri) con fatturato (v_fatturato_operatore_mensile)
   const operatoriEnhanced = useMemo(() => {
@@ -1715,18 +2045,21 @@ export default function VendutoPage() {
       {/* ─── CALENDARIO + STAFFING ─────────────────────────────── */}
       {tab === 'calendario' && (
         <div className="space-y-4">
+          {/* Previsione settimanale + note giornaliere */}
+          <PrevisioneSettimana onSaved={() => setPrevReload(n => n + 1)} />
+
           {/* Heatmap */}
           <div className="card p-6">
             <div className="mb-4 flex items-center justify-between">
               <div>
                 <h2 className="font-semibold">Calendario venduto giornaliero</h2>
-                <p className="text-xs text-gray-400 mt-0.5">Ogni giorno colorato per intensità — da chiusure cassa</p>
+                <p className="text-xs text-gray-400 mt-0.5">Ogni giorno colorato per intensità — da chiusure cassa · pallino viola = previsione/nota presente (dettaglio al passaggio del mouse)</p>
               </div>
             </div>
             {loading ? (
               <p className="text-center text-gray-400 py-10 text-sm animate-pulse">Caricamento...</p>
             ) : (
-              <CalendarioHeatmap dailyData={dailyData} />
+              <CalendarioHeatmap dailyData={dailyData} previsioni={previsioni} />
             )}
           </div>
 
