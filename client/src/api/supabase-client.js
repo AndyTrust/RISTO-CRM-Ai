@@ -3391,6 +3391,22 @@ export const bonusApi = {
   },
 }
 
+// ─── VERIFICA DATI — Agente Verifica (Fase 2) ──────────────────────────────
+// Chiama l'Edge Function deterministica 'verifica-dati' che restituisce il
+// report a semaforo per le 6 aree dati di un dato mese.
+export const verificaApi = {
+  // run({ anno, mese }) → { anno, mese, overall, summary:{ok,warn,error}, checks:[...] }
+  // Senza argomenti analizza il mese corrente.
+  run: async ({ anno, mese } = {}) => {
+    const body = {}
+    if (anno) body.anno = parseInt(anno)
+    if (mese) body.mese = parseInt(mese)
+    const { data, error } = await supabase.functions.invoke('verifica-dati', { body })
+    if (error) throw error
+    return data
+  },
+}
+
 export default {
   modules, employees, chiusure, kpi, venduto,
   fornitori, pagamentiFatture, prodottiCatalogo, chat, data, analytics, bustePaga, statistiche, turni,
@@ -3399,4 +3415,5 @@ export default {
   beMensileApi, operatoreMeseApi, obiettiviProdottoApi, bonusApi,
   fattureBi,
   calcBonusTeam, calcBonusIndividuale,
+  verificaApi,
 }

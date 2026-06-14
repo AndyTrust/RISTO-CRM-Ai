@@ -5,7 +5,7 @@ import {
   LayoutDashboard, Users, Target, TrendingUp, Receipt, Bot,
   Building2, Settings, ChevronLeft, ChevronRight, RefreshCw,
   BarChart2, Lock, Wallet, UtensilsCrossed, CalendarDays,
-  ChevronDown, Tag, MapPin, Archive, Brain, Cloud, Database, Award, BarChart3
+  ChevronDown, Tag, MapPin, Archive, Brain, Cloud, Database, Award, BarChart3, Activity
 } from 'lucide-react'
 import { data as dataApi } from '../api/client'
 
@@ -16,6 +16,7 @@ const NAV_GROUPS = [
     defaultOpen: true,
     items: [
       { id: 'dashboard',    path: '/dashboard',    icon: LayoutDashboard, label: 'Statistiche',      desc: 'KPI e andamento sedi' },
+      { id: 'stato_dati',   path: '/stato-dati',   icon: Activity,        label: 'Stato Dati',       desc: 'Semafori salute dati 🟢🟡🔴', alwaysEnabled: true },
       { id: 'chiusure',     path: '/chiusure',     icon: Receipt,         label: 'Chiusure Cassa',   desc: 'Corrispettivi giornalieri' },
       { id: 'venduto',      path: '/venduto',      icon: TrendingUp,      label: 'Venduto BI',       desc: 'Analisi avanzata venduto + heatmap' },
     ]

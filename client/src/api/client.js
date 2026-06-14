@@ -36,5 +36,6 @@ export {
   bonusApi,
   calcBonusTeam,
   calcBonusIndividuale,
+  verificaApi,
   default,
 } from './supabase-client'

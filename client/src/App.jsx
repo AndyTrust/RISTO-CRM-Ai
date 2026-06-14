@@ -65,6 +65,7 @@ import ProdottiHub from './pages/ProdottiHub'
 import TurniAnalysisBi from './pages/TurniAnalysisBi'
 import ContabilitaBi from './pages/ContabilitaBi'
 import CopertiBi from './pages/CopertiBi'
+import StatoDati from './pages/StatoDati'
 import { modules as modulesApi, crmConfig } from './api/client'
 
 export const ModulesContext = React.createContext({})
@@ -152,6 +153,7 @@ export default function App() {
           <Route path="/buste-paga" element={isEnabled('buste_paga') ? <PersonalePage defaultTab="buste-paga" /> : <DisabledModule name="Buste Paga" />} />
           <Route path="/statistiche" element={isEnabled('statistiche') ? <StatisticheSala /> : <DisabledModule name="Statistiche Sala" />} />
           <Route path="/turni" element={isEnabled('turni') ? <TurniPage /> : <DisabledModule name="Turni" />} />
+          <Route path="/stato-dati" element={<StatoDati />} />
           <Route path="/impostazioni" element={<Settings />} />
           <Route path="/costi-fissi" element={<CostiFissiPage />} />
           <Route path="/prenotazioni" element={<PrenotazioniBI />} />

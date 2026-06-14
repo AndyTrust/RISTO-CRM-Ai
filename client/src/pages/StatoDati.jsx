@@ -1,0 +1,207 @@
+/**
+ * StatoDati.jsx — Pannello "Stato Dati" (Fase 2)
+ * Mostra a colpo d'occhio i semafori 🟢🟡🔴 per le 6 aree dati del CRM,
+ * chiamando l'Edge Function deterministica `verifica-dati` via verificaApi.run().
+ * Selettore mese/anno, riepilogo, e per ogni area: dettagli, problemi e azioni.
+ */
+import React, { useEffect, useState, useCallback } from 'react'
+import {
+  Activity, RefreshCw, AlertTriangle, CheckCircle2, XCircle,
+  ChevronRight, Loader, Clock,
+} from 'lucide-react'
+import { verificaApi } from '../api/client'
+
+const MESI_IT = ['', 'Gennaio', 'Febbraio', 'Marzo', 'Aprile', 'Maggio', 'Giugno',
+  'Luglio', 'Agosto', 'Settembre', 'Ottobre', 'Novembre', 'Dicembre']
+
+// status → stile (semaforo)
+const STATUS = {
+  ok:    { dot: '#16a34a', bg: '#f0fdf4', border: '#bbf7d0', text: '#166534', label: 'OK',       Icon: CheckCircle2 },
+  warn:  { dot: '#d97706', bg: '#fffbeb', border: '#fde68a', text: '#92400e', label: 'Attenzione', Icon: AlertTriangle },
+  error: { dot: '#dc2626', bg: '#fef2f2', border: '#fecaca', text: '#991b1b', label: 'Critico',   Icon: XCircle },
+}
+const st = (s) => STATUS[s] || STATUS.ok
+
+const eur = (v) => `€${Math.round(Number(v) || 0).toLocaleString('it-IT')}`
+
+function fmtVal(k, v) {
+  if (v == null) return '—'
+  if (Array.isArray(v)) return v.length ? v.join(', ') : '—'
+  if (typeof v === 'object') {
+    return Object.entries(v)
+      .map(([sk, sv]) => `${sk}: ${typeof sv === 'object' ? JSON.stringify(sv) : sv}`)
+      .join(' · ')
+  }
+  if (/costo|totale|stimato|be|personale|fatture/i.test(k) && typeof v === 'number') return eur(v)
+  return String(v)
+}
+
+const LABELS = {
+  n_totale: 'Record totali', n_reali: 'Reali', n_stime: 'Stime', costo_stimato: 'Costo stimato',
+  n_fatture: 'N° fatture', totale: 'Totale', giorni_trovati: 'Giorni trovati', giorni_attesi: 'Giorni attesi',
+  sedi: 'Sedi', n_operatori: 'Operatori', pezzi_totali: 'Pezzi venduti', senza_mapping: 'Senza mapping',
+  team: 'Target team', individuali: 'Target individuali', n_dipendenti_mappati: 'Dipendenti mappati',
+}
+
+export default function StatoDati() {
+  const now = new Date()
+  const [anno, setAnno] = useState(now.getFullYear())
+  const [mese, setMese] = useState(now.getMonth() + 1)
+  const [report, setReport] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+
+  const load = useCallback(async (a, m) => {
+    setLoading(true); setError(null)
+    try {
+      const data = await verificaApi.run({ anno: a, mese: m })
+      setReport(data)
+    } catch (e) {
+      setError(e?.message || 'Errore durante la verifica')
+      setReport(null)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { load(anno, mese) }, [anno, mese, load])
+
+  const overall = report?.overall
+  const ov = st(overall)
+  const summary = report?.summary || { ok: 0, warn: 0, error: 0 }
+
+  const anni = []
+  for (let y = now.getFullYear(); y >= now.getFullYear() - 3; y--) anni.push(y)
+
+  return (
+    <div className="max-w-5xl mx-auto px-4 py-6">
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-violet-100 flex items-center justify-center">
+            <Activity size={20} className="text-violet-700" />
+          </div>
+          <div>
+            <h1 className="text-xl font-bold text-gray-900 leading-tight">Stato Dati</h1>
+            <p className="text-sm text-gray-500">Salute del CRM a colpo d'occhio — semafori per area</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <select value={mese} onChange={(e) => setMese(Number(e.target.value))}
+            className="border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white">
+            {MESI_IT.slice(1).map((m, i) => <option key={i + 1} value={i + 1}>{m}</option>)}
+          </select>
+          <select value={anno} onChange={(e) => setAnno(Number(e.target.value))}
+            className="border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white">
+            {anni.map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
+          <button onClick={() => load(anno, mese)} disabled={loading}
+            className="flex items-center gap-2 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white rounded-lg px-3 py-2 text-sm font-semibold">
+            <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
+            Aggiorna
+          </button>
+        </div>
+      </div>
+
+      {/* Stato di caricamento / errore */}
+      {loading && !report && (
+        <div className="flex items-center justify-center py-20 text-gray-400">
+          <Loader size={20} className="animate-spin mr-2" /> Verifica in corso…
+        </div>
+      )}
+      {error && (
+        <div className="rounded-xl border border-red-200 bg-red-50 text-red-800 px-4 py-3 text-sm mb-4">
+          {error}
+        </div>
+      )}
+
+      {report && (
+        <>
+          {/* Banner riepilogo */}
+          <div className="rounded-2xl border p-4 mb-5 flex flex-wrap items-center justify-between gap-3"
+            style={{ background: ov.bg, borderColor: ov.border }}>
+            <div className="flex items-center gap-3">
+              <ov.Icon size={24} style={{ color: ov.dot }} />
+              <div>
+                <div className="font-bold" style={{ color: ov.text }}>
+                  {overall === 'ok' ? 'Tutto a posto' : overall === 'warn' ? 'Ci sono avvisi da gestire' : 'Dati critici mancanti'}
+                </div>
+                <div className="text-xs text-gray-500">
+                  {MESI_IT[report.mese]} {report.anno} · aggiornato {new Date(report.generated_at).toLocaleString('it-IT')}
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              <span className="px-2.5 py-1 rounded-full bg-green-100 text-green-700">🟢 {summary.ok}</span>
+              <span className="px-2.5 py-1 rounded-full bg-amber-100 text-amber-700">🟡 {summary.warn}</span>
+              <span className="px-2.5 py-1 rounded-full bg-red-100 text-red-700">🔴 {summary.error}</span>
+            </div>
+          </div>
+
+          {/* Griglia aree */}
+          <div className="grid gap-3 sm:grid-cols-2">
+            {(report.checks || []).map((c) => {
+              const s = st(c.status)
+              return (
+                <div key={c.area} className="rounded-2xl border bg-white p-4"
+                  style={{ borderColor: s.border }}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: s.dot }} />
+                      <span className="font-semibold text-gray-900">{c.area}</span>
+                    </div>
+                    <span className="text-xs font-semibold px-2 py-0.5 rounded-full"
+                      style={{ background: s.bg, color: s.text }}>{s.label}</span>
+                  </div>
+
+                  {/* Dettagli */}
+                  {c.details && Object.keys(c.details).length > 0 && (
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600 mb-2">
+                      {Object.entries(c.details).map(([k, v]) => (
+                        <span key={k}>
+                          <span className="text-gray-400">{LABELS[k] || k}:</span> <span className="font-medium text-gray-700">{fmtVal(k, v)}</span>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Problemi */}
+                  {c.issues?.length > 0 && (
+                    <ul className="space-y-1 mb-2">
+                      {c.issues.map((iss, i) => (
+                        <li key={i} className="text-sm flex gap-1.5" style={{ color: s.text }}>
+                          <AlertTriangle size={14} className="flex-shrink-0 mt-0.5" /> <span>{iss}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
+                  {/* Azioni suggerite */}
+                  {c.actions?.length > 0 && (
+                    <div className="border-t border-gray-100 pt-2 mt-2 space-y-1">
+                      {c.actions.map((a, i) => (
+                        <div key={i} className="text-xs text-gray-500 flex gap-1.5">
+                          <ChevronRight size={13} className="flex-shrink-0 mt-0.5 text-violet-500" /> <span>{a}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {c.status === 'ok' && !(c.issues?.length) && (
+                    <div className="text-sm text-green-700 flex items-center gap-1.5">
+                      <CheckCircle2 size={14} /> Nessun problema rilevato
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+
+          <p className="text-xs text-gray-400 mt-4 flex items-center gap-1.5">
+            <Clock size={12} /> Verifica deterministica (Fase 2) · 6 aree controllate. L'interpretazione AI degli avvisi arriverà in Fase 3.
+          </p>
+        </>
+      )}
+    </div>
+  )
+}
