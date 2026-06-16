@@ -12,6 +12,7 @@ import PeriodFilter from '../components/PeriodFilter'
 import PageAssistant from '../components/PageAssistant'
 import { TrendingUp, Users, ShoppingBag, BarChart2, Calendar, ArrowUpRight } from 'lucide-react'
 import PageStatsWidget from '../components/PageStatsWidget'
+import CalendarioSmart from './venduto/CalendarioSmart'
 
 const COLORS = ['#6366f1','#3b82f6','#10b981','#f59e0b','#ec4899','#8b5cf6','#ef4444','#14b8a6','#f97316','#06b6d4']
 const MESI_IT = ['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic']
@@ -2042,134 +2043,9 @@ export default function VendutoPage() {
         </div>
       )}
 
-      {/* ─── CALENDARIO + STAFFING ─────────────────────────────── */}
+      {/* ─── CALENDARIO + PERSONALE (automatico) ─────────────────── */}
       {tab === 'calendario' && (
-        <div className="space-y-4">
-          {/* Previsione settimanale + note giornaliere */}
-          <PrevisioneSettimana onSaved={() => setPrevReload(n => n + 1)} />
-
-          {/* Heatmap */}
-          <div className="card p-6">
-            <div className="mb-4 flex items-center justify-between">
-              <div>
-                <h2 className="font-semibold">Calendario venduto giornaliero</h2>
-                <p className="text-xs text-gray-400 mt-0.5">Ogni giorno colorato per intensità — da chiusure cassa · pallino viola = previsione/nota presente (dettaglio al passaggio del mouse)</p>
-              </div>
-            </div>
-            {loading ? (
-              <p className="text-center text-gray-400 py-10 text-sm animate-pulse">Caricamento...</p>
-            ) : (
-              <CalendarioHeatmap dailyData={dailyData} previsioni={previsioni} />
-            )}
-          </div>
-
-          {/* Staffing suggerito */}
-          <div className="card">
-            <div className="card-header">
-              <h2 className="font-semibold flex items-center gap-2">
-                <Users size={16} className="text-violet-500" />
-                Staffing suggerito per turno
-              </h2>
-              <p className="text-xs text-gray-400 mt-0.5">
-                Sala: 2 fissi ≤50 cop · +1 variabile (esce 14:00 / 21:30 se affluenza stabile) ·
-                Cucina: 2 cuochi + 1 lavapiatti fino a 60 cop
-              </p>
-            </div>
-            <div className="p-4">
-              <div className="grid grid-cols-2 gap-3 mb-4 text-xs">
-                <div className="bg-blue-50 rounded-lg p-3 border border-blue-100">
-                  <p className="font-semibold text-blue-700 mb-1">🍽️ Regole Sala</p>
-                  <div className="space-y-1 text-blue-600">
-                    <p>≤25 coperti → <strong>1 cameriere</strong></p>
-                    <p>26–50 cop → <strong>2 fissi</strong></p>
-                    <p>51–75 cop → <strong>2 fissi + 1</strong> (esce h14/21:30)</p>
-                    <p>&gt;75 cop → <strong>3+ camerieri</strong></p>
-                    <p className="text-blue-400">Target: ≤25 cop/operatore</p>
-                  </div>
-                </div>
-                <div className="bg-orange-50 rounded-lg p-3 border border-orange-100">
-                  <p className="font-semibold text-orange-700 mb-1">👨‍🍳 Regole Cucina</p>
-                  <div className="space-y-1 text-orange-600">
-                    <p>≤60 cop → <strong>2 cuochi + 1 lavapiatti</strong></p>
-                    <p>&gt;60 cop → <strong>3 cuochi + 1 lavapiatti</strong></p>
-                    <p>Max 5 operatori in sala</p>
-                    <p className="text-orange-400">Target: ≤30 cop/cuoco</p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Tabella staffing per giorno */}
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50 text-xs text-gray-500 border-b border-gray-100">
-                    <tr>
-                      <th className="text-left px-3 py-2">Data</th>
-                      <th className="text-right px-3 py-2">Coperti</th>
-                      <th className="text-right px-3 py-2">Sala fissi</th>
-                      <th className="text-right px-3 py-2">Sala variabile</th>
-                      <th className="text-right px-3 py-2">Cucina</th>
-                      <th className="text-right px-3 py-2">Lavapiatti</th>
-                      <th className="text-right px-3 py-2">Tot. staff</th>
-                      <th className="text-right px-3 py-2">Cop/op</th>
-                      <th className="text-left px-3 py-2">Nota</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-50">
-                    {dailyData.length === 0 && (
-                      <tr><td colSpan={9} className="px-3 py-6 text-center text-gray-400">Nessun dato nel periodo</td></tr>
-                    )}
-                    {dailyData
-                      .filter(r => (parseInt(r.coperti) || 0) > 0)
-                      .sort((a, b) => a.data.localeCompare(b.data))
-                      .map((r, i) => {
-                        const cop = parseInt(r.coperti) || 0
-                        const salaFissi = cop <= 25 ? 1 : 2
-                        const salaVar = cop >= 51 ? 1 : 0
-                        const cuochi = cop > 60 ? 3 : 2
-                        const lavapiatti = 1
-                        const totStaff = salaFissi + salaVar + cuochi + lavapiatti
-                        const ratio = totStaff > 0 ? (cop / totStaff).toFixed(1) : '—'
-                        const isEfficient = cop / totStaff <= 20
-                        const isOverloaded = cop / totStaff > 25
-                        const dataIt = new Date(r.data + 'T12:00:00').toLocaleDateString('it-IT', { weekday: 'short', day: '2-digit', month: '2-digit' })
-                        return (
-                          <tr key={i} className="hover:bg-gray-50">
-                            <td className="px-3 py-2 font-medium text-gray-700">{dataIt}</td>
-                            <td className="px-3 py-2 text-right font-semibold">{cop}</td>
-                            <td className="px-3 py-2 text-right">
-                              <span className="bg-blue-100 text-blue-700 text-xs px-2 py-0.5 rounded-full">{salaFissi}</span>
-                            </td>
-                            <td className="px-3 py-2 text-right">
-                              {salaVar > 0
-                                ? <span className="bg-violet-100 text-violet-700 text-xs px-2 py-0.5 rounded-full">+1 (esce h14/21:30)</span>
-                                : <span className="text-gray-300 text-xs">—</span>
-                              }
-                            </td>
-                            <td className="px-3 py-2 text-right">
-                              <span className="bg-orange-100 text-orange-700 text-xs px-2 py-0.5 rounded-full">{cuochi}</span>
-                            </td>
-                            <td className="px-3 py-2 text-right">
-                              <span className="bg-gray-100 text-gray-600 text-xs px-2 py-0.5 rounded-full">{lavapiatti}</span>
-                            </td>
-                            <td className="px-3 py-2 text-right font-bold">{totStaff}</td>
-                            <td className="px-3 py-2 text-right">
-                              <span className={`text-xs font-semibold ${isOverloaded ? 'text-red-600' : isEfficient ? 'text-green-600' : 'text-amber-600'}`}>
-                                {ratio}
-                              </span>
-                            </td>
-                            <td className="px-3 py-2 text-xs text-gray-500">
-                              {isOverloaded ? '⚠️ Sovraccarico' : isEfficient ? '✅ Ottimale' : '🟡 Nella norma'}
-                            </td>
-                          </tr>
-                        )
-                      })
-                    }
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        </div>
+        <CalendarioSmart sede={sede} />
       )}
     </div>
       <PageAssistant
