@@ -11,6 +11,10 @@ import {
   Sparkles, Package
 } from 'lucide-react'
 import {
+  AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid,
+  Tooltip, ResponsiveContainer, Line, ReferenceLine, LabelList
+} from 'recharts'
+import {
   operatoreMeseApi, beMensileApi, kpiTargetsApi, bonusApi
 } from '../api/client'
 import supabase from '../supabase'
@@ -23,18 +27,370 @@ const fmt    = (n, d = 2) => n == null || isNaN(n) ? '—' : Number(n).toLocaleS
 const fmtEur = n => n == null ? '—' : `€ ${fmt(n)}`
 const fmtPct = n => n == null ? '—' : `${fmt(n, 1)}%`
 
-function KpiCard({ icon: Icon, label, value, sub, color = 'indigo', badge }) {
+function KpiCard({ icon: Icon, label, value, sub, color = 'indigo', badge, onClick }) {
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm flex flex-col gap-1">
+    <div
+      className={`bg-white rounded-xl border border-gray-200 p-4 shadow-sm flex flex-col gap-1 transition-all duration-150 ${onClick ? 'cursor-pointer hover:shadow-md hover:-translate-y-0.5' : ''}`}
+      onClick={onClick}
+    >
       <PageStatsWidget />
       <div className="flex items-center justify-between">
         <span className="text-[11px] font-medium text-gray-500 uppercase tracking-wide">{label}</span>
-        <div className={`p-1.5 rounded-lg bg-${color}-50 text-${color}-600`}><Icon size={16} /></div>
+        <div className="flex items-center gap-1.5">
+          {onClick && <span className="text-[9px] text-gray-300 font-medium">clicca ↗</span>}
+          <div className={`p-1.5 rounded-lg bg-${color}-50 text-${color}-600`}><Icon size={16} /></div>
+        </div>
       </div>
       <div className="text-xl font-bold text-gray-900 leading-tight">{value}</div>
       {sub  && <div className="text-[11px] text-gray-400">{sub}</div>}
       {badge && <div className={`text-[10px] font-semibold mt-0.5 ${badge.color}`}>{badge.text}</div>}
     </div>
+  )
+}
+
+function DetailDrawer({ tipo, data, loading, onClose, be, targetFatt, fatturatoTeam, quantumMedio, margine, anno, mese, fmtEur }) {
+  if (!tipo) return null
+
+  const chiusure = data.chiusure || []
+  const fattPerGiorno = chiusure.map(c => ({
+    giorno: c.data?.slice(8,10),
+    fatturato: Number(c.totale_venduto_ipratico) || 0,
+    coperti: Number(c.coperti) || 0,
+    foodCost: Number(c.food_cost_giornaliero) || 0,
+  }))
+
+  const fatture = data.fatture || []
+  const bustePaga = data.bustePaga || []
+  const quantumOp = data.quantumOp || []
+
+  const fornitori = {}
+  fatture.forEach(f => {
+    const key = f.denominazione_fornitore || f.piva_fornitore || 'Altro'
+    if (!fornitori[key]) fornitori[key] = 0
+    fornitori[key] += Number(f.importo_totale) || 0
+  })
+  const fornitoriList = Object.entries(fornitori)
+    .sort((a,b) => b[1]-a[1])
+    .slice(0,15)
+    .map(([nome, tot]) => ({ nome, tot }))
+  const totFatture = fornitoriList.reduce((s,f) => s+f.tot, 0)
+
+  const costoPersonale = bustePaga.reduce((s,b) => s + (Number(b.costo_azienda) || 0), 0)
+  const costoPersonaleFallback = Number(be?.costo_personale_totale) || 0
+  const costoPersonaleEffettivo = costoPersonale > 0 ? costoPersonale : costoPersonaleFallback
+  const foodCostTotale = Number(be?.food_cost_totale) || chiusure.reduce((s,c) => s + (Number(c.food_cost_giornaliero)||0), 0)
+
+  const titles = {
+    fatturato: 'Fatturato Mese — Dettaglio',
+    target: 'Target Fatturato — Analisi',
+    quantum: 'Quantum Medio — per Operatore',
+    margine: 'Margine — Analisi Costi Completa',
+  }
+
+  const today = new Date()
+  const lastDayOfMonth = new Date(anno, mese, 0).getDate()
+  const currentDay = anno === today.getFullYear() && mese === today.getMonth()+1 ? today.getDate() : lastDayOfMonth
+  const remainingDays = Math.max(0, lastDayOfMonth - currentDay)
+  const dailyNeeded = remainingDays > 0 ? Math.max(0, targetFatt - fatturatoTeam) / remainingDays : 0
+
+  return (
+    <>
+      <div
+        className="fixed inset-0 bg-black/40 z-40 backdrop-blur-sm"
+        onClick={onClose}
+      />
+      <div className="fixed right-0 top-0 h-full w-full max-w-2xl bg-white z-50 shadow-2xl flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 bg-gray-50">
+          <div>
+            <h2 className="text-lg font-bold text-gray-900">{titles[tipo]}</h2>
+            <p className="text-xs text-gray-500 mt-0.5">
+              {['Gennaio','Febbraio','Marzo','Aprile','Maggio','Giugno','Luglio','Agosto','Settembre','Ottobre','Novembre','Dicembre'][mese-1]} {anno}
+              {be?.sede && be.sede !== 'ALL' ? ` · Sede ${be.sede}` : ' · Tutte le sedi'}
+            </p>
+          </div>
+          <button onClick={onClose} className="p-2 hover:bg-gray-200 rounded-lg text-gray-500 hover:text-gray-800 transition-colors">
+            ✕
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
+          {loading ? (
+            <div className="flex items-center justify-center h-48 text-gray-400 text-sm">Caricamento dati...</div>
+          ) : (
+            <>
+              {tipo === 'fatturato' && (
+                <div className="space-y-5">
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="bg-indigo-50 rounded-xl p-4 text-center">
+                      <div className="text-2xl font-bold text-indigo-700">{fmtEur(fatturatoTeam)}</div>
+                      <div className="text-xs text-indigo-500 mt-1">Fatturato totale</div>
+                    </div>
+                    <div className="bg-gray-50 rounded-xl p-4 text-center">
+                      <div className="text-2xl font-bold text-gray-700">{Number(be?.coperti||0).toLocaleString('it-IT')}</div>
+                      <div className="text-xs text-gray-500 mt-1">Coperti totali</div>
+                    </div>
+                    <div className="bg-blue-50 rounded-xl p-4 text-center">
+                      <div className="text-2xl font-bold text-blue-700">{fattPerGiorno.length}</div>
+                      <div className="text-xs text-blue-500 mt-1">Giorni di apertura</div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-700 mb-3">Andamento giornaliero</h3>
+                    <ResponsiveContainer width="100%" height={200}>
+                      <AreaChart data={fattPerGiorno} margin={{top:5,right:5,left:0,bottom:0}}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0"/>
+                        <XAxis dataKey="giorno" fontSize={10}/>
+                        <YAxis fontSize={10} tickFormatter={v => `€${(v/1000).toFixed(0)}k`}/>
+                        <Tooltip formatter={v => [`€${Number(v).toLocaleString('it-IT',{minimumFractionDigits:2})}`, 'Fatturato']}/>
+                        <Area type="monotone" dataKey="fatturato" stroke="#6366f1" fill="#e0e7ff" strokeWidth={2}/>
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4">
+                    <div className="text-xs font-semibold text-indigo-700 mb-2">Da dove arriva questo dato</div>
+                    <p className="text-xs text-indigo-600 leading-relaxed">
+                      Il fatturato mensile viene estratto dalla tabella <code className="bg-indigo-100 px-1 rounded">chiusure_giornaliere</code> (vista <code className="bg-indigo-100 px-1 rounded">v_be_mensile</code>),
+                      alimentata ogni giorno dal sistema cassa iPratico. Rappresenta l'incassato totale (pranzo + cena) per tutti i giorni del mese,
+                      sommato per sede selezionata.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {tipo === 'target' && (
+                <div className="space-y-5">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="bg-violet-50 rounded-xl p-4">
+                      <div className="text-xs text-violet-500 mb-1">Fatturato attuale</div>
+                      <div className="text-xl font-bold text-violet-700">{fmtEur(fatturatoTeam)}</div>
+                    </div>
+                    <div className="bg-violet-50 rounded-xl p-4">
+                      <div className="text-xs text-violet-500 mb-1">Target mese</div>
+                      <div className="text-xl font-bold text-violet-700">{fmtEur(targetFatt)}</div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between text-xs text-gray-500 mb-1">
+                      <span>Avanzamento vs target</span>
+                      <span className="font-semibold">{targetFatt > 0 ? ((fatturatoTeam/targetFatt)*100).toFixed(1) : 0}%</span>
+                    </div>
+                    <div className="w-full bg-gray-100 rounded-full h-3">
+                      <div
+                        className={`h-3 rounded-full transition-all ${fatturatoTeam >= targetFatt ? 'bg-green-500' : 'bg-violet-500'}`}
+                        style={{width: `${Math.min(100, targetFatt > 0 ? (fatturatoTeam/targetFatt)*100 : 0)}%`}}
+                      />
+                    </div>
+                  </div>
+
+                  {remainingDays > 0 && dailyNeeded > 0 && (
+                    <div className="bg-amber-50 border border-amber-100 rounded-xl p-4">
+                      <div className="text-sm font-semibold text-amber-800">
+                        Mancano ancora {remainingDays} giorni — serve {fmtEur(dailyNeeded)}/giorno
+                      </div>
+                      <div className="text-xs text-amber-600 mt-1">
+                        Da recuperare: {fmtEur(Math.max(0, targetFatt - fatturatoTeam))} in {remainingDays} giorni
+                      </div>
+                    </div>
+                  )}
+
+                  {fattPerGiorno.length > 0 && (
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-700 mb-2">Fatturato cumulato vs target</h3>
+                      <ResponsiveContainer width="100%" height={180}>
+                        <AreaChart
+                          data={fattPerGiorno.map((d, i) => ({
+                            ...d,
+                            cumulato: fattPerGiorno.slice(0,i+1).reduce((s,x) => s+x.fatturato, 0),
+                            targetLine: targetFatt,
+                          }))}
+                          margin={{top:5,right:5,left:0,bottom:0}}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0"/>
+                          <XAxis dataKey="giorno" fontSize={10}/>
+                          <YAxis fontSize={10} tickFormatter={v => `€${(v/1000).toFixed(0)}k`}/>
+                          <Tooltip formatter={v => [`€${Number(v).toLocaleString('it-IT',{minimumFractionDigits:2})}`, '']}/>
+                          <Area type="monotone" dataKey="cumulato" name="Cumulato" stroke="#7c3aed" fill="#ede9fe" strokeWidth={2}/>
+                          <Line type="monotone" dataKey="targetLine" name="Target" stroke="#f59e0b" strokeDasharray="5 5" dot={false} strokeWidth={1.5}/>
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
+                  )}
+
+                  <div className="bg-violet-50 border border-violet-100 rounded-xl p-4">
+                    <div className="text-xs font-semibold text-violet-700 mb-2">Da dove arriva questo dato</div>
+                    <p className="text-xs text-violet-600 leading-relaxed">
+                      Il target mensile è impostato manualmente nella tabella <code className="bg-violet-100 px-1 rounded">kpi_targets_team</code>.
+                      Viene usato come riferimento per calcolare l'avanzamento del team e il KPI % vs target di ogni cameriere.
+                      Si imposta nella pagina Target del CRM.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {tipo === 'quantum' && (
+                <div className="space-y-5">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="bg-blue-50 rounded-xl p-4 text-center">
+                      <div className="text-2xl font-bold text-blue-700">{fmtEur(quantumMedio)}</div>
+                      <div className="text-xs text-blue-500 mt-1">Quantum medio team</div>
+                    </div>
+                    <div className="bg-gray-50 rounded-xl p-4 text-center">
+                      <div className="text-2xl font-bold text-gray-700">{quantumOp.length}</div>
+                      <div className="text-xs text-gray-500 mt-1">Operatori attivi</div>
+                    </div>
+                  </div>
+
+                  {quantumOp.length > 0 && (
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-700 mb-3">Quantum per operatore (€/coperto)</h3>
+                      <ResponsiveContainer width="100%" height={Math.min(quantumOp.length * 32 + 20, 280)}>
+                        <BarChart data={quantumOp} layout="vertical" margin={{top:0,right:60,left:100,bottom:0}}>
+                          <XAxis type="number" fontSize={10} tickFormatter={v => `€${v.toFixed(0)}`}/>
+                          <YAxis dataKey="operatore" type="category" width={95} fontSize={10}/>
+                          <Tooltip formatter={v => [`€${Number(v).toFixed(2)}`, 'Quantum']}/>
+                          <ReferenceLine x={quantumMedio} stroke="#94a3b8" strokeDasharray="4 4" label={{value:'media', fontSize:9, fill:'#94a3b8'}}/>
+                          <Bar dataKey="quantum" name="Quantum €/cop" radius={[0,3,3,0]} fill="#3b82f6">
+                            <LabelList dataKey="quantum" position="right" fontSize={10} formatter={v => `€${Number(v).toFixed(2)}`}/>
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  )}
+
+                  <div className="bg-blue-50 border border-blue-100 rounded-xl p-4">
+                    <div className="text-xs font-semibold text-blue-700 mb-2">Come si calcola il Quantum</div>
+                    <p className="text-xs text-blue-600 leading-relaxed">
+                      Il Quantum = fatturato totale ÷ coperti reali serviti. Misura quanto vale mediamente ogni cliente servito.
+                      A livello operatore viene calcolato dalla vista <code className="bg-blue-100 px-1 rounded">v_kpi_quantum_mensile</code>,
+                      che incrocia le chiusure cassa (coperti) con il venduto per cameriere. È l'indicatore principale di efficacia di upselling.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {tipo === 'margine' && (
+                <div className="space-y-5">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className={`rounded-xl p-4 ${margine >= 0 ? 'bg-green-50' : 'bg-red-50'}`}>
+                      <div className="text-xs text-gray-500 mb-1">Margine netto</div>
+                      <div className={`text-xl font-bold ${margine >= 0 ? 'text-green-700' : 'text-red-600'}`}>{fmtEur(margine)}</div>
+                    </div>
+                    <div className="bg-gray-50 rounded-xl p-4">
+                      <div className="text-xs text-gray-500 mb-1">Fatturato base</div>
+                      <div className="text-xl font-bold text-gray-700">{fmtEur(fatturatoTeam)}</div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-700 mb-3">Struttura dei costi</h3>
+                    <div className="space-y-2">
+                      {[
+                        { label: 'Fatturato lordo', val: fatturatoTeam, pct: 100, color: 'bg-indigo-500', positive: true },
+                        { label: `Costo personale (${Number(be?.pct_personale||0).toFixed(1)}%)`, val: costoPersonaleEffettivo, pct: Number(be?.pct_personale||0), color: 'bg-orange-400', positive: false },
+                        { label: `Food & Beverage cost (${Number(be?.pct_food||0).toFixed(1)}%)`, val: foodCostTotale, pct: Number(be?.pct_food||0), color: 'bg-yellow-400', positive: false },
+                        { label: 'Costi fissi (affitti, utenze...)', val: Math.max(0, fatturatoTeam - costoPersonaleEffettivo - foodCostTotale - margine), pct: Math.max(0, 100 - Number(be?.pct_personale||0) - Number(be?.pct_food||0) - (fatturatoTeam > 0 ? (margine/fatturatoTeam)*100 : 0)), color: 'bg-gray-400', positive: false },
+                        { label: 'Margine', val: margine, pct: fatturatoTeam > 0 ? (margine/fatturatoTeam)*100 : 0, color: margine >= 0 ? 'bg-green-500' : 'bg-red-500', positive: margine >= 0 },
+                      ].map((item, i) => (
+                        <div key={i} className="flex items-center gap-3">
+                          <div className="w-40 text-xs text-gray-600 text-right flex-shrink-0">{item.label}</div>
+                          <div className="flex-1 bg-gray-100 rounded-full h-5 relative overflow-hidden">
+                            <div
+                              className={`h-5 ${item.color} rounded-full`}
+                              style={{width: `${Math.min(100, Math.abs(item.pct))}%`}}
+                            />
+                          </div>
+                          <div className="w-28 text-xs font-semibold text-right flex-shrink-0">
+                            {item.positive ? '' : '-'}{fmtEur(Math.abs(item.val))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {fornitoriList.length > 0 && (
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-700 mb-1">Fatture fornitori del mese</h3>
+                      <p className="text-xs text-gray-400 mb-3">Totale: {fmtEur(totFatture)} · {fatture.length} fatture · {fornitoriList.length} fornitori</p>
+                      <div className="space-y-1.5 max-h-72 overflow-y-auto">
+                        {fornitoriList.map((f, i) => (
+                          <div key={i} className="flex items-center gap-2 text-xs">
+                            <div className="flex-1 text-gray-700 truncate">{f.nome}</div>
+                            <div className="w-24 text-right font-semibold text-gray-800">{fmtEur(f.tot)}</div>
+                            <div className="w-10 text-right text-gray-400">{totFatture > 0 ? ((f.tot/totFatture)*100).toFixed(1) : 0}%</div>
+                          </div>
+                        ))}
+                      </div>
+                      {fornitoriList.length > 0 && (
+                        <div className="mt-3">
+                          <ResponsiveContainer width="100%" height={Math.min(fornitoriList.length * 24 + 20, 200)}>
+                            <BarChart data={fornitoriList.slice(0,10)} layout="vertical" margin={{top:0,right:60,left:10,bottom:0}}>
+                              <XAxis type="number" fontSize={9} tickFormatter={v => `€${(v/1000).toFixed(0)}k`}/>
+                              <YAxis dataKey="nome" type="category" width={130} fontSize={9}/>
+                              <Tooltip formatter={v => [`€${Number(v).toLocaleString('it-IT',{minimumFractionDigits:2})}`, 'Importo']}/>
+                              <Bar dataKey="tot" fill="#f97316" radius={[0,3,3,0]}>
+                                <LabelList dataKey="tot" position="right" fontSize={9} formatter={v => `€${(v/1000).toFixed(1)}k`}/>
+                              </Bar>
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {fornitoriList.length === 0 && (
+                    <div className="bg-amber-50 border border-amber-100 rounded-xl p-4 text-xs text-amber-700">
+                      Nessuna fattura trovata per questo mese. Le fatture vengono scaricate automaticamente da sportello.cloud ogni giorno alle 09:33.
+                      Se mancano, usa la skill "Scarica fatture" per aggiornare.
+                    </div>
+                  )}
+
+                  {bustePaga.length > 0 && (
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-700 mb-2">Buste paga del mese</h3>
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="text-gray-400 border-b border-gray-100">
+                            <th className="text-left py-1.5">Dipendente</th>
+                            <th className="text-right py-1.5">Netto</th>
+                            <th className="text-right py-1.5">Costo az.</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {bustePaga.map((b, i) => (
+                            <tr key={i} className="border-b border-gray-50">
+                              <td className="py-1 text-gray-700">{b.operatore}</td>
+                              <td className="py-1 text-right text-gray-600">{fmtEur(Number(b.netto||0))}</td>
+                              <td className="py-1 text-right font-medium text-orange-600">{fmtEur(Number(b.costo_azienda||0))}</td>
+                            </tr>
+                          ))}
+                          <tr className="font-semibold">
+                            <td className="py-1.5 text-gray-800">Totale</td>
+                            <td className="py-1.5 text-right text-gray-700">{fmtEur(bustePaga.reduce((s,b)=>s+Number(b.netto||0),0))}</td>
+                            <td className="py-1.5 text-right text-orange-700">{fmtEur(costoPersonale)}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  <div className="bg-red-50 border border-red-100 rounded-xl p-4">
+                    <div className="text-xs font-semibold text-red-700 mb-2">Come si calcola il Margine</div>
+                    <p className="text-xs text-red-600 leading-relaxed">
+                      Margine = Fatturato − Costo Personale − Food Cost − Costi Fissi.
+                      Viene calcolato nella vista <code className="bg-red-100 px-1 rounded">v_be_mensile</code> che aggrega chiusure cassa + buste paga + Break-Even mensile (costi fissi impostati nel CRM).
+                      Il costo personale usa i LUL (<code className="bg-red-100 px-1 rounded">buste_paga</code>) se disponibili, altrimenti la stima CCNL (netto × 1.9653).
+                    </p>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </>
   )
 }
 
@@ -521,6 +877,10 @@ export default function KPIWaiters() {
   const [isStima,     setIsStima]     = useState(false)
   const [vendutoTeam, setVendutoTeam] = useState([])
 
+  const [activeModal,   setActiveModal]   = useState(null)
+  const [modalData,     setModalData]     = useState({})
+  const [modalLoading,  setModalLoading]  = useState(false)
+
   const load = useCallback(async () => {
     setLoading(true)
     setExpanded(null)
@@ -572,6 +932,59 @@ export default function KPIWaiters() {
   }, [sede, anno, mese])
 
   useEffect(() => { load() }, [load])
+
+  async function openModal(tipo) {
+    setActiveModal(tipo)
+    setModalLoading(true)
+    const dateFrom = `${anno}-${String(mese).padStart(2,'0')}-01`
+    const dateTo = `${anno}-${String(mese).padStart(2,'0')}-31`
+    const sedeFilter = sede !== 'ALL' ? sede : null
+    const result = {}
+
+    if (tipo === 'fatturato' || tipo === 'margine') {
+      let q = supabase.from('chiusure_giornaliere')
+        .select('data,totale_venduto_ipratico,coperti,food_cost_giornaliero,sede')
+        .gte('data', dateFrom).lte('data', dateTo).order('data')
+      if (sedeFilter) q = q.eq('sede', sedeFilter)
+      const { data: chiusure } = await q
+      result.chiusure = chiusure || []
+    }
+
+    if (tipo === 'margine') {
+      let qf = supabase.from('fatture_importate')
+        .select('denominazione_fornitore,importo_totale,data_fattura,piva_fornitore')
+        .gte('data_fattura', dateFrom).lte('data_fattura', dateTo)
+      const { data: fatture } = await qf
+      result.fatture = fatture || []
+
+      let qb = supabase.from('buste_paga')
+        .select('operatore,netto,lorda,costo_azienda,mese,anno,sede')
+        .eq('anno', anno).eq('mese', mese)
+      if (sedeFilter) qb = qb.eq('sede', sedeFilter)
+      const { data: bustePaga } = await qb
+      result.bustePaga = bustePaga || []
+    }
+
+    if (tipo === 'quantum') {
+      let qq = supabase.from('v_kpi_quantum_mensile')
+        .select('*').eq('anno', anno).eq('mese', mese)
+      if (sedeFilter) qq = qq.eq('sede', sedeFilter)
+      const { data: quantumOp } = await qq
+      result.quantumOp = (quantumOp || []).sort((a,b) => Number(b.quantum||0) - Number(a.quantum||0))
+    }
+
+    if (tipo === 'target') {
+      let q = supabase.from('chiusure_giornaliere')
+        .select('data,totale_venduto_ipratico,coperti,sede')
+        .gte('data', dateFrom).lte('data', dateTo).order('data')
+      if (sedeFilter) q = q.eq('sede', sedeFilter)
+      const { data: chiusure } = await q
+      result.chiusure = chiusure || []
+    }
+
+    setModalData(result)
+    setModalLoading(false)
+  }
 
   // Lookup: nome operatore → target individuale (fuzzy match per prima parola)
   const targetMap = useMemo(() => {
@@ -719,6 +1132,7 @@ export default function KPIWaiters() {
               : `${fmt(pctVsTarget, 1)}% del target`,
             color: pctVsTarget >= 100 ? 'text-emerald-600' : pctVsTarget >= 80 ? 'text-amber-600' : 'text-red-500',
           } : null}
+          onClick={() => openModal('fatturato')}
         />
         <KpiCard
           icon={Target}
@@ -728,6 +1142,7 @@ export default function KPIWaiters() {
             ? (gapTarget > 0 ? `Mancano ${fmtEur(gapTarget)}` : `Superato di ${fmtEur(-gapTarget)}`)
             : 'Impostalo in KPI Team → Config'}
           color="violet"
+          onClick={() => openModal('target')}
         />
         <KpiCard
           icon={BarChart3}
@@ -735,6 +1150,7 @@ export default function KPIWaiters() {
           value={quantumMedio > 0 ? fmtEur(quantumMedio) : '—'}
           sub="€ per coperto (team)"
           color="blue"
+          onClick={() => openModal('quantum')}
         />
         <KpiCard
           icon={TrendingUp}
@@ -742,6 +1158,7 @@ export default function KPIWaiters() {
           value={fmtEur(margine)}
           sub={be ? `personale ${fmtPct(be.pct_personale)} · food ${fmtPct(be.pct_food)}` : ''}
           color={margine >= 0 ? 'emerald' : 'red'}
+          onClick={() => openModal('margine')}
         />
       </div>
 
@@ -897,6 +1314,21 @@ export default function KPIWaiters() {
           <div><strong>🎯 Opportunità di crescita</strong> — espandi ogni operatore per vedere: potenziale ricavo se raggiunge il quantum medio team, tasso upselling (aggiunte %) vs media, e categorie dove vende meno del team (da spingere)</div>
         </div>
       </div>
+
+      <DetailDrawer
+        tipo={activeModal}
+        data={modalData}
+        loading={modalLoading}
+        onClose={() => setActiveModal(null)}
+        be={be}
+        targetFatt={targetFatt}
+        fatturatoTeam={fatturatoTeam}
+        quantumMedio={quantumMedio}
+        margine={margine}
+        anno={anno}
+        mese={mese}
+        fmtEur={fmtEur}
+      />
 
     </div>
   )
