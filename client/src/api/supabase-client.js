@@ -1004,6 +1004,183 @@ export const prodottiCatalogo = {
   },
 }
 
+// ─── LISTINO / FOOD COST PRODOTTI ─────────────────────────────────────────
+// Il food cost (costo_acquisto €) vive in listino_prodotti, agganciato al
+// venduto per nome prodotto (vedi v_menu_engineering). Questa API permette di
+// leggere i prodotti venduti con il loro food cost attuale e di modificarlo.
+export const listinoApi = {
+  // Prodotti venduti (aggregati) uniti al listino, con food cost e prezzo correnti.
+  // Senza date → tutto lo storico. Il prezzo usa la media venduta se disponibile,
+  // altrimenti il prezzo di listino (l'importo venduto nella view è spesso NULL).
+  prodottiConFoodCost: async ({ sede, dateFrom, dateTo } = {}) => {
+    let q = supabase.from('v_menu_engineering')
+      .select('sede,prodotto,categoria,tipologia,quantita,importo_venduto,food_cost_medio')
+      .range(0, 9999)
+    if (dateFrom) q = q.gte('data_fine', dateFrom)
+    if (dateTo)   q = q.lte('data_inizio', dateTo)
+    if (sede && sede !== 'ALL') q = q.eq('sede', sede)
+    const [rows, listino] = await Promise.all([
+      sbFetch(q),
+      sbFetch(supabase.from('listino_prodotti')
+        .select('nome_prodotto,categoria,costo_acquisto,prezzo_vendita,attivo').range(0, 9999)),
+    ])
+    // Listino indicizzato per nome normalizzato
+    const listMap = {}
+    for (const l of (listino || [])) {
+      if (l.attivo === false) continue
+      const k = String(l.nome_prodotto || '').trim().toUpperCase()
+      if (k && !listMap[k]) listMap[k] = {
+        costo: l.costo_acquisto != null ? Number(l.costo_acquisto) : null,
+        prezzo: l.prezzo_vendita != null ? Number(l.prezzo_vendita) : null,
+        categoria: l.categoria,
+      }
+    }
+    // Prodotti venduti aggregati
+    const map = {}
+    for (const r of rows) {
+      const nome = String(r.prodotto || '').trim()
+      const key = nome.toUpperCase()
+      if (!key) continue
+      if (!map[key]) map[key] = {
+        prodotto: nome, categoria: r.categoria, tipologia: r.tipologia,
+        quantita: 0, importo_venduto: 0,
+        costo_acquisto: r.food_cost_medio != null ? Number(r.food_cost_medio) : null,
+      }
+      map[key].quantita += Number(r.quantita) || 0
+      map[key].importo_venduto += Number(r.importo_venduto) || 0
+      if (map[key].costo_acquisto == null && r.food_cost_medio != null) map[key].costo_acquisto = Number(r.food_cost_medio)
+    }
+    // Aggiungi prodotti presenti solo a listino (non venduti nel periodo)
+    for (const [k, l] of Object.entries(listMap)) {
+      if (!map[k]) map[k] = {
+        prodotto: k.charAt(0) + k.slice(1).toLowerCase(), categoria: l.categoria, tipologia: null,
+        quantita: 0, importo_venduto: 0, costo_acquisto: l.costo,
+      }
+    }
+    return Object.values(map).map(m => {
+      const k = m.prodotto.toUpperCase()
+      const list = listMap[k] || {}
+      // costo: venduto → listino
+      const costo_acquisto = m.costo_acquisto != null ? m.costo_acquisto : (list.costo ?? null)
+      // prezzo: media venduta valorizzata → prezzo di listino
+      const prezzoVenduto = m.quantita > 0 && m.importo_venduto > 0 ? m.importo_venduto / m.quantita : 0
+      const prezzo_medio = prezzoVenduto > 0 ? +prezzoVenduto.toFixed(2) : (list.prezzo ?? 0)
+      const food_cost_pct = (costo_acquisto != null && prezzo_medio > 0)
+        ? +(100 * costo_acquisto / prezzo_medio).toFixed(1) : null
+      return { ...m, costo_acquisto, prezzo_medio, food_cost_pct }
+    }).sort((a, b) => (b.importo_venduto - a.importo_venduto) || (b.quantita - a.quantita))
+  },
+
+  // Tutti i prezzi d'acquisto aggregati (per auto-compilazione rivendita in-memory).
+  prezziAcquistoTutti: async () => sbFetch(
+    supabase.from('v_prodotti_fornitori')
+      .select('descrizione,prezzo_medio,prezzo_min,unita_misura,fatture_count')
+      .order('fatture_count', { ascending: false })
+      .range(0, 9999)
+  ),
+
+  // Cerca prezzi d'acquisto reali dalle fatture (v_prodotti_fornitori) per suggerire
+  // il food cost. Usa il token più lungo del nome per il match, oppure una query libera.
+  suggerimentiCosto: async ({ query, limit = 10 } = {}) => {
+    const raw = String(query || '').trim()
+    if (raw.length < 2) return []
+    const tokens = raw.toUpperCase().split(/[^A-Z0-9]+/).filter(t => t.length >= 3)
+    const term = tokens.length ? tokens.sort((a, b) => b.length - a.length)[0] : raw
+    const rows = await sbFetch(
+      supabase.from('v_prodotti_fornitori')
+        .select('descrizione,prezzo_medio,prezzo_min,prezzo_max,unita_misura,fatture_count,qta_totale,ultima_fattura,fornitore')
+        .ilike('descrizione', `%${term}%`)
+        .order('fatture_count', { ascending: false })
+        .limit(limit)
+    )
+    return (rows || []).map(r => ({
+      descrizione: r.descrizione,
+      prezzo_medio: r.prezzo_medio != null ? Number(r.prezzo_medio) : null,
+      prezzo_min: r.prezzo_min != null ? Number(r.prezzo_min) : null,
+      prezzo_max: r.prezzo_max != null ? Number(r.prezzo_max) : null,
+      unita_misura: r.unita_misura,
+      fatture_count: r.fatture_count,
+      ultima_fattura: r.ultima_fattura,
+      fornitore: r.fornitore,
+    }))
+  },
+
+  // Salva/aggiorna il food cost (costo_acquisto €) di un prodotto in listino_prodotti.
+  salvaCosto: async ({ nome_prodotto, categoria, costo_acquisto, prezzo_vendita }) => {
+    const nome = String(nome_prodotto || '').trim()
+    if (!nome) throw new Error('Nome prodotto mancante')
+    const costo = Number(costo_acquisto)
+    if (!isFinite(costo) || costo < 0) throw new Error('Costo non valido')
+    const base = { costo_acquisto: costo, updated_at: new Date().toISOString() }
+    // Aggiorna TUTTE le righe con quel nome (il listino può avere duplicati;
+    // la view ne legge una qualsiasi, quindi vanno allineate tutte).
+    const { data: updated, error: eUpd } = await supabase
+      .from('listino_prodotti').update(base).ilike('nome_prodotto', nome).select('id')
+    if (eUpd) throw eUpd
+    if (updated && updated.length) return { updated: updated.length }
+    // Nessuna riga esistente → insert
+    const { error } = await supabase.from('listino_prodotti').insert({
+      nome_prodotto: nome,
+      nome_normalizzato: nome.toUpperCase(),
+      categoria: categoria || null,
+      prezzo_vendita: (prezzo_vendita != null && isFinite(Number(prezzo_vendita))) ? Number(prezzo_vendita) : null,
+      attivo: true,
+      ...base,
+    })
+    if (error) throw error
+    return { inserted: true }
+  },
+}
+
+// ─── RICETTE / DISTINTA BASE ──────────────────────────────────────────────
+// Food cost "definito" dei piatti composti: somma(quantità × costo_unitario)
+// degli ingredienti. Se un prodotto non ha ricetta, vale il food cost
+// "indicativo" da listino_prodotti. Chiave di collegamento: nome normalizzato.
+const ricettaKey = (nome) => String(nome || '').trim().toUpperCase()
+
+export const ricetteApi = {
+  // Riepilogo costo definito per tutti i prodotti con ricetta
+  sommario: async () => {
+    const rows = await sbFetch(supabase.from('v_ricette_costo').select('*'))
+    const map = {}
+    for (const r of (rows || [])) {
+      map[r.prodotto_key] = {
+        n_ingredienti: Number(r.n_ingredienti) || 0,
+        costo_food: r.costo_food != null ? Number(r.costo_food) : 0,
+      }
+    }
+    return map
+  },
+  // Righe ricetta di un prodotto
+  list: async (nome) => sbFetch(
+    supabase.from('ricette').select('*').eq('prodotto_key', ricettaKey(nome)).order('created_at')
+  ),
+  // Inserisce/aggiorna una riga ingrediente
+  salvaRiga: async (r) => {
+    const payload = {
+      prodotto_key: ricettaKey(r.nome_prodotto),
+      nome_prodotto: String(r.nome_prodotto || '').trim(),
+      ingrediente: String(r.ingrediente || '').trim(),
+      quantita: Number(r.quantita) || 0,
+      unita: r.unita || 'g',
+      costo_unitario: Number(r.costo_unitario) || 0,
+      note: r.note || null,
+      updated_at: new Date().toISOString(),
+    }
+    if (!payload.ingrediente) throw new Error('Ingrediente mancante')
+    if (r.id) {
+      const { data, error } = await supabase.from('ricette').update(payload).eq('id', r.id).select().single()
+      if (error) throw error; return data
+    }
+    const { data, error } = await supabase.from('ricette').insert(payload).select().single()
+    if (error) throw error; return data
+  },
+  eliminaRiga: async (id) => {
+    const { error } = await supabase.from('ricette').delete().eq('id', id)
+    if (error) throw error; return { success: true }
+  },
+}
+
 // ─── PAGAMENTI FATTURE ────────────────────────────────────────────────────
 export const pagamentiFatture = {
   // Lista pagamenti di una fattura
@@ -1716,9 +1893,31 @@ export const analytics = {
 }
 
 // ─── BUSTE PAGA ───────────────────────────────────────────────────────────
-// Moltiplicatore CCNL: netto × 1.9653 (contributi INPS + TFR + oneri c/ditta ~96.5%)
-// Usato SOLO come fallback quando costo_azienda non è salvato nel DB
-const COSTO_AZ_MULTIPLIER_FALLBACK = 1.9653
+// Coefficienti costo-azienda derivati dall'ANALISI DI 769 BUSTE PAGA REALI (2026):
+//   costo_azienda ≈ lordo (totale_competenze) × 1.44   ← carico datoriale (INPS c/ditta + TFR + INAIL)
+//   costo_azienda ≈ paga_base × 1.47
+//   costo_azienda ≈ netto × 1.79
+// (il vecchio 1.9653 applicato a paga_base/netto SOVRASTIMAVA il costo del personale del ~10-35%)
+// Usati SOLO come fallback quando costo_azienda non è salvato nel DB.
+const COSTO_AZ_DA_LORDO    = 1.44
+const COSTO_AZ_DA_PAGABASE = 1.47
+const COSTO_AZ_DA_NETTO    = 1.79
+const IVA_FORFAIT_PCT      = 0.10  // forfait IVA 10% sul venduto (regime 140 Grammi)
+
+// Stima il costo azienda con cascata: costo reale → lordo → paga_base → netto.
+// Distingue esplicitamente LORDO (totale_competenze) da NETTO per non confonderli.
+function stimaCostoAzienda(r) {
+  const reale = parseFloat(r?.costo_azienda)
+  if (reale > 0) return reale
+  const lordo = parseFloat(r?.totale_competenze) || 0
+  if (lordo > 0) return +(lordo * COSTO_AZ_DA_LORDO).toFixed(2)
+  const pagaBase = parseFloat(r?.paga_base) || 0
+  if (pagaBase > 0) return +(pagaBase * COSTO_AZ_DA_PAGABASE).toFixed(2)
+  const netto = parseFloat(r?.netto) || 0
+  if (netto > 0) return +(netto * COSTO_AZ_DA_NETTO).toFixed(2)
+  return 0
+}
+
 const MESI_IT = ['Gennaio','Febbraio','Marzo','Aprile','Maggio','Giugno',
                  'Luglio','Agosto','Settembre','Ottobre','Novembre','Dicembre']
 
@@ -1734,12 +1933,8 @@ export const bustePaga = {
     return rows.map(r => {
       // Usa costo_azienda salvato dal LUL PDF.
       // Fallback CCNL: paga_base × 1.9653, poi netto × 1.9653
-      const pagoBase = r.paga_base ? parseFloat(r.paga_base) : 0
-      const costoAz = r.costo_azienda
-        ? parseFloat(r.costo_azienda)
-        : pagoBase > 0
-          ? +(pagoBase * COSTO_AZ_MULTIPLIER_FALLBACK).toFixed(2)
-          : (r.netto ? +(parseFloat(r.netto) * COSTO_AZ_MULTIPLIER_FALLBACK).toFixed(2) : 0)
+      // Cascata costo azienda: reale → lordo×1.44 → paga_base×1.47 → netto×1.79
+      const costoAz = stimaCostoAzienda(r)
       // Calcola ore da percentuale_pt se presente, altrimenti stima da netto
       const pct    = r.percentuale_pt ? parseFloat(r.percentuale_pt) : (
         parseFloat(r.netto) >= 1400 ? 100 :
@@ -1762,7 +1957,7 @@ export const bustePaga = {
 
   // Riepilogo aggregato per sede/mese
   riepilogo: async (p = {}) => {
-    let q = supabase.from('buste_paga').select('sede,anno,mese,netto,costo_azienda,paga_base,employee_code').order('anno').order('mese')
+    let q = supabase.from('buste_paga').select('sede,anno,mese,netto,costo_azienda,paga_base,totale_competenze,employee_code').order('anno').order('mese')
     if (p.anno) q = q.eq('anno', parseInt(p.anno))
     const rows = await sbFetch(q)
     // Aggrega per sede+anno+mese
@@ -1771,13 +1966,8 @@ export const bustePaga = {
       const key = `${r.sede}-${r.anno}-${r.mese}`
       if (!map[key]) map[key] = { sede: r.sede, location: r.sede === 'MA' ? 'MA' : 'PN', anno: r.anno, mese: r.mese, totale_netto: 0, totale_costo: 0, n_dipendenti: 0, emps: new Set() }
       map[key].totale_netto += parseFloat(r.netto) || 0
-      // Usa costo_azienda salvato dal LUL, fallback CCNL: paga_base×1.9653 o netto×1.9653
-      const pagoBase = r.paga_base ? parseFloat(r.paga_base) : 0
-      const costoAz = r.costo_azienda
-        ? parseFloat(r.costo_azienda)
-        : pagoBase > 0
-          ? +(pagoBase * COSTO_AZ_MULTIPLIER_FALLBACK).toFixed(2)
-          : +(parseFloat(r.netto || 0) * COSTO_AZ_MULTIPLIER_FALLBACK).toFixed(2)
+      // Cascata costo azienda: reale → lordo×1.44 → paga_base×1.47 → netto×1.79
+      const costoAz = stimaCostoAzienda(r)
       map[key].totale_costo += costoAz
       if (r.employee_code) map[key].emps.add(r.employee_code)
     }
@@ -1848,7 +2038,7 @@ export const bustePaga = {
 
   // Costo mensile aggregato
   costoMensile: async (p = {}) => {
-    let q = supabase.from('buste_paga').select('sede,anno,mese,netto,costo_azienda,paga_base').order('anno').order('mese')
+    let q = supabase.from('buste_paga').select('sede,anno,mese,netto,costo_azienda,paga_base,totale_competenze').order('anno').order('mese')
     if (p.anno) q = q.eq('anno', parseInt(p.anno))
     const rows = await sbFetch(q)
     const map = {}
@@ -1856,13 +2046,8 @@ export const bustePaga = {
       const key = `${r.sede}-${r.anno}-${r.mese}`
       if (!map[key]) map[key] = { sede: r.sede, location: r.sede, anno: r.anno, mese: r.mese, netto_totale: 0, costo_totale: 0 }
       map[key].netto_totale += parseFloat(r.netto) || 0
-      // Usa costo_azienda dal DB se disponibile, altrimenti fallback CCNL ×1.9653
-      const pagoBase = parseFloat(r.paga_base) || 0
-      const costoAz = parseFloat(r.costo_azienda) > 0
-        ? parseFloat(r.costo_azienda)
-        : pagoBase > 0
-          ? +(pagoBase * COSTO_AZ_MULTIPLIER_FALLBACK)
-          : +((parseFloat(r.netto) || 0) * COSTO_AZ_MULTIPLIER_FALLBACK)
+      // Cascata costo azienda: reale → lordo×1.44 → paga_base×1.47 → netto×1.79
+      const costoAz = stimaCostoAzienda(r)
       map[key].costo_totale += costoAz
     }
     return Object.values(map).map(r => ({
@@ -3266,12 +3451,15 @@ export const kpiPerformanceApi = {
 export function calcBonusTeam(fatturatoAttuale, beTotale, targetFatturato, premioTeamEuro) {
   if (!premioTeamEuro || !beTotale) return 0
   if (fatturatoAttuale < beTotale) return 0
-  if (fatturatoAttuale >= beTotale && fatturatoAttuale < targetFatturato) {
+  // Fascia 50%→100%: valida solo se il target è oltre il BE (evita divisione per zero/negativa)
+  if (targetFatturato > beTotale && fatturatoAttuale < targetFatturato) {
     const ratio = (fatturatoAttuale - beTotale) / (targetFatturato - beTotale)
     return +(premioTeamEuro * (0.5 + 0.5 * ratio)).toFixed(2) // 50% → 100%
   }
-  // fatturato >= target
-  const over = Math.min((fatturatoAttuale - targetFatturato) / targetFatturato, 0.5) // cap 50% oltre
+  // fatturato >= target (o target non oltre il BE): fascia 100%→150%
+  const over = targetFatturato > 0
+    ? Math.max(0, Math.min((fatturatoAttuale - targetFatturato) / targetFatturato, 0.5)) // cap 50% oltre
+    : 0
   return +(premioTeamEuro * (1 + over)).toFixed(2) // 100% → 150%
 }
 
@@ -3279,7 +3467,8 @@ export function calcBonusTeam(fatturatoAttuale, beTotale, targetFatturato, premi
 export function calcBonusIndividuale(valoreAttuale, quantum, target, premioMax) {
   if (!premioMax || !quantum) return 0
   if (valoreAttuale < quantum) return 0
-  if (valoreAttuale >= target) return +premioMax.toFixed?.(2) || premioMax
+  if (valoreAttuale >= target) return +Number(premioMax).toFixed(2)
+  if (target <= quantum) return 0 // evita divisione per zero/negativa
   const ratio = (valoreAttuale - quantum) / (target - quantum)
   return +(premioMax * ratio).toFixed(2)
 }
@@ -3287,18 +3476,36 @@ export function calcBonusIndividuale(valoreAttuale, quantum, target, premioMax) 
 // ═══════════════════════════════════════════════════════════════════
 // BE MENSILE — break-even per sede × mese (personale + fatture + fissi)
 // ═══════════════════════════════════════════════════════════════════
+// Arricchisce una riga BE con il forfait IVA 10% sul venduto e il margine netto.
+// NB: 140 Grammi paga un forfait IVA del 10% sul venduto; i costi fattura restano a
+// 'totale' (IVA inclusa, non recuperata). Il break-even (be/costi_totali) NON include
+// l'IVA per non spostare le soglie bonus: l'IVA è esposta a parte e nel margine_netto.
+function enrichBe(r) {
+  if (!r) return r
+  const fatt = Number(r.fatturato) || 0
+  const costiTot = Number(r.costi_totali) || 0
+  const iva_forfait = +(fatt * IVA_FORFAIT_PCT).toFixed(2)
+  return {
+    ...r,
+    iva_forfait,
+    fatturato_netto_iva: +(fatt - iva_forfait).toFixed(2),
+    margine_netto: +(fatt - costiTot - iva_forfait).toFixed(2),
+  }
+}
+
 export const beMensileApi = {
   list: async ({ sede, anno } = {}) => {
     let q = supabase.from('v_be_mensile').select('*').order('anno').order('mese')
     if (sede) q = q.eq('sede', locationToSede(sede) || sede)
     if (anno) q = q.eq('anno', parseInt(anno))
-    return sbFetch(q)
+    const rows = await sbFetch(q)
+    return rows.map(enrichBe)
   },
   mese: async ({ sede, anno, mese }) => {
     const s = locationToSede(sede) || sede
     const { data } = await supabase.from('v_be_mensile').select('*')
       .eq('sede', s).eq('anno', parseInt(anno)).eq('mese', parseInt(mese)).maybeSingle()
-    return data
+    return enrichBe(data)
   },
 }
 
@@ -3409,7 +3616,7 @@ export const verificaApi = {
 
 export default {
   modules, employees, chiusure, kpi, venduto,
-  fornitori, pagamentiFatture, prodottiCatalogo, chat, data, analytics, bustePaga, statistiche, turni,
+  fornitori, pagamentiFatture, prodottiCatalogo, listinoApi, ricetteApi, chat, data, analytics, bustePaga, statistiche, turni,
   roles, admin, crmConfig, sediApi, operatorMapping, repartiApi,
   fattureCategorieApi, costiFissiApi, standardNazionaliApi, kpiTargetsApi, kpiPerformanceApi,
   beMensileApi, operatoreMeseApi, obiettiviProdottoApi, bonusApi,

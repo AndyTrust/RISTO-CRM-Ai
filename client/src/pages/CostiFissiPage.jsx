@@ -334,12 +334,12 @@ export default function CostiFissiPage() {
         <div className="bg-red-50 border border-red-100 rounded-2xl p-4">
           <p className="text-xs text-red-500 uppercase tracking-wide">Sede MA</p>
           <p className="text-2xl font-bold text-red-700 mt-1">{eur(totaliMese.totSede.MA.reduce((s,v)=>s+v,0))}</p>
-          <p className="text-xs text-red-500 mt-0.5">media mese {eur(totaliMese.totSede.MA.reduce((s,v)=>s+v,0)/12)}</p>
+          <p className="text-xs text-red-500 mt-0.5">media mese {eur(totaliMese.totSede.MA.reduce((s,v)=>s+v,0)/(totaliMese.totSede.MA.filter(v=>v>0).length||1))}</p>
         </div>
         <div className="bg-blue-50 border border-blue-100 rounded-2xl p-4">
           <p className="text-xs text-blue-500 uppercase tracking-wide">Sede PN</p>
           <p className="text-2xl font-bold text-blue-700 mt-1">{eur(totaliMese.totSede.PN.reduce((s,v)=>s+v,0))}</p>
-          <p className="text-xs text-blue-500 mt-0.5">media mese {eur(totaliMese.totSede.PN.reduce((s,v)=>s+v,0)/12)}</p>
+          <p className="text-xs text-blue-500 mt-0.5">media mese {eur(totaliMese.totSede.PN.reduce((s,v)=>s+v,0)/(totaliMese.totSede.PN.filter(v=>v>0).length||1))}</p>
         </div>
       </div>
 

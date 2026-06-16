@@ -293,7 +293,8 @@ function TabTeamTarget({ sede, anno, mese, nMesi = 3, refresh }) {
       ])
       setCosti(c); setQuorum(q); setAnnoPrec(ap); setCopertoMedio(cm)
       const beCalc = Number(c.be_totale) || 0
-      const targetSuggerito = Math.max(beCalc * 1.10, Math.max(ap || 0, quorum || 0))
+      // Usa il quorum appena caricato (q), non lo stato 'quorum' che è ancora stale in questo render
+      const targetSuggerito = Math.max(beCalc * 1.10, Math.max(ap || 0, q || 0))
       setTarget(t || {
         be_totale: beCalc,
         target_fatturato: Math.round(targetSuggerito),

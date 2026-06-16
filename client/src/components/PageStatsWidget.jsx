@@ -48,15 +48,22 @@ export default function PageStatsWidget() {
         const anno = today.getFullYear()
         const mese = today.getMonth() + 1
         const mesePad = String(mese).padStart(2, '0')
-        const prevMese = mese === 12 ? 1 : mese + 1
+        const prevMese = mese === 12 ? 1 : mese + 1   // = mese SUCCESSIVO (usato per il forecast)
         const prevAnno = mese === 12 ? anno + 1 : anno
+        // Helper data + limiti di mese ESCLUSIVI (evita date inesistenti tipo 2026-06-31)
+        const ymd = (y, m, d) => `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+        const startCurr = ymd(anno, mese, 1)
+        const endCurrExcl = ymd(prevAnno, prevMese, 1)                 // primo del mese successivo
+        const start6 = ymd(mese - 6 <= 0 ? anno - 1 : anno, ((mese - 7 + 12) % 12) + 1, 1)
+        const startPrevY = ymd(anno - 1, mese, 1)
+        const endPrevYExcl = ymd(prevMese === 1 ? anno : anno - 1, prevMese, 1)
 
         // ── 1. Venduto mese corrente (MA + PN, da chiusure_giornaliere) ──
         const { data: chiusure } = await supabase
           .from('chiusure_giornaliere')
           .select('sede, totale_venduto_ipratico, coperti, data')
-          .gte('data', `${anno}-${mesePad}-01`)
-          .lte('data', `${anno}-${mesePad}-31`)
+          .gte('data', startCurr)
+          .lt('data', endCurrExcl)
           .not('totale_venduto_ipratico', 'is', null)
 
         let vendutoMA = 0, vendutoPN = 0, copertiMA = 0, copertiPN = 0
@@ -64,7 +71,7 @@ export default function PageStatsWidget() {
           const v = parseFloat(r.totale_venduto_ipratico || 0)
           const c = parseInt(r.coperti || 0)
           if (r.sede === 'MA' || r.sede === 'MAMELI') { vendutoMA += v; copertiMA += c }
-          else { vendutoPN += v; copertiPN += c }
+          else if (r.sede === 'PN' || r.sede === 'PREDDA_NIEDDA' || r.sede === 'PREDDA') { vendutoPN += v; copertiPN += c }
         }
         const vendutoTot = vendutoMA + vendutoPN
         const copertiTot = copertiMA + copertiPN
@@ -98,8 +105,8 @@ export default function PageStatsWidget() {
         const { data: ultimi6 } = await supabase
           .from('chiusure_giornaliere')
           .select('sede, data, totale_venduto_ipratico')
-          .gte('data', new Date(anno, mese - 7, 1).toISOString().split('T')[0])
-          .lte('data', `${anno}-${mesePad}-31`)
+          .gte('data', start6)
+          .lt('data', endCurrExcl)
           .not('totale_venduto_ipratico', 'is', null)
 
         let forecastProssimo = null
@@ -143,8 +150,8 @@ export default function PageStatsWidget() {
         const { data: anno2025rows } = await supabase
           .from('chiusure_giornaliere')
           .select('totale_venduto_ipratico')
-          .gte('data', `${anno - 1}-${mesePad}-01`)
-          .lte('data', `${anno - 1}-${mesePad}-31`)
+          .gte('data', startPrevY)
+          .lt('data', endPrevYExcl)
           .not('totale_venduto_ipratico', 'is', null)
 
         let deltaYoY = null

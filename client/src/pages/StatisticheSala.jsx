@@ -55,6 +55,7 @@ function KPICard({ icon: Icon, label, value, subtitle, info, color = 'bg-indigo-
   )
 }
 
+const timeVal = (v) => String(v || '').replace('.', ':')
 const GIORNI = ['Domenica','Lunedì','Martedì','Mercoledì','Giovedì','Venerdì','Sabato']
 const GIORNI_SHORT = ['Dom','Lun','Mar','Mer','Gio','Ven','Sab']
 
@@ -66,16 +67,28 @@ function TabTurni({ location, fromDate, toDate }) {
   // Split pranzo% per DOW — calcolato dai dati reali chiusure_turni. Fallback iniziale.
   const [splitByDow, setSplitByDow] = useState([80, 30, 35, 35, 40, 45, 65])
   const [splitIsReal, setSplitIsReal] = useState(false)
-  const [paxPrimi,   setPaxPrimi]   = useState(30)
-  const [paxSecondi, setPaxSecondi] = useState(30)
-  const [maxPrimi,   setMaxPrimi]   = useState(2)
-  const [maxSecondi, setMaxSecondi] = useState(2)
-  const [maxPlonge,  setMaxPlonge]  = useState(2)
+  // Cucina: brigata base 1 primi + 1 secondi + 1 plonge fino a capCucinaBase coperti,
+  // poi +1 operatore di supporto ogni paxSupporto coperti (esce a fine picco).
+  const [capCucinaBase, setCapCucinaBase] = useState(60)
+  const [paxSupporto,   setPaxSupporto]   = useState(30)
+  const [maxSupporto,   setMaxSupporto]   = useState(3)
+
+  // Orari standard dei turni (modificabili). Base = tutto il servizio; Supporto = solo il picco.
+  const [orari, setOrari] = useState({
+    cucinaPranzo: '10:30', salaPranzoArrivo: '11:00', servPranzo: '12:00', finePranzo: '15:30',
+    piccoPranzoStart: '12:30', piccoPranzoEnd: '14:30',
+    cucinaCena: '18:00', salaCenaArrivo: '18:00', servCena: '19:00', fineCena: '23:30',
+    piccoCenaStart: '20:00', piccoCenaEnd: '22:00',
+  })
+  const setOra = (k, v) => setOrari(o => ({ ...o, [k]: v }))
 
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [byDow, setByDow] = useState([])
   const [showConfig, setShowConfig] = useState(false)
+  const [curva, setCurva] = useState([])          // arrivi reali ricostruiti per fascia 30'
+  const [piccoAuto, setPiccoAuto] = useState(null) // { pranzo:{start,end}, cena:{start,end} }
+  const [nGiorniCurva, setNGiorniCurva] = useState(0)
 
   useEffect(() => {
     if (!fromDate || !toDate) return
@@ -91,8 +104,15 @@ function TabTurni({ location, fromDate, toDate }) {
       .in('turno', ['pranzo', 'cena'])
     if (sede) qTurni = qTurni.eq('sede', sede)
 
-    Promise.all([sbq(qCiusure.range(0, 9999)), sbq(qTurni.range(0, 9999))])
-      .then(([chiusureData, turniData]) => {
+    let qTavoli = supabase.from('statistiche_tavoli')
+      .select('data_inizio, data_chiusura, durata_media_min, n_coperti')
+      .gte('data_inizio', fromDate).lte('data_inizio', toDate)
+      .not('data_chiusura', 'is', null)
+    if (sede) qTavoli = qTavoli.eq('sede', sede)
+
+    Promise.all([sbq(qCiusure.range(0, 9999)), sbq(qTurni.range(0, 9999)), sbq(qTavoli.range(0, 99999))])
+      .then(([chiusureData, turniData, tavoliData]) => {
+        // ── byDow: media coperti per giorno ──
         const dowSum = Array(7).fill(0), dowCount = Array(7).fill(0)
         for (const r of chiusureData) {
           const dow = new Date(r.data + 'T00:00:00').getDay()
@@ -105,6 +125,7 @@ function TabTurni({ location, fromDate, toDate }) {
           n_giorni: dowCount[i],
         })))
 
+        // ── split pranzo/cena reale ──
         if (turniData && turniData.length > 0) {
           const dowPranzo = Array(7).fill(0), dowCena = Array(7).fill(0)
           for (const r of turniData) {
@@ -121,10 +142,65 @@ function TabTurni({ location, fromDate, toDate }) {
         } else {
           setSplitIsReal(false)
         }
+
+        // ── Curva oraria reale: arrivo = chiusura − durata, bucket 30' ──
+        const buckets = {} // minuti → { coperti, tavoli }
+        const giorniSet = new Set()
+        for (const r of (tavoliData || [])) {
+          const m = String(r.data_chiusura || '').match(/T(\d{2}):(\d{2})/)
+          if (!m) continue
+          const closeMin = (+m[1]) * 60 + (+m[2])
+          const arrMin = closeMin - (parseInt(r.durata_media_min) || 0)
+          if (arrMin < 0 || arrMin > 24 * 60) continue
+          const b = Math.floor(arrMin / 30) * 30
+          if (!buckets[b]) buckets[b] = { coperti: 0, tavoli: 0 }
+          buckets[b].coperti += parseInt(r.n_coperti) || 0
+          buckets[b].tavoli += 1
+          if (r.data_inizio) giorniSet.add(r.data_inizio)
+        }
+        const nG = giorniSet.size || 1
+        const fmtMin = (x) => `${String(Math.floor(x / 60)).padStart(2, '0')}:${String(x % 60).padStart(2, '0')}`
+        const curvaArr = Object.keys(buckets).map(Number).sort((a, b) => a - b).map(min => ({
+          min, label: fmtMin(min),
+          coperti: buckets[min].coperti, tavoli: buckets[min].tavoli,
+          copertiMedi: Math.round(buckets[min].coperti / nG),
+          servizio: min < 16 * 60 + 30 ? 'pranzo' : 'cena',
+        }))
+        setCurva(curvaArr); setNGiorniCurva(nG)
+
+        // Picco = finestra contigua con coperti ≥ 50% del max del servizio
+        const piccoServizio = (serv) => {
+          const bs = curvaArr.filter(b => b.servizio === serv)
+          if (!bs.length) return null
+          const maxC = Math.max(...bs.map(b => b.coperti))
+          const above = bs.filter(b => b.coperti >= maxC * 0.5)
+          if (!above.length) return null
+          return { start: fmtMin(Math.min(...above.map(b => b.min))), end: fmtMin(Math.max(...above.map(b => b.min)) + 30) }
+        }
+        const pranzo = piccoServizio('pranzo'), cena = piccoServizio('cena')
+        if (pranzo || cena) {
+          setPiccoAuto({ pranzo, cena })
+          setOrari(o => ({
+            ...o,
+            ...(pranzo ? { piccoPranzoStart: pranzo.start, piccoPranzoEnd: pranzo.end } : {}),
+            ...(cena ? { piccoCenaStart: cena.start, piccoCenaEnd: cena.end } : {}),
+          }))
+        } else {
+          setPiccoAuto(null)
+        }
       })
       .catch(e => setError(e.message || String(e)))
       .finally(() => setLoading(false))
   }, [location, fromDate, toDate])
+
+  // Sala: 1 cameriere ogni paxPerCameriere coperti, tra min e max
+  const calcSala = (cop) => cop <= 0 ? 0 : Math.min(maxSala, Math.max(minSala, Math.ceil(cop / paxPerCameriere)))
+  // Cucina: brigata base (1+1+1) fino a capCucinaBase coperti, poi +1 supporto ogni paxSupporto
+  const calcCucina = (cop) => {
+    if (cop <= 0) return { primi: 0, secondi: 0, plonge: 0, supporto: 0, tot: 0 }
+    const supporto = Math.min(maxSupporto, Math.max(0, Math.ceil((cop - capCucinaBase) / paxSupporto)))
+    return { primi: 1, secondi: 1, plonge: 1, supporto, tot: 3 + supporto }
+  }
 
   const turni = useMemo(() => {
     return byDow.map(d => {
@@ -132,22 +208,18 @@ function TabTurni({ location, fromDate, toDate }) {
       const pctPranzo = splitByDow[d.dow] ?? 40
       const copPranzo = Math.round(totCop * pctPranzo / 100)
       const copCena   = totCop - copPranzo
-      const camerierePranzo = totCop === 0 ? 0 : Math.min(maxSala, Math.max(minSala, Math.ceil(copPranzo / paxPerCameriere)))
-      const cameriereCena   = totCop === 0 ? 0 : Math.min(maxSala, Math.max(minSala, Math.ceil(copCena   / paxPerCameriere)))
-      const cuochiPrimiP   = totCop === 0 ? 0 : Math.min(maxPrimi,   Math.max(1, Math.ceil(copPranzo / paxPrimi)))
-      const cuochiSecondiP = totCop === 0 ? 0 : Math.min(maxSecondi, Math.max(1, Math.ceil(copPranzo / paxSecondi)))
-      const cuochiPrimiC   = totCop === 0 ? 0 : Math.min(maxPrimi,   Math.max(1, Math.ceil(copCena   / paxPrimi)))
-      const cuochiSecondiC = totCop === 0 ? 0 : Math.min(maxSecondi, Math.max(1, Math.ceil(copCena   / paxSecondi)))
-      const plongeP = totCop === 0 ? 0 : Math.min(maxPlonge, Math.ceil(copPranzo / (paxPrimi * 1.5)))
-      const plongeC = totCop === 0 ? 0 : Math.min(maxPlonge, Math.ceil(copCena   / (paxPrimi * 1.5)))
+      const camerierePranzo = calcSala(copPranzo)
+      const cameriereCena   = calcSala(copCena)
+      const cuP = calcCucina(copPranzo)
+      const cuC = calcCucina(copCena)
       return {
-        ...d, copPranzo, copCena, camerierePranzo, cameriereCena,
-        cuochiPrimiP, cuochiSecondiP, plongeP, cuochiPrimiC, cuochiSecondiC, plongeC,
-        totPersonalePranzo: camerierePranzo + cuochiPrimiP + cuochiSecondiP + Math.max(1, plongeP),
-        totPersonaleCena:   cameriereCena   + cuochiPrimiC + cuochiSecondiC + Math.max(1, plongeC),
+        ...d, copPranzo, copCena, camerierePranzo, cameriereCena, cuP, cuC,
+        totPersonalePranzo: camerierePranzo + cuP.tot,
+        totPersonaleCena:   cameriereCena   + cuC.tot,
       }
     })
-  }, [byDow, paxPerCameriere, minSala, maxSala, splitByDow, paxPrimi, paxSecondi, maxPrimi, maxSecondi, maxPlonge])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [byDow, paxPerCameriere, minSala, maxSala, splitByDow, capCucinaBase, paxSupporto, maxSupporto])
 
   function StaffBadge({ n, color = 'indigo', label }) {
     if (n === 0) return <span className="text-gray-300 text-xs">—</span>
@@ -194,8 +266,8 @@ function TabTurni({ location, fromDate, toDate }) {
             <div className="font-bold text-violet-700 text-base">Dom {splitByDow[0]}% · Sab {splitByDow[6]}%</div>
           </div>
           <div className="bg-white rounded-lg p-2.5 border border-violet-100">
-            <div className="text-gray-500 mb-1">Pax/cuoco cucina</div>
-            <div className="font-bold text-violet-700 text-base">{paxPrimi}</div>
+            <div className="text-gray-500 mb-1">Cucina: base / supporto</div>
+            <div className="font-bold text-violet-700 text-base">≤{capCucinaBase} cop = 3 · +1/{paxSupporto}</div>
           </div>
         </div>
         {showConfig && (
@@ -230,13 +302,11 @@ function TabTurni({ location, fromDate, toDate }) {
               ))}
             </div>
             <div className="bg-white rounded-lg p-3 border border-violet-100 space-y-2">
-              <div className="text-xs font-semibold text-violet-700 flex items-center gap-1.5"><ChefHat size={12} /> Cucina</div>
+              <div className="text-xs font-semibold text-violet-700 flex items-center gap-1.5"><ChefHat size={12} /> Cucina (brigata base + supporto)</div>
               {[
-                { label: 'Pax/cuoco Primi',    val: paxPrimi,   set: setPaxPrimi,   min: 10, max: 80 },
-                { label: 'Pax/cuoco Secondi',  val: paxSecondi, set: setPaxSecondi, min: 10, max: 80 },
-                { label: 'Max cuochi Primi',   val: maxPrimi,   set: setMaxPrimi,   min: 1,  max: 4  },
-                { label: 'Max cuochi Secondi', val: maxSecondi, set: setMaxSecondi, min: 1,  max: 4  },
-                { label: 'Max Plonge',         val: maxPlonge,  set: setMaxPlonge,  min: 1,  max: 3  },
+                { label: 'Coperti gestiti dalla base (1+1+1)', val: capCucinaBase, set: setCapCucinaBase, min: 30, max: 120 },
+                { label: 'Coperti per operatore supporto',     val: paxSupporto,   set: setPaxSupporto,   min: 10, max: 60  },
+                { label: 'Max operatori supporto',             val: maxSupporto,   set: setMaxSupporto,   min: 0,  max: 5   },
               ].map(({ label, val, set, min, max }) => (
                 <div key={label} className="flex items-center justify-between gap-2">
                   <span className="text-xs text-gray-600">{label}</span>
@@ -246,9 +316,72 @@ function TabTurni({ location, fromDate, toDate }) {
                 </div>
               ))}
             </div>
+            <div className="bg-white rounded-lg p-3 border border-violet-100 space-y-2 lg:col-span-3">
+              <div className="text-xs font-semibold text-violet-700 flex items-center gap-1.5"><Clock size={12} /> Orari turni (base = tutto il servizio · supporto = solo picco)</div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-1">
+                {[
+                  { label: 'Cucina pranzo dalle', k: 'cucinaPranzo' },
+                  { label: 'Sala pranzo arrivo', k: 'salaPranzoArrivo' },
+                  { label: 'Servizio pranzo', k: 'servPranzo' },
+                  { label: 'Fine pranzo', k: 'finePranzo' },
+                  { label: 'Picco pranzo da', k: 'piccoPranzoStart' },
+                  { label: 'Picco pranzo a', k: 'piccoPranzoEnd' },
+                  { label: 'Cucina cena dalle', k: 'cucinaCena' },
+                  { label: 'Sala cena prep', k: 'salaCenaArrivo' },
+                  { label: 'Servizio cena', k: 'servCena' },
+                  { label: 'Fine cena', k: 'fineCena' },
+                  { label: 'Picco cena da', k: 'piccoCenaStart' },
+                  { label: 'Picco cena a', k: 'piccoCenaEnd' },
+                ].map(({ label, k }) => (
+                  <div key={k} className="flex items-center justify-between gap-1">
+                    <span className="text-[11px] text-gray-600">{label}</span>
+                    <input type="time" value={timeVal(orari[k])} onChange={e => setOra(k, e.target.value)}
+                      className="text-[11px] border border-gray-200 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-violet-400" />
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         )}
       </div>
+
+      {curva.length > 0 && (() => {
+        const maxC = Math.max(...curva.map(b => b.copertiMedi), 1)
+        const inPicco = (b) => {
+          const p = b.servizio === 'pranzo' ? piccoAuto?.pranzo : piccoAuto?.cena
+          return p && b.label >= p.start && b.label < p.end
+        }
+        return (
+          <div className="bg-white rounded-xl border border-gray-200 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+              <h3 className="font-semibold text-gray-800 flex items-center gap-2 text-sm">
+                <Clock size={15} className="text-violet-600" /> Affluenza per fascia oraria — arrivi reali ricostruiti
+              </h3>
+              <span className="text-[11px] text-gray-400">arrivo = chiusura tavolo − durata · {nGiorniCurva} giorni · media coperti/fascia</span>
+            </div>
+            {piccoAuto && (
+              <p className="text-xs text-violet-700 mb-3">
+                Picco rilevato dai dati: 🌞 pranzo <strong>{piccoAuto.pranzo ? `${piccoAuto.pranzo.start}–${piccoAuto.pranzo.end}` : '—'}</strong> · 🌙 cena <strong>{piccoAuto.cena ? `${piccoAuto.cena.start}–${piccoAuto.cena.end}` : '—'}</strong> — applicato automaticamente ai turni di supporto.
+              </p>
+            )}
+            <div className="flex items-end gap-1 h-40 overflow-x-auto pb-1">
+              {curva.map(b => (
+                <div key={b.min} className="flex flex-col items-center justify-end flex-shrink-0" style={{ width: 30 }} title={`${b.label} · ${b.copertiMedi} coperti medi · ${b.tavoli} tavoli tot`}>
+                  <div className="text-[8px] text-gray-500 mb-0.5">{b.copertiMedi}</div>
+                  <div className={`w-4 rounded-t ${inPicco(b) ? (b.servizio === 'pranzo' ? 'bg-blue-600' : 'bg-indigo-600') : (b.servizio === 'pranzo' ? 'bg-blue-300' : 'bg-indigo-300')}`}
+                    style={{ height: `${Math.max(4, b.copertiMedi / maxC * 120)}px` }} />
+                  <div className="text-[8px] text-gray-400 mt-0.5 -rotate-45 origin-center w-6 text-center">{b.label}</div>
+                </div>
+              ))}
+            </div>
+            <div className="flex items-center gap-3 mt-2 text-[10px] text-gray-500">
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-blue-300 inline-block" /> Pranzo</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-indigo-300 inline-block" /> Cena</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-violet-600 inline-block" /> Fascia di picco</span>
+            </div>
+          </div>
+        )
+      })()}
 
       <div className="overflow-x-auto rounded-xl border border-gray-200">
         <table className="min-w-full text-xs">
@@ -256,14 +389,14 @@ function TabTurni({ location, fromDate, toDate }) {
             <tr className="bg-gray-50 border-b border-gray-200">
               <th className="px-3 py-3 text-left font-semibold text-gray-700">Giorno</th>
               <th className="px-3 py-3 text-center font-semibold text-gray-600">Media Coperti</th>
-              <th className="px-3 py-3 text-center font-semibold text-blue-700 bg-blue-50/50" colSpan={2}>🌞 PRANZO 12:00–15:00</th>
-              <th className="px-3 py-3 text-center font-semibold text-indigo-700 bg-indigo-50/50" colSpan={2}>🌙 CENA 19:00–23:00</th>
+              <th className="px-3 py-3 text-center font-semibold text-blue-700 bg-blue-50/50" colSpan={2}>🌞 PRANZO · servizio {orari.servPranzo}–{orari.finePranzo}</th>
+              <th className="px-3 py-3 text-center font-semibold text-indigo-700 bg-indigo-50/50" colSpan={2}>🌙 CENA · servizio {orari.servCena}–{orari.fineCena}</th>
               <th className="px-3 py-3 text-center font-semibold text-gray-500">Tot. Giornata</th>
             </tr>
             <tr className="bg-gray-50/60 border-b border-gray-100 text-[10px] text-gray-500">
               <th className="px-3 py-1" /><th className="px-3 py-1 text-center">giornalieri</th>
-              <th className="px-3 py-1 text-center bg-blue-50/30">Sala 👥</th><th className="px-3 py-1 text-center bg-blue-50/30">Cucina 👨‍🍳</th>
-              <th className="px-3 py-1 text-center bg-indigo-50/30">Sala 👥</th><th className="px-3 py-1 text-center bg-indigo-50/30">Cucina 👨‍🍳</th>
+              <th className="px-3 py-1 text-center bg-blue-50/30">Sala 👥 <span className="text-gray-400">(arrivo {orari.salaPranzoArrivo})</span></th><th className="px-3 py-1 text-center bg-blue-50/30">Cucina 👨‍🍳 <span className="text-gray-400">(dalle {orari.cucinaPranzo})</span></th>
+              <th className="px-3 py-1 text-center bg-indigo-50/30">Sala 👥 <span className="text-gray-400">(prep {orari.salaCenaArrivo})</span></th><th className="px-3 py-1 text-center bg-indigo-50/30">Cucina 👨‍🍳 <span className="text-gray-400">(dalle {orari.cucinaCena})</span></th>
               <th className="px-3 py-1 text-center">Persone</th>
             </tr>
           </thead>
@@ -291,27 +424,31 @@ function TabTurni({ location, fromDate, toDate }) {
                   <td className="px-3 py-3 text-center bg-blue-50/20">
                     {!isEmpty ? (<div className="space-y-1">
                       <div><StaffBadge n={t.camerierePranzo} color="indigo" label="Camerieri sala pranzo" /><div className="text-[10px] text-gray-400 mt-0.5">camerieri</div></div>
+                      {t.camerierePranzo > minSala && <div className="text-[9px] text-gray-400">−{t.camerierePranzo - minSala} escono ~{orari.piccoPranzoEnd}</div>}
                       <div className="text-[10px] text-blue-500">{t.copPranzo} cop.</div>
                     </div>) : '—'}
                   </td>
                   <td className="px-3 py-3 text-center bg-blue-50/20">
                     {!isEmpty ? (<div className="space-y-0.5 text-[10px]">
-                      <div className="flex items-center justify-center gap-1"><StaffBadge n={t.cuochiPrimiP} color="emerald" label="Primi" /><span className="text-gray-400">Primi</span></div>
-                      <div className="flex items-center justify-center gap-1"><StaffBadge n={t.cuochiSecondiP} color="amber" label="Secondi" /><span className="text-gray-400">Secondi</span></div>
-                      <div className="flex items-center justify-center gap-1"><StaffBadge n={Math.max(1, t.plongeP)} color="violet" label="Plonge" /><span className="text-gray-400">Plonge</span></div>
+                      <div className="flex items-center justify-center gap-1"><StaffBadge n={t.cuP.primi} color="emerald" label="Primi" /><span className="text-gray-400">Primi</span></div>
+                      <div className="flex items-center justify-center gap-1"><StaffBadge n={t.cuP.secondi} color="amber" label="Secondi" /><span className="text-gray-400">Secondi</span></div>
+                      <div className="flex items-center justify-center gap-1"><StaffBadge n={t.cuP.plonge} color="violet" label="Plonge" /><span className="text-gray-400">Plonge</span></div>
+                      {t.cuP.supporto > 0 && <div className="flex flex-col items-center"><div className="flex items-center justify-center gap-1"><StaffBadge n={t.cuP.supporto} color="indigo" label="Supporto (solo sul picco)" /><span className="text-gray-400">Supporto</span></div><span className="text-[9px] text-gray-400">{orari.piccoPranzoStart}–{orari.piccoPranzoEnd}</span></div>}
                     </div>) : '—'}
                   </td>
                   <td className="px-3 py-3 text-center bg-indigo-50/20">
                     {!isEmpty ? (<div className="space-y-1">
                       <div><StaffBadge n={t.cameriereCena} color="indigo" label="Camerieri sala cena" /><div className="text-[10px] text-gray-400 mt-0.5">camerieri</div></div>
+                      {t.cameriereCena > minSala && <div className="text-[9px] text-gray-400">−{t.cameriereCena - minSala} escono ~{orari.piccoCenaEnd}</div>}
                       <div className="text-[10px] text-indigo-500">{t.copCena} cop.</div>
                     </div>) : '—'}
                   </td>
                   <td className="px-3 py-3 text-center bg-indigo-50/20">
                     {!isEmpty ? (<div className="space-y-0.5 text-[10px]">
-                      <div className="flex items-center justify-center gap-1"><StaffBadge n={t.cuochiPrimiC} color="emerald" label="Primi" /><span className="text-gray-400">Primi</span></div>
-                      <div className="flex items-center justify-center gap-1"><StaffBadge n={t.cuochiSecondiC} color="amber" label="Secondi" /><span className="text-gray-400">Secondi</span></div>
-                      <div className="flex items-center justify-center gap-1"><StaffBadge n={Math.max(1, t.plongeC)} color="violet" label="Plonge" /><span className="text-gray-400">Plonge</span></div>
+                      <div className="flex items-center justify-center gap-1"><StaffBadge n={t.cuC.primi} color="emerald" label="Primi" /><span className="text-gray-400">Primi</span></div>
+                      <div className="flex items-center justify-center gap-1"><StaffBadge n={t.cuC.secondi} color="amber" label="Secondi" /><span className="text-gray-400">Secondi</span></div>
+                      <div className="flex items-center justify-center gap-1"><StaffBadge n={t.cuC.plonge} color="violet" label="Plonge" /><span className="text-gray-400">Plonge</span></div>
+                      {t.cuC.supporto > 0 && <div className="flex flex-col items-center"><div className="flex items-center justify-center gap-1"><StaffBadge n={t.cuC.supporto} color="indigo" label="Supporto (solo sul picco)" /><span className="text-gray-400">Supporto</span></div><span className="text-[9px] text-gray-400">{orari.piccoCenaStart}–{orari.piccoCenaEnd}</span></div>}
                     </div>) : '—'}
                   </td>
                   <td className="px-3 py-3 text-center">
@@ -327,10 +464,21 @@ function TabTurni({ location, fromDate, toDate }) {
         </table>
       </div>
 
-      <p className="text-xs text-gray-400 italic">
-        Media coperti per giorno della settimana da <strong>chiusure_giornaliere</strong>; split pranzo/cena {splitIsReal ? 'reale da chiusure_turni' : 'stimato (dati turni assenti nel periodo)'}.
-        Organico ricalcolato sui parametri sopra. Cambia periodo/sede per analizzare stagioni diverse.
-      </p>
+      <div className="text-xs text-gray-400 italic space-y-1">
+        <p>
+          Media coperti per giorno da <strong>chiusure_giornaliere</strong>; split pranzo/cena {splitIsReal ? 'reale da chiusure_turni' : 'stimato (dati turni assenti)'}.
+          Cambia periodo/sede per analizzare stagioni diverse.
+        </p>
+        <p>
+          <strong>Cucina</strong>: brigata base 1 Primi + 1 Secondi + 1 Plonge fino a {capCucinaBase} coperti, poi +1 di <strong>Supporto</strong> ogni {paxSupporto} coperti.
+          <strong> Migliori turni</strong>: la base copre tutto il servizio, il Supporto entra solo nella <em>fascia di picco</em> ed esce prima quando l'affluenza cala (in sala i camerieri oltre il minimo {minSala} smontano a fine picco).
+        </p>
+        <p>
+          {curva.length > 0
+            ? <>Le <strong>fasce di picco</strong> sono ora <strong>ricostruite dai dati reali</strong> (orario d'arrivo = chiusura tavolo − durata, da <strong>statistiche_tavoli</strong>), non più stimate. Modificabili comunque in Orari turni.</>
+            : <>Nessun dato tavoli con orario nel periodo: le fasce di picco restano quelle impostate in Orari turni. Scarica le statistiche tavoli per ottenere i picchi reali.</>}
+        </p>
+      </div>
     </div>
   )
 }

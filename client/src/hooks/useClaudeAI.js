@@ -151,20 +151,26 @@ export async function buildCrmContext(options = {}) {
     if (includeBuste) {
       const { data: bp } = await supabase
         .from('buste_paga')
-        .select('sede, mese, costo_azienda')
+        .select('sede, anno, mese, costo_azienda')
+        .order('anno', { ascending: false })
         .order('mese', { ascending: false })
-        .limit(40)
+        .limit(60)
       if (bp?.length) {
         const byMese = {}
         for (const b of bp) {
-          const k = `${b.sede}|${b.mese}`
-          if (!byMese[k]) byMese[k] = { sede: b.sede, mese: b.mese, tot: 0 }
+          const anno = Number(b.anno) || 0
+          const mese = Number(b.mese) || 0
+          const k = `${b.sede}|${anno}|${mese}`
+          if (!byMese[k]) byMese[k] = { sede: b.sede, anno, mese, tot: 0 }
           byMese[k].tot += parseFloat(b.costo_azienda) || 0
         }
         parts.push(`\n## Costo personale per mese`)
-        Object.values(byMese).sort((a, b) => b.mese.localeCompare(a.mese)).slice(0, 6).forEach(v => {
-          parts.push(`${v.sede} ${v.mese}: €${v.tot.toFixed(0)}`)
-        })
+        Object.values(byMese)
+          .sort((a, b) => (b.anno - a.anno) || (b.mese - a.mese))
+          .slice(0, 6)
+          .forEach(v => {
+            parts.push(`${v.sede} ${String(v.mese).padStart(2, '0')}/${v.anno}: €${v.tot.toFixed(0)}`)
+          })
       }
     }
 
@@ -269,13 +275,19 @@ export default function useClaudeAI() {
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let full = ''
+      let buffer = ''
 
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-        const chunk = decoder.decode(value)
-        const lines = chunk.split('\n').filter(l => l.startsWith('data: '))
+        // stream:true mantiene i caratteri multibyte spezzati tra i chunk
+        buffer += decoder.decode(value, { stream: true })
+        // Processa solo le righe complete (terminate da newline); l'eventuale
+        // riga parziale resta nel buffer fino alla read() successiva.
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
         for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
           try {
             const event = JSON.parse(line.slice(6))
             if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {

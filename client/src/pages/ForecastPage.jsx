@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import PageAssistant from '../components/PageAssistant'
 import PeriodFilter from '../components/PeriodFilter'
+import AiAdvisor from '../components/AiAdvisor'
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 const SEDE_OPTS = [
@@ -539,6 +540,33 @@ Valutazioni disponibili: ${[...new Set(forecast.filter(r => r.valutazione).map(r
           </div>
         </>
       )}
+
+      {/* Consiglio AI taglia/spingi sul forecast */}
+      <div className="mt-5">
+        <AiAdvisor
+          title="Consiglio AI sul forecast"
+          hint="previsioni incassi prossimi 7 giorni + dati operativi"
+          ctaIdle="Dove tagliare e dove spingere"
+          system={[
+            'Sei il controller finanziario di "140 Grammi" (ristoranti Mameli=MA e Predda Niedda=PN, Sassari).',
+            'Ricevi (1) il contesto operativo reale e (2) le previsioni di incasso dei prossimi giorni per sede.',
+            'Compito: dato il forecast, indicare azioni concrete sui prossimi giorni. Rispondi in italiano, conciso, senza preamboli, in markdown con queste sezioni:',
+            '## ✂️ Dove tagliare',
+            'Giorni/turni/sedi con incasso previsto basso rispetto ai costi: dove ridurre personale/acquisti, sempre citando i numeri forniti.',
+            '## 🚀 Dove spingere',
+            'Giorni/sedi con previsione alta o margine migliore: dove concentrare promozioni, prenotazioni, staff. Cita i numeri.',
+            '## ⚠️ Rischi',
+            'Anomalie o dati mancanti nel forecast. Non inventare numeri: usa solo quelli forniti; se un dato manca, segnalalo.',
+          ].join('\n')}
+          buildUserMessage={async () => {
+            const righe = (forecast || []).map(r =>
+              `${r.data_competenza} ${r.sede}: €${Math.round(Number(r.previsione_incasso) || 0)}${r.valutazione ? ` (${r.valutazione})` : ''}${r.note_meteo ? ` [${r.note_meteo}]` : ''}`
+            ).join('\n')
+            return `### Previsioni incasso prossimi giorni (per sede)\n${righe || '(nessuna previsione disponibile)'}\n\n` +
+              `### Sintesi\nOggi: ${kpi?.oggi ?? '—'} · Domani: ${kpi?.domani ?? '—'} · Settimana: ${kpi?.settimana ?? '—'}`
+          }}
+        />
+      </div>
 
       {/* PageAssistant */}
       <PageAssistant

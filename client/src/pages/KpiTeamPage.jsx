@@ -306,7 +306,8 @@ export default function KpiTeamPage() {
 
     // 5) Top operatore — suggerimento
     if (operatori.length >= 2) {
-      const top = operatori[0]
+      // Non assumere che operatori[0] sia il migliore: ordina per pezzi
+      const top = [...operatori].sort((a, b) => (b.tot_pezzi || 0) - (a.tot_pezzi || 0))[0]
       const media = operatori.reduce((a, b) => a + (b.tot_pezzi || 0), 0) / operatori.length
       if (top && (top.tot_pezzi || 0) > media * 1.5) {
         out.push({

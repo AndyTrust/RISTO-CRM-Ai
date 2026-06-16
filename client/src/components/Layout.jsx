@@ -5,7 +5,7 @@ import {
   LayoutDashboard, Users, Target, TrendingUp, Receipt, Bot,
   Building2, Settings, ChevronLeft, ChevronRight, RefreshCw,
   BarChart2, Lock, Wallet, UtensilsCrossed, CalendarDays,
-  ChevronDown, Tag, MapPin, Archive, Brain, Cloud, Database, Award, BarChart3, Activity
+  ChevronDown, Tag, MapPin, Archive, Brain, Cloud, Database, Award, BarChart3, Activity, Coins
 } from 'lucide-react'
 import { data as dataApi } from '../api/client'
 
@@ -46,6 +46,7 @@ const NAV_GROUPS = [
     defaultOpen: false,
     items: [
       { id: 'prodotti_bi',      path: '/prodotti-bi',       icon: Tag,             label: 'Prodotti & Menu',      desc: 'Food cost, BCG, menu engineering', alwaysEnabled: true },
+      { id: 'food_cost',        path: '/prodotti-bi?tab=foodcost', icon: Coins,    label: 'Food Cost',            desc: 'Modifica food cost per prodotto', alwaysEnabled: true },
       { id: 'contabilita_bi',   path: '/contabilita-bi',    icon: BarChart3,       label: 'Contabilità BI',       desc: 'BE, costi, margini, proiezioni', alwaysEnabled: true },
       { id: 'forecast',         path: '/forecast',          icon: Cloud,           label: 'Forecast Revenue',     desc: 'Previsioni incasso prossimi giorni', alwaysEnabled: true },
       { id: 'analytics_bi',     path: '/analytics',         icon: BarChart2,       label: 'Analytics & BI',       desc: 'Reportistica avanzata' },

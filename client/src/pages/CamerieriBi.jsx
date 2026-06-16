@@ -82,6 +82,10 @@ export default function CamerieriBi() {
   const [error, setError] = useState(null)
   const [sortCol, setSortCol] = useState('tot_pezzi')
   const [sortDir, setSortDir] = useState('desc')
+  const [expandedOp, setExpandedOp] = useState(null)
+  const [drillData, setDrillData] = useState([])
+  const [drillLoading, setDrillLoading] = useState(false)
+  const [expandedCat, setExpandedCat] = useState(null)
 
   useEffect(() => { fetchData() }, [sede, anno, mese])
 
@@ -134,10 +138,45 @@ export default function CamerieriBi() {
     return sortDir === 'asc' ? av-bv : bv-av
   }), [data, sortCol, sortDir])
 
+  async function fetchDrillDown(operatore) {
+    if (expandedOp === operatore) { setExpandedOp(null); setDrillData([]); return }
+    setExpandedOp(operatore)
+    setExpandedCat(null)
+    setDrillLoading(true)
+    const dateFrom = `${anno}-${String(mese).padStart(2,'0')}-01`
+    const dateTo = `${anno}-${String(mese).padStart(2,'0')}-31`
+    const sedeFilter = sede !== 'ALL' ? sede : null
+    let q = supabase.from('venduto_camerieri')
+      .select('categoria,prodotto,quantita,totale,prezzo_unitario')
+      .eq('operatore', operatore)
+      .gte('data_inizio', dateFrom)
+      .lte('data_fine', dateTo)
+    if (sedeFilter) q = q.eq('sede', sedeFilter)
+    const { data: rows } = await q
+    setDrillData(rows || [])
+    setDrillLoading(false)
+  }
+
   function handleSort(col) {
     if (sortCol===col) setSortDir(d=>d==='asc'?'desc':'asc')
     else { setSortCol(col); setSortDir('desc') }
   }
+
+  const drillCategorie = useMemo(() => {
+    if (!drillData.length) return []
+    const bycat = {}
+    drillData.forEach(r => {
+      const cat = r.categoria || 'Altro'
+      if (!bycat[cat]) bycat[cat] = { categoria: cat, tot_pezzi: 0, tot_euro: 0, prodotti: {} }
+      bycat[cat].tot_pezzi += Number(r.quantita) || 0
+      bycat[cat].tot_euro += Number(r.totale) || 0
+      const pname = r.prodotto || '—'
+      if (!bycat[cat].prodotti[pname]) bycat[cat].prodotti[pname] = { prodotto: pname, quantita: 0, totale: 0, prezzo_unitario: r.prezzo_unitario }
+      bycat[cat].prodotti[pname].quantita += Number(r.quantita) || 0
+      bycat[cat].prodotti[pname].totale += Number(r.totale) || 0
+    })
+    return Object.values(bycat).sort((a,b) => b.tot_pezzi - a.tot_pezzi)
+  }, [drillData])
 
   const systemContext = useMemo(() => ({
     sede, anno, mese,
@@ -309,6 +348,7 @@ export default function CamerieriBi() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-gray-100 text-left">
+                <th className="pb-2 pr-2 w-8"></th>
                 {[
                   {key:'operatore',label:'Operatore'},{key:'tot_pezzi',label:'Pezzi'},
                   {key:'pct_pezzi_team',label:'% Team'},{key:'fatturato_stimato_operatore',label:'Fatturato Stimato'},
@@ -327,27 +367,114 @@ export default function CamerieriBi() {
             </thead>
             <tbody>
               {sortedData.map((row,i)=>(
-                <tr key={i} className="border-b border-gray-50 hover:bg-gray-50">
-                  <td className="py-2 pr-4 font-semibold text-gray-800">{row.operatore}</td>
-                  <td className="py-2 pr-4">{row.tot_pezzi}</td>
-                  <td className="py-2 pr-4">{(row.pct_pezzi_team||0).toFixed(1)}%</td>
-                  <td className="py-2 pr-4">{(row.fatturato_stimato_operatore||0).toLocaleString('it-IT',{style:'currency',currency:'EUR'})}</td>
-                  <td className="py-2 pr-4">{row.quantum_target}</td>
-                  <td className="py-2 pr-4">
-                    <span className={`font-semibold ${(row.pct_target||0)>=100?'text-green-600':(row.pct_target||0)>=90?'text-yellow-600':'text-red-600'}`}>
-                      {(row.pct_target||0).toFixed(0)}%
-                    </span>
-                  </td>
-                  <td className="py-2 pr-4">
-                    <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${statusBadge(row.stato_kpi)}`}>
-                      {row.stato_kpi||'—'}
-                    </span>
-                  </td>
-                  <td className="py-2 pr-4">{(row.tot_importo_aggiunte||0).toLocaleString('it-IT',{style:'currency',currency:'EUR'})}</td>
-                </tr>
+                <>
+                  <tr key={i} className="border-b border-gray-50 hover:bg-gray-50">
+                    <td className="py-2 pr-2">
+                      <button
+                        onClick={() => fetchDrillDown(row.operatore)}
+                        className={`text-xs px-1.5 py-0.5 rounded transition-colors ${expandedOp===row.operatore ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-purple-100'}`}
+                      >
+                        {expandedOp===row.operatore ? '▼' : '▶'}
+                      </button>
+                    </td>
+                    <td className="py-2 pr-4 font-semibold text-gray-800">{row.operatore}</td>
+                    <td className="py-2 pr-4">{row.tot_pezzi}</td>
+                    <td className="py-2 pr-4">{(row.pct_pezzi_team||0).toFixed(1)}%</td>
+                    <td className="py-2 pr-4">{(row.fatturato_stimato_operatore||0).toLocaleString('it-IT',{style:'currency',currency:'EUR'})}</td>
+                    <td className="py-2 pr-4">{row.quantum_target}</td>
+                    <td className="py-2 pr-4">
+                      <span className={`font-semibold ${(row.pct_target||0)>=100?'text-green-600':(row.pct_target||0)>=90?'text-yellow-600':'text-red-600'}`}>
+                        {(row.pct_target||0).toFixed(0)}%
+                      </span>
+                    </td>
+                    <td className="py-2 pr-4">
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${statusBadge(row.stato_kpi)}`}>
+                        {row.stato_kpi||'—'}
+                      </span>
+                    </td>
+                    <td className="py-2 pr-4">{(row.tot_importo_aggiunte||0).toLocaleString('it-IT',{style:'currency',currency:'EUR'})}</td>
+                  </tr>
+                  {expandedOp === row.operatore && (
+                    <tr key={`drill-${i}`}>
+                      <td colSpan={9} className="bg-slate-50 px-6 py-4 border-b border-gray-100">
+                        {drillLoading ? (
+                          <div className="text-sm text-gray-400 text-center py-4">Caricamento...</div>
+                        ) : drillCategorie.length === 0 ? (
+                          <div className="text-sm text-gray-400 text-center py-4">Nessun dato prodotti per questo mese</div>
+                        ) : (
+                          <div>
+                            <div className="text-xs font-semibold text-gray-500 uppercase mb-3">
+                              {expandedOp} — Dettaglio Categorie &amp; Prodotti
+                            </div>
+                            {/* Mini bar chart categorie */}
+                            <div className="mb-4">
+                              <ResponsiveContainer width="100%" height={Math.min(drillCategorie.length * 28 + 20, 220)}>
+                                <BarChart data={drillCategorie} layout="vertical" margin={{top:0,right:80,left:160,bottom:0}}>
+                                  <XAxis type="number" fontSize={10}/>
+                                  <YAxis dataKey="categoria" type="category" width={155} fontSize={10}/>
+                                  <Tooltip formatter={(v,n)=>[n==='Pezzi'?v:`${Number(v).toLocaleString('it-IT',{minimumFractionDigits:2})}€`,n]}/>
+                                  <Bar dataKey="tot_pezzi" name="Pezzi" fill="#8b5cf6" radius={[0,3,3,0]}>
+                                    <LabelList dataKey="tot_pezzi" position="right" fontSize={10}/>
+                                  </Bar>
+                                </BarChart>
+                              </ResponsiveContainer>
+                            </div>
+
+                            {/* Accordion categorie → prodotti */}
+                            <div className="space-y-1">
+                              {drillCategorie.map(cat => (
+                                <div key={cat.categoria} className="border border-gray-200 rounded-lg overflow-hidden">
+                                  <button
+                                    onClick={() => setExpandedCat(expandedCat === cat.categoria ? null : cat.categoria)}
+                                    className="w-full flex items-center justify-between px-4 py-2.5 bg-white hover:bg-purple-50 text-sm transition-colors"
+                                  >
+                                    <div className="flex items-center gap-3">
+                                      <span className="font-semibold text-gray-800">{cat.categoria}</span>
+                                      <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-medium">
+                                        {cat.tot_pezzi} pz
+                                      </span>
+                                      <span className="text-xs text-gray-500">
+                                        {Number(cat.tot_euro).toLocaleString('it-IT',{style:'currency',currency:'EUR'})}
+                                      </span>
+                                    </div>
+                                    <span className="text-gray-400 text-xs">{expandedCat === cat.categoria ? '▲' : '▼'} {Object.keys(cat.prodotti).length} prodotti</span>
+                                  </button>
+                                  {expandedCat === cat.categoria && (
+                                    <div className="border-t border-gray-100 bg-gray-50">
+                                      <table className="w-full text-xs">
+                                        <thead>
+                                          <tr className="border-b border-gray-200 text-gray-500">
+                                            <th className="px-4 py-2 text-left font-medium">Prodotto</th>
+                                            <th className="px-4 py-2 text-right font-medium">Pezzi</th>
+                                            <th className="px-4 py-2 text-right font-medium">Totale €</th>
+                                            <th className="px-4 py-2 text-right font-medium">Prezzo Unitario</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {Object.values(cat.prodotti).sort((a,b)=>b.quantita-a.quantita).map((p,pi)=>(
+                                            <tr key={pi} className="border-b border-gray-100 hover:bg-white">
+                                              <td className="px-4 py-1.5 text-gray-700">{p.prodotto}</td>
+                                              <td className="px-4 py-1.5 text-right font-medium text-purple-700">{Number(p.quantita).toFixed(0)}</td>
+                                              <td className="px-4 py-1.5 text-right text-gray-600">{Number(p.totale).toLocaleString('it-IT',{style:'currency',currency:'EUR'})}</td>
+                                              <td className="px-4 py-1.5 text-right text-gray-500">{p.prezzo_unitario ? Number(p.prezzo_unitario).toLocaleString('it-IT',{style:'currency',currency:'EUR'}) : '—'}</td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                </>
               ))}
               {sortedData.length===0&&(
-                <tr><td colSpan={8} className="py-12 text-center text-gray-400">
+                <tr><td colSpan={9} className="py-12 text-center text-gray-400">
                   <Users size={32} className="mx-auto mb-2 opacity-40"/>Nessun operatore trovato
                 </td></tr>
               )}

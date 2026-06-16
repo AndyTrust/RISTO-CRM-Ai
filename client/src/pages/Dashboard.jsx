@@ -88,11 +88,12 @@ function StatCard({ label, value, sub, delta, bg, icon: Icon, tooltip }) {
 
 // Calcola periodo precedente (stessa durata)
 function prevPeriod(from, to) {
-  const f = new Date(from), t = new Date(to)
+  // 'T12:00:00' evita lo shift di un giorno dovuto al fuso (toISOString usa UTC)
+  const f = new Date(from + 'T12:00:00'), t = new Date(to + 'T12:00:00')
   const days = Math.round((t - f) / (1000*60*60*24)) + 1
   const pf = new Date(f); pf.setDate(pf.getDate() - days)
   const pt = new Date(f); pt.setDate(pt.getDate() - 1)
-  const fmt = d => d.toISOString().slice(0, 10)
+  const fmt = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
   return { from: fmt(pf), to: fmt(pt) }
 }
 
@@ -162,7 +163,7 @@ export default function Dashboard() {
         const key = r.data
         if (!dailyByDate[key]) dailyByDate[key] = {
           data: key,
-          label: new Date(key).toLocaleDateString('it-IT', { day: '2-digit', month: 'short' }),
+          label: new Date(key + 'T12:00:00').toLocaleDateString('it-IT', { day: '2-digit', month: 'short' }),
         }
         if (r.location === 'MAMELI') {
           dailyByDate[key].MAMELI = r.totale_venduto_ipratico

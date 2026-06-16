@@ -23,6 +23,8 @@ export {
   operatorMapping,
   pagamentiFatture,
   prodottiCatalogo,
+  listinoApi,
+  ricetteApi,
   repartiApi,
   fattureBi,
   fattureCategorieApi,

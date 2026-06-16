@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import supabase from '../supabase'
 import PageAssistant from '../components/PageAssistant'
 import PeriodFilter from '../components/PeriodFilter'
@@ -8,7 +9,7 @@ import {
 } from 'recharts'
 import {
   Package, TrendingUp, AlertTriangle, Star, Filter,
-  ArrowUpDown, ChevronUp, ChevronDown, Search
+  ArrowUpDown, ChevronUp, ChevronDown, Search, Coins
 } from 'lucide-react'
 
 const SEDE_OPTIONS = [
@@ -34,6 +35,18 @@ const getClassLabel = (fc) => {
   if (fc <= 35) return 'plowho'
   return 'dog'
 }
+
+// ── Menu engineering Kasavana-Smith: classifica su 2 assi (popolarità × margine) ──
+const KS = {
+  star:      { label: 'STAR',      color: '#22c55e', bg: 'bg-green-100 text-green-700', desc: 'Popolare + alto margine' },
+  plowhorse: { label: 'PLOWHORSE', color: '#f59e0b', bg: 'bg-amber-100 text-amber-700', desc: 'Popolare + basso margine' },
+  puzzle:    { label: 'PUZZLE',    color: '#3b82f6', bg: 'bg-blue-100 text-blue-700',   desc: 'Poco popolare + alto margine' },
+  dog:       { label: 'DOG',       color: '#ef4444', bg: 'bg-red-100 text-red-700',     desc: 'Poco popolare + basso margine' },
+  'n/a':     { label: 'N/A',       color: '#9ca3af', bg: 'bg-gray-100 text-gray-500',   desc: 'Food cost mancante' },
+}
+const ksClass = (popolare, altoMargine) => popolare ? (altoMargine ? 'star' : 'plowhorse') : (altoMargine ? 'puzzle' : 'dog')
+const ksColor = (c) => (KS[c] || KS['n/a']).color
+const ksLabel = (c) => (KS[c] || KS['n/a']).label
 
 const CATEGORY_COLORS = [
   '#6366f1','#f59e0b','#10b981','#3b82f6','#ec4899',
@@ -70,14 +83,15 @@ const CustomScatterTooltip = ({ active, payload }) => {
       <div className="text-gray-600">Quantità: <span className="font-medium">{d.quantita}</span></div>
       <div className="text-gray-600">Food Cost: <span className="font-medium">{(d.food_cost_pct||0).toFixed(1)}%</span></div>
       <div className="text-gray-600">Fatturato: <span className="font-medium">{(d.importo_venduto||0).toLocaleString('it-IT',{style:'currency',currency:'EUR'})}</span></div>
-      <div className={`mt-1 font-bold ${(d.food_cost_pct||0)<=25?'text-green-600':(d.food_cost_pct||0)<=35?'text-orange-500':'text-red-600'}`}>
-        {getClassLabel(d.food_cost_pct || 0).toUpperCase()}
+      <div className="mt-1 font-bold" style={{ color: ksColor(d.menu_class) }}>
+        {ksLabel(d.menu_class)}
       </div>
     </div>
   )
 }
 
 export default function ProdottiBi() {
+  const [, setParams] = useSearchParams()
   const today = new Date()
   const firstOfMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1).toISOString().split('T')[0]
   const todayStr = today.toISOString().split('T')[0]
@@ -132,17 +146,34 @@ export default function ProdottiBi() {
           m.fcQty += qta
         }
       })
-      const agg = Object.values(map).map(m => {
+      const aggRaw = Object.values(map).map(m => {
         const food_cost_pct = m.fcQty > 0 ? m.fcWeight / m.fcQty : null
+        const prezzo_medio = m.quantita > 0 ? m.importo_venduto / m.quantita : 0
+        // Margine di contribuzione unitario = prezzo × (1 − food cost %)
+        const margine_unitario = food_cost_pct == null ? null : +(prezzo_medio * (1 - food_cost_pct / 100)).toFixed(2)
         return {
           prodotto: m.prodotto, categoria: m.categoria, tipologia: m.tipologia,
           quantita: m.quantita,
           importo_venduto: m.importo_venduto,
-          prezzo_medio: m.quantita > 0 ? m.importo_venduto / m.quantita : 0,
+          prezzo_medio,
           food_cost_pct,
-          menu_class: food_cost_pct == null ? 'n/a' : getClassLabel(food_cost_pct),
+          margine_unitario,
         }
-      }).sort((a, b) => b.importo_venduto - a.importo_venduto)
+      })
+      // Soglie Kasavana-Smith sui prodotti con food cost valido:
+      //  - popolarità: regola del 70% sulla quantità media per prodotto
+      //  - margine: confronto col margine di contribuzione medio PONDERATO
+      const conDati = aggRaw.filter(d => d.food_cost_pct != null && d.quantita > 0)
+      const nItems = conDati.length || 1
+      const totQty = conDati.reduce((s, d) => s + d.quantita, 0)
+      const sogliaPop = 0.7 * (totQty / nItems)
+      const totCM = conDati.reduce((s, d) => s + (d.margine_unitario || 0) * d.quantita, 0)
+      const avgCM = totQty > 0 ? totCM / totQty : 0
+      const agg = aggRaw.map(d => ({
+        ...d,
+        menu_class: d.food_cost_pct == null ? 'n/a'
+          : ksClass(d.quantita >= sogliaPop, (d.margine_unitario || 0) >= avgCM),
+      })).sort((a, b) => b.importo_venduto - a.importo_venduto)
       setData(agg)
     } catch (e) {
       setError(e.message)
@@ -199,7 +230,7 @@ export default function ProdottiBi() {
     if (dogs.length) {
       out.push({
         tone: 'red',
-        text: `${dogs.length} prodotti in classe DOG (food cost > 35%): da rivedere in priorità ${dogs.slice(0,3).map(d=>`${d.prodotto} (FC ${d.food_cost_pct?.toFixed(1)}%)`).join(', ')} — valuta ricalcolo porzioni, prezzo o rimozione dal menù.`,
+        text: `${dogs.length} prodotti in classe DOG (poco popolari + basso margine): da rivedere in priorità ${dogs.slice(0,3).map(d=>`${d.prodotto} (FC ${d.food_cost_pct?.toFixed(1)}%)`).join(', ')} — valuta ricalcolo porzioni, prezzo, riposizionamento nel menù o rimozione.`,
       })
     }
     const noFc = data.filter(d=>d.food_cost_pct==null).length
@@ -231,18 +262,25 @@ export default function ProdottiBi() {
     topProdotto: kpis.topPcs?.prodotto,
     prodottiAltoCosto: kpis.highFc,
     stars: data.filter(d=>d.menu_class==='star').length,
-    plowhos: data.filter(d=>d.menu_class==='plowho').length,
+    plowhos: data.filter(d=>d.menu_class==='plowhorse').length,
+    puzzle: data.filter(d=>d.menu_class==='puzzle').length,
     dogs: data.filter(d=>d.menu_class==='dog').length,
   }), [data, sede, tipologia, dateFrom, dateTo, kpis])
 
   return (
     <div className="min-h-screen bg-gray-50 p-6">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-          <Package className="text-indigo-600" size={26} />
-          Menu Engineering &amp; Prodotti
-        </h1>
-        <p className="text-gray-500 text-sm mt-1">Analisi BCG, food cost e performance prodotti</p>
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+            <Package className="text-indigo-600" size={26} />
+            Menu Engineering &amp; Prodotti
+          </h1>
+          <p className="text-gray-500 text-sm mt-1">Analisi BCG, food cost e performance prodotti</p>
+        </div>
+        <button onClick={() => setParams({ tab: 'foodcost' })}
+          className="flex items-center gap-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg px-3 py-2 text-sm font-semibold">
+          <Coins size={15} /> Modifica food cost
+        </button>
       </div>
 
       <div className="mb-6">
@@ -307,13 +345,14 @@ export default function ProdottiBi() {
       {/* SCATTER BCG */}
       <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
         <h2 className="text-base font-semibold text-gray-800 mb-1 flex items-center gap-2">
-          <Star size={16} className="text-indigo-500" /> Matrice BCG — Quantità vs Food Cost
+          <Star size={16} className="text-indigo-500" /> Menu Engineering (Kasavana-Smith) — Quantità vs Food Cost
         </h2>
         <p className="text-xs text-gray-500 mb-4">
-          Dimensione bolla = fatturato ·
-          <span className="text-green-600 font-medium"> Verde</span> = Star (FC≤25%) ·
-          <span className="text-orange-500 font-medium"> Arancio</span> = Plow Horse (25-35%) ·
-          <span className="text-red-500 font-medium"> Rosso</span> = Dog (&gt;35%)
+          Bolla = fatturato · colore = classe (popolarità × margine) ·
+          <span className="text-green-600 font-medium"> Star</span> (popolare+margine) ·
+          <span className="text-amber-500 font-medium"> Plowhorse</span> (popolare, basso margine) ·
+          <span className="text-blue-500 font-medium"> Puzzle</span> (poco popolare, alto margine) ·
+          <span className="text-red-500 font-medium"> Dog</span> (poco popolare, basso margine)
         </p>
         {scatterData.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-64 text-gray-400">
@@ -332,7 +371,7 @@ export default function ProdottiBi() {
               <Scatter data={scatterData} shape={(props) => {
                 const { cx, cy, payload } = props
                 const r = payload.z || 10
-                const color = getClassColor(payload.food_cost_pct || 0)
+                const color = ksColor(payload.menu_class)
                 return (
                   <g>
                     <circle cx={cx} cy={cy} r={r} fill={color} fillOpacity={0.65} stroke={color} strokeWidth={1.5} />
@@ -419,7 +458,7 @@ export default function ProdottiBi() {
               {sorted.slice(0,100).map((row,i)=>{
                 const fc = row.food_cost_pct
                 const cls = row.menu_class || (fc!=null ? getClassLabel(fc) : 'n/a')
-                const badgeColor = cls==='star'?'bg-green-100 text-green-700':cls==='plowho'?'bg-orange-100 text-orange-700':cls==='dog'?'bg-red-100 text-red-700':'bg-gray-100 text-gray-500'
+                const badgeColor = (KS[cls] || KS['n/a']).bg
                 return (
                   <tr key={i} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
                     <td className="py-2 pr-4 font-medium text-gray-800">{row.prodotto}</td>

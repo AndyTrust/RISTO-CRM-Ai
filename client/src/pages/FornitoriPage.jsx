@@ -46,11 +46,13 @@ const METODI_PAG = ['BONIFICO','RIBA','RID','CONTANTI','CARTA','ALTRO']
 
 // Preset periodi
 const now = new Date()
+// Formatter LOCALE (toISOString usa UTC → può sfasare di un giorno nel fuso italiano)
+const iso = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
 const PERIODI = [
-  { label: 'Questo mese', from: `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`, to: now.toISOString().split('T')[0] },
-  { label: '3 mesi', from: new Date(now.getFullYear(), now.getMonth()-2, 1).toISOString().split('T')[0], to: now.toISOString().split('T')[0] },
-  { label: '6 mesi', from: new Date(now.getFullYear(), now.getMonth()-5, 1).toISOString().split('T')[0], to: now.toISOString().split('T')[0] },
-  { label: 'Anno', from: `${now.getFullYear()}-01-01`, to: now.toISOString().split('T')[0] },
+  { label: 'Questo mese', from: `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`, to: iso(now) },
+  { label: '3 mesi', from: iso(new Date(now.getFullYear(), now.getMonth()-2, 1)), to: iso(now) },
+  { label: '6 mesi', from: iso(new Date(now.getFullYear(), now.getMonth()-5, 1)), to: iso(now) },
+  { label: 'Anno', from: `${now.getFullYear()}-01-01`, to: iso(now) },
   { label: 'Anno prec.', from: `${now.getFullYear()-1}-01-01`, to: `${now.getFullYear()-1}-12-31` },
   { label: 'Tutto', from: '', to: '' },
 ]

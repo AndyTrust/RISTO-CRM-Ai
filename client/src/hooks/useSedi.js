@@ -26,7 +26,15 @@ function fetchSedi() {
       _cache = data ?? []
       _listeners.forEach(fn => fn(_cache))
       _listeners.length = 0
+      _fetching = false
       return _cache
+    })
+    .catch(() => {
+      // In caso di errore: sblocca i listener in attesa e consenti un nuovo tentativo
+      _fetching = false
+      _listeners.forEach(fn => fn([]))
+      _listeners.length = 0
+      return []
     })
 }
 

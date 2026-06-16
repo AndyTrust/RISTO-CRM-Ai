@@ -7,9 +7,10 @@
 import React, { useEffect, useState, useCallback } from 'react'
 import {
   Activity, RefreshCw, AlertTriangle, CheckCircle2, XCircle,
-  ChevronRight, Loader, Clock,
+  ChevronRight, Loader, Clock, Sparkles, Scissors, TrendingUp,
 } from 'lucide-react'
 import { verificaApi } from '../api/client'
+import useClaudeAI from '../hooks/useClaudeAI'
 
 const MESI_IT = ['', 'Gennaio', 'Febbraio', 'Marzo', 'Aprile', 'Maggio', 'Giugno',
   'Luglio', 'Agosto', 'Settembre', 'Ottobre', 'Novembre', 'Dicembre']
@@ -51,6 +52,12 @@ export default function StatoDati() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
+  // ── Interpretazione AI (Fase 3) ───────────────────────────────────────────
+  const { callClaude, buildCrmContext } = useClaudeAI()
+  const [aiText, setAiText] = useState('')
+  const [aiLoading, setAiLoading] = useState(false)
+  const [aiError, setAiError] = useState(null)
+
   const load = useCallback(async (a, m) => {
     setLoading(true); setError(null)
     try {
@@ -65,6 +72,48 @@ export default function StatoDati() {
   }, [])
 
   useEffect(() => { load(anno, mese) }, [anno, mese, load])
+
+  // Reset interpretazione quando cambia il mese/report
+  useEffect(() => { setAiText(''); setAiError(null) }, [anno, mese])
+
+  const interpreta = useCallback(async () => {
+    if (!report) return
+    setAiLoading(true); setAiError(null); setAiText('')
+    try {
+      let contesto = ''
+      try { contesto = await buildCrmContext({ includeBuste: true }) } catch { /* contesto opzionale */ }
+
+      const system = [
+        'Sei il controller finanziario di "140 Grammi", due ristoranti a Sassari: Mameli (MA) e Predda Niedda (PN).',
+        'Ricevi (1) un report a semaforo sulla SALUTE DEI DATI del CRM e (2) il contesto operativo reale (chiusure, coperti, venduto, fatture, break-even).',
+        'Compito: tradurre gli avvisi in azioni concrete e dare indicazioni economiche pratiche. Rispondi SEMPRE in italiano, conciso e operativo, senza preamboli.',
+        'Struttura la risposta ESATTAMENTE con queste tre sezioni in markdown:',
+        '## 🔴 Priorità — cosa fare subito',
+        'Elenco puntato ordinato per urgenza: per ogni avviso critico/giallo di’ il problema in una riga e l’azione precisa (quale skill/comando o operazione nel CRM).',
+        '## ✂️ Dove tagliare',
+        'Dove i costi (personale, fornitori, BE) sono alti o anomali rispetto ai ricavi: indica leve concrete. Se i dati costi mancano, dillo e spiega quale dato serve.',
+        '## 🚀 Dove spingere',
+        'Dove i ricavi rendono di più (sedi/turni/giorni con margine): suggerisci dove concentrare spinta commerciale, sempre basandoti sui numeri forniti.',
+        'Non inventare numeri: usa solo quelli nei dati. Se un dato manca, segnalalo come lacuna invece di stimarlo.',
+      ].join('\n')
+
+      const userMsg =
+        `### Report semafori salute dati (${report.mese_label} ${report.anno})\n` +
+        '```json\n' + JSON.stringify(report, null, 1) + '\n```\n\n' +
+        '### Contesto operativo reale\n' +
+        (contesto || '(contesto operativo non disponibile)')
+
+      await callClaude(
+        [{ role: 'user', content: userMsg }],
+        system,
+        { model: 'claude-sonnet-4-6', max_tokens: 1600, stream: true, onChunk: setAiText },
+      )
+    } catch (e) {
+      setAiError(e?.message || 'Errore durante l’interpretazione AI')
+    } finally {
+      setAiLoading(false)
+    }
+  }, [report, callClaude, buildCrmContext])
 
   const overall = report?.overall
   const ov = st(overall)
@@ -197,11 +246,78 @@ export default function StatoDati() {
             })}
           </div>
 
+          {/* ── Interpretazione AI (Fase 3) ─────────────────────────────────── */}
+          <div className="rounded-2xl border border-violet-200 bg-gradient-to-br from-violet-50 to-white p-4 mt-5">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+              <div className="flex items-center gap-2">
+                <Sparkles size={18} className="text-violet-600" />
+                <span className="font-semibold text-gray-900">Lettura AI degli avvisi</span>
+              </div>
+              <button onClick={interpreta} disabled={aiLoading}
+                className="flex items-center gap-2 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white rounded-lg px-3 py-2 text-sm font-semibold">
+                {aiLoading ? <Loader size={15} className="animate-spin" /> : <Sparkles size={15} />}
+                {aiText ? 'Rigenera' : 'Interpreta con AI'}
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mb-3 flex items-center gap-3 flex-wrap">
+              <span className="flex items-center gap-1"><Scissors size={12} /> dove tagliare</span>
+              <span className="flex items-center gap-1"><TrendingUp size={12} /> dove spingere</span>
+              <span>· basato sui semafori e sui dati operativi reali</span>
+            </p>
+
+            {aiError && (
+              <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 px-3 py-2 text-sm mb-2">{aiError}</div>
+            )}
+
+            {!aiText && !aiLoading && !aiError && (
+              <p className="text-sm text-gray-400">Premi “Interpreta con AI” per ottenere un piano d'azione prioritizzato e indicazioni su costi e ricavi.</p>
+            )}
+            {aiLoading && !aiText && (
+              <p className="text-sm text-gray-400 flex items-center gap-2"><Loader size={14} className="animate-spin" /> L'AI sta analizzando i dati…</p>
+            )}
+            {aiText && <Markdownish text={aiText} />}
+          </div>
+
           <p className="text-xs text-gray-400 mt-4 flex items-center gap-1.5">
-            <Clock size={12} /> Verifica deterministica (Fase 2) · 6 aree controllate. L'interpretazione AI degli avvisi arriverà in Fase 3.
+            <Clock size={12} /> Verifica deterministica (Fase 2) · 6 aree controllate · Lettura AI (Fase 3) basata su dati reali.
           </p>
         </>
       )}
     </div>
   )
+}
+
+// Render minimale del markdown prodotto dall'AI: ## titoli, - elenchi, **grassetto**.
+function Markdownish({ text }) {
+  const lines = String(text).split('\n')
+  const out = []
+  let list = []
+  const flush = () => {
+    if (list.length) {
+      out.push(<ul key={`ul-${out.length}`} className="list-disc pl-5 space-y-1 mb-2">{list}</ul>)
+      list = []
+    }
+  }
+  const inline = (s) => {
+    const parts = String(s).split(/(\*\*[^*]+\*\*)/g)
+    return parts.map((p, i) => p.startsWith('**') && p.endsWith('**')
+      ? <strong key={i} className="font-semibold text-gray-900">{p.slice(2, -2)}</strong>
+      : <span key={i}>{p}</span>)
+  }
+  lines.forEach((raw, idx) => {
+    const l = raw.trimEnd()
+    if (/^##\s+/.test(l)) {
+      flush()
+      out.push(<h3 key={`h-${idx}`} className="text-sm font-bold text-gray-900 mt-3 mb-1">{inline(l.replace(/^##\s+/, ''))}</h3>)
+    } else if (/^[-*]\s+/.test(l)) {
+      list.push(<li key={`li-${idx}`} className="text-sm text-gray-700">{inline(l.replace(/^[-*]\s+/, ''))}</li>)
+    } else if (l.trim() === '') {
+      flush()
+    } else {
+      flush()
+      out.push(<p key={`p-${idx}`} className="text-sm text-gray-700 mb-1">{inline(l)}</p>)
+    }
+  })
+  flush()
+  return <div>{out}</div>
 }
