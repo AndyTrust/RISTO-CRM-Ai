@@ -50,6 +50,7 @@ export default function PageStatsWidget() {
         const mesePad = String(mese).padStart(2, '0')
         const prevMese = mese === 12 ? 1 : mese + 1   // = mese SUCCESSIVO (usato per il forecast)
         const prevAnno = mese === 12 ? anno + 1 : anno
+        const annoStorico = anno - 1                  // anno di riferimento per stagionalità (dinamico)
         // Helper data + limiti di mese ESCLUSIVI (evita date inesistenti tipo 2026-06-31)
         const ymd = (y, m, d) => `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
         const startCurr = ymd(anno, mese, 1)
@@ -76,27 +77,27 @@ export default function PageStatsWidget() {
         const vendutoTot = vendutoMA + vendutoPN
         const copertiTot = copertiMA + copertiPN
 
-        // ── 2. Stagionalità mese corrente (da storico 2025) ──
+        // ── 2. Stagionalità mese corrente (da storico anno precedente) ──
         const { data: stagRows } = await supabase
           .from('chiusure_giornaliere')
           .select('sede, data, totale_venduto_ipratico, coperti')
-          .gte('data', '2025-01-01')
-          .lte('data', '2025-12-31')
+          .gte('data', ymd(annoStorico, 1, 1))
+          .lte('data', ymd(annoStorico, 12, 31))
           .not('totale_venduto_ipratico', 'is', null)
 
         let stagionale = null
         if (stagRows?.length) {
-          // Media mensile 2025
+          // Media mensile anno precedente
           const byMese = {}
           for (const r of stagRows) {
             const m = parseInt(r.data.substring(5, 7))
             if (!byMese[m]) byMese[m] = 0
             byMese[m] += parseFloat(r.totale_venduto_ipratico || 0)
           }
-          const mesi2025 = Object.values(byMese)
-          const media2025 = mesi2025.reduce((s, v) => s + v, 0) / mesi2025.length
-          if (media2025 > 0 && byMese[mese]) {
-            stagionale = Math.round((byMese[mese] / media2025) * 100) / 100
+          const mesiStorico = Object.values(byMese)
+          const mediaStorico = mesiStorico.reduce((s, v) => s + v, 0) / mesiStorico.length
+          if (mediaStorico > 0 && byMese[mese]) {
+            stagionale = Math.round((byMese[mese] / mediaStorico) * 100) / 100
           }
         }
 
@@ -130,16 +131,16 @@ export default function PageStatsWidget() {
             let rawForecast = Math.max(0, my + slope * (n - mx))
             // Correggi con stagionalità del prossimo mese
             if (stagRows?.length) {
-              const byMese2025 = {}
+              const byMeseStorico = {}
               for (const r of stagRows) {
                 const m2 = parseInt(r.data.substring(5, 7))
-                if (!byMese2025[m2]) byMese2025[m2] = 0
-                byMese2025[m2] += parseFloat(r.totale_venduto_ipratico || 0)
+                if (!byMeseStorico[m2]) byMeseStorico[m2] = 0
+                byMeseStorico[m2] += parseFloat(r.totale_venduto_ipratico || 0)
               }
-              const mesi2025 = Object.values(byMese2025)
-              const media2025 = mesi2025.reduce((s, v) => s + v, 0) / mesi2025.length
-              const idxCurr = byMese2025[mese] ? byMese2025[mese] / media2025 : 1
-              const idxNext = byMese2025[prevMese] ? byMese2025[prevMese] / media2025 : 1
+              const mesiStorico = Object.values(byMeseStorico)
+              const mediaStorico = mesiStorico.reduce((s, v) => s + v, 0) / mesiStorico.length
+              const idxCurr = byMeseStorico[mese] ? byMeseStorico[mese] / mediaStorico : 1
+              const idxNext = byMeseStorico[prevMese] ? byMeseStorico[prevMese] / mediaStorico : 1
               if (idxCurr > 0) rawForecast = rawForecast * (idxNext / idxCurr)
             }
             forecastProssimo = Math.round(rawForecast)

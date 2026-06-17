@@ -21,6 +21,10 @@ import supabase from '../supabase'
 
 const API_ENDPOINT = '/api/assistant'
 
+// ID univoco e stabile per ogni messaggio (key React affidabile su liste dinamiche)
+let _msgSeq = 0
+const newMsgId = () => `m${++_msgSeq}`
+
 // ─── Sicurezza query_crm: whitelist tabelle e colonne consentite ──────────────
 // Solo tabelle operative — escluse: crm_config, buste_paga (dati sensibili paga),
 // employees (dati personali), auth/storage Supabase interni.
@@ -343,7 +347,7 @@ Usa questi strumenti per eseguire azioni concrete e rispondere con dati reali.`
         const textBlock = currentResponse.content?.find(b => b.type === 'text')
         const textContent = textBlock?.text || ''
         if (textContent) {
-          setMessages(prev => [...prev, { role: 'assistant', content: textContent }])
+          setMessages(prev => [...prev, { id: newMsgId(), role: 'assistant', content: textContent }])
         }
         break
       }
@@ -356,6 +360,7 @@ Usa questi strumenti per eseguire azioni concrete e rispondere con dati reali.`
       for (const block of toolUseBlocks) {
         // Mostra tool in corso
         setMessages(prev => [...prev, {
+          id: newMsgId(),
           role: 'assistant',
           toolCall: { name: block.name, input: block.input },
           content: '',
@@ -391,7 +396,7 @@ Usa questi strumenti per eseguire azioni concrete e rispondere con dati reali.`
       currentApiMessages.push({ role: 'user', content: toolResults })
 
       // Placeholder risposta
-      setMessages(prev => [...prev, { role: 'assistant', content: '', loading: true }])
+      setMessages(prev => [...prev, { id: newMsgId(), role: 'assistant', content: '', loading: true }])
 
       try {
         currentResponse = await callAssistant(currentApiMessages)
@@ -410,7 +415,7 @@ Usa questi strumenti per eseguire azioni concrete e rispondere con dati reali.`
     setError(null)
     setLoading(true)
 
-    setMessages(prev => [...prev, { role: 'user', content: userText }])
+    setMessages(prev => [...prev, { id: newMsgId(), role: 'user', content: userText }])
 
     // Costruisci history API (solo user/assistant, no system)
     const apiMessages = [
@@ -421,7 +426,7 @@ Usa questi strumenti per eseguire azioni concrete e rispondere con dati reali.`
     ]
 
     // Placeholder
-    setMessages(prev => [...prev, { role: 'assistant', content: '', loading: true }])
+    setMessages(prev => [...prev, { id: newMsgId(), role: 'assistant', content: '', loading: true }])
 
     try {
       const response = await callAssistant(apiMessages)
@@ -478,8 +483,8 @@ Usa questi strumenti per eseguire azioni concrete e rispondere con dati reali.`
                 <p className="text-xs text-gray-400 mt-1">Gestisci {pagina} con comandi in linguaggio naturale</p>
                 {suggerimenti.length > 0 && (
                   <div className="mt-4 space-y-2">
-                    {suggerimenti.map((s, i) => (
-                      <button key={i} onClick={() => sendMessage(s)}
+                    {suggerimenti.map((s) => (
+                      <button key={s} onClick={() => sendMessage(s)}
                         className="flex items-start gap-2 w-full text-left bg-violet-50 hover:bg-violet-100 border border-violet-100 rounded-xl px-3 py-2 text-xs text-violet-700 transition-colors">
                         <Lightbulb size={11} className="mt-0.5 flex-shrink-0 text-violet-400"/>
                         {s}
@@ -490,7 +495,7 @@ Usa questi strumenti per eseguire azioni concrete e rispondere con dati reali.`
               </div>
             )}
 
-            {messages.map((msg, i) => <Message key={i} msg={msg}/>)}
+            {messages.map((msg) => <Message key={msg.id} msg={msg}/>)}
 
             {error && (
               <div className="flex items-start gap-2 bg-red-50 border border-red-200 rounded-xl p-3">

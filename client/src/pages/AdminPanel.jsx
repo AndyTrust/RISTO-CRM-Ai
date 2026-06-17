@@ -1540,7 +1540,7 @@ function SyncTab({ onToast }) {
   }
 
   const copyDeployCmd = () => {
-    navigator.clipboard?.writeText(`cd "${window.location.origin.includes('localhost') ? '~/Documents' : '~'}" && open "CRM 140Grammi Supabase/CRM-App/Deploy_Vercel.command"`)
+    navigator.clipboard?.writeText(`open ~/Library/CloudStorage/OneDrive-Personale/"CRM 140Grammi"/CRM-App/Deploy_Vercel.command`)
     onToast({ type: 'ok', text: 'Comando copiato' })
   }
 

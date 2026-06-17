@@ -293,8 +293,8 @@ function DetailDrawer({ tipo, data, loading, onClose, be, targetFatt, fatturatoT
                         { label: `Food & Beverage cost (${Number(be?.pct_food||0).toFixed(1)}%)`, val: foodCostTotale, pct: Number(be?.pct_food||0), color: 'bg-yellow-400', positive: false },
                         { label: 'Costi fissi (affitti, utenze...)', val: Math.max(0, fatturatoTeam - costoPersonaleEffettivo - foodCostTotale - margine), pct: Math.max(0, 100 - Number(be?.pct_personale||0) - Number(be?.pct_food||0) - (fatturatoTeam > 0 ? (margine/fatturatoTeam)*100 : 0)), color: 'bg-gray-400', positive: false },
                         { label: 'Margine', val: margine, pct: fatturatoTeam > 0 ? (margine/fatturatoTeam)*100 : 0, color: margine >= 0 ? 'bg-green-500' : 'bg-red-500', positive: margine >= 0 },
-                      ].map((item, i) => (
-                        <div key={i} className="flex items-center gap-3">
+                      ].map((item) => (
+                        <div key={item.label} className="flex items-center gap-3">
                           <div className="w-40 text-xs text-gray-600 text-right flex-shrink-0">{item.label}</div>
                           <div className="flex-1 bg-gray-100 rounded-full h-5 relative overflow-hidden">
                             <div
@@ -315,8 +315,8 @@ function DetailDrawer({ tipo, data, loading, onClose, be, targetFatt, fatturatoT
                       <h3 className="text-sm font-semibold text-gray-700 mb-1">Fatture fornitori del mese</h3>
                       <p className="text-xs text-gray-400 mb-3">Totale: {fmtEur(totFatture)} · {fatture.length} fatture · {fornitoriList.length} fornitori</p>
                       <div className="space-y-1.5 max-h-72 overflow-y-auto">
-                        {fornitoriList.map((f, i) => (
-                          <div key={i} className="flex items-center gap-2 text-xs">
+                        {fornitoriList.map((f) => (
+                          <div key={f.nome} className="flex items-center gap-2 text-xs">
                             <div className="flex-1 text-gray-700 truncate">{f.nome}</div>
                             <div className="w-24 text-right font-semibold text-gray-800">{fmtEur(f.tot)}</div>
                             <div className="w-10 text-right text-gray-400">{totFatture > 0 ? ((f.tot/totFatture)*100).toFixed(1) : 0}%</div>
@@ -359,8 +359,8 @@ function DetailDrawer({ tipo, data, loading, onClose, be, targetFatt, fatturatoT
                           </tr>
                         </thead>
                         <tbody>
-                          {bustePaga.map((b, i) => (
-                            <tr key={i} className="border-b border-gray-50">
+                          {bustePaga.map((b) => (
+                            <tr key={b.operatore} className="border-b border-gray-50">
                               <td className="py-1 text-gray-700">{b.operatore}</td>
                               <td className="py-1 text-right text-gray-600">{fmtEur(Number(b.netto||0))}</td>
                               <td className="py-1 text-right font-medium text-orange-600">{fmtEur(Number(b.costo_azienda||0))}</td>
@@ -1112,7 +1112,7 @@ export default function KPIWaiters() {
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium text-gray-600">Mese:</span>
           <select className="input text-xs py-1" value={mese} onChange={e => setMese(parseInt(e.target.value))}>
-            {MESI.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+            {MESI.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
           </select>
         </div>
         {loading && <span className="text-xs text-gray-400 italic flex items-center gap-1"><RefreshCw size={11} className="animate-spin" /> caricamento...</span>}

@@ -598,7 +598,7 @@ function SettimanaTab({ ctx }) {
                 const pressure = !dayBI ? null : dayBI.revenue > 4500 ? 'alta' : dayBI.revenue > 3200 ? 'media' : 'bassa'
                 const pressureColor = pressure === 'alta' ? 'bg-red-400' : pressure === 'media' ? 'bg-amber-400' : 'bg-green-400'
                 return (
-                  <th key={i} className={`px-2 py-2 text-center text-sm ${isWeekend ? 'bg-amber-50' : ''} ${isToday ? 'bg-blue-50' : ''}`}>
+                  <th key={toYMD(d)} className={`px-2 py-2 text-center text-sm ${isWeekend ? 'bg-amber-50' : ''} ${isToday ? 'bg-blue-50' : ''}`}>
                     <div className={`font-semibold ${isToday ? 'text-blue-700' : 'text-gray-700'}`}>{GIORNI[i]}</div>
                     <div className={`text-xs ${isToday ? 'text-blue-600 font-bold' : 'text-gray-500'}`}>
                       {d.toLocaleDateString('it-IT',{day:'numeric',month:'short'})}
@@ -630,7 +630,7 @@ function SettimanaTab({ ctx }) {
                   const dow = (i + 1) % 7
                   const dayBI = wp[dow]
                   return (
-                    <td key={i} className="px-1 py-1 text-center">
+                    <td key={toYMD(d)} className="px-1 py-1 text-center">
                       {dayBI && (
                         <div className="text-[9px] text-blue-700 font-semibold leading-tight">
                           {dayBI.coperti}
@@ -661,7 +661,7 @@ function SettimanaTab({ ctx }) {
                       const key = `${emp.id}|${toYMD(d)}`
                       const isWeekend = [5,6].includes(i)
                       return (
-                        <td key={i} className={`px-1 py-1.5 ${isWeekend ? 'bg-amber-50/30' : ''}`}>
+                        <td key={key} className={`px-1 py-1.5 ${isWeekend ? 'bg-amber-50/30' : ''}`}>
                           <ShiftCell shift={shiftsMap[key]||[]} employee={emp} date={d}
                             onClick={(s,emp,date) => setModal({shift:s,employee:emp,date})}/>
                         </td>
@@ -683,7 +683,7 @@ function SettimanaTab({ ctx }) {
                     const ok = cov.min > 0 ? cov.count >= cov.min : null
                     const over = cov.max > 0 && cov.count > cov.max
                     return (
-                      <td key={i} className="px-1 py-1 text-center">
+                      <td key={toYMD(d)} className="px-1 py-1 text-center">
                         {cov.min > 0 && (
                           <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
                             over ? 'bg-blue-100 text-blue-700' : ok ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
@@ -1584,8 +1584,8 @@ function BozzaCalendar({ bozzaShifts, weekDays, emps, onEdit, onDelete, onAddShi
       {pairingWarnings.length > 0 && (
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-1">
           <p className="text-xs font-bold text-amber-800">⚠️ Doppio Responsabile stesso turno — verifica o modifica:</p>
-          {pairingWarnings.map((w,i) => (
-            <div key={i} className="text-xs text-amber-700 flex items-center gap-2">
+          {pairingWarnings.map((w) => (
+            <div key={`${toYMD(w.date)}-${w.turno}`} className="text-xs text-amber-700 flex items-center gap-2">
               <span className="font-medium">{w.date.toLocaleDateString('it-IT',{weekday:'short',day:'numeric',month:'short'})}</span>
               <span className="text-amber-500">→</span>
               <span>{w.turno}:</span>
@@ -1605,7 +1605,7 @@ function BozzaCalendar({ bozzaShifts, weekDays, emps, onEdit, onDelete, onAddShi
               {weekDays.map((d,i) => {
                 const isWeekend = [5,6].includes(i)
                 return (
-                  <th key={i} className={`px-2 py-3 text-center text-sm ${isWeekend ? 'bg-amber-50' : ''}`}>
+                  <th key={toYMD(d)} className={`px-2 py-3 text-center text-sm ${isWeekend ? 'bg-amber-50' : ''}`}>
                     <div className="font-semibold text-gray-700">{GIORNI[i]}</div>
                     <div className="text-xs text-gray-400">{d.toLocaleDateString('it-IT',{day:'numeric',month:'short'})}</div>
                   </th>
@@ -1636,7 +1636,7 @@ function BozzaCalendar({ bozzaShifts, weekDays, emps, onEdit, onDelete, onAddShi
                         const dayShifts = bozzaMap[key] || []
                         const isWeekend = [5,6].includes(i)
                         return (
-                          <td key={i} className={`px-1 py-1 ${isWeekend ? 'bg-amber-50/20' : ''}`}>
+                          <td key={key} className={`px-1 py-1 ${isWeekend ? 'bg-amber-50/20' : ''}`}>
                             {dayShifts.length > 0 ? (
                               <div className="space-y-0.5">
                                 {dayShifts.map((s,j) => {
@@ -2081,8 +2081,8 @@ IMPORTANTE: includi SOLO i turni lavorativi (Pranzo/Cena/Intero/Ferie). NON incl
               <p>💡 L'AI rispetta la regola: <strong>max 1 Responsabile per turno</strong> (Pranzo/Cena separati)</p>
             </div>
             <div className="flex flex-wrap gap-2">
-              {QUICK.map((q,i)=>(
-                <button key={i} onClick={()=>setPrompt(q)}
+              {QUICK.map((q)=>(
+                <button key={q} onClick={()=>setPrompt(q)}
                   className="text-xs px-2 py-1.5 bg-gray-100 rounded-full hover:bg-gray-200 text-gray-700 border border-gray-200 transition-all">
                   {q}
                 </button>

@@ -127,8 +127,8 @@ export default function ChiusurePage() {
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-        {stats.map((s, i) => (
-          <div key={i} className={`kpi-card border-l-4 ${s.location === 'MAMELI' ? 'border-blue-500' : 'border-green-500'}`}>
+        {stats.map((s) => (
+          <div key={s.location} className={`kpi-card border-l-4 ${s.location === 'MAMELI' ? 'border-blue-500' : 'border-green-500'}`}>
             <div className="flex items-center gap-2 mb-1">
               <span className={`badge ${s.location === 'MAMELI' ? 'badge-blue' : 'badge-green'}`}>
                 {s.location === 'MAMELI' ? 'MA' : 'PN'}
@@ -309,11 +309,11 @@ export default function ChiusurePage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {confronto.map((c, i) => {
+                    {confronto.map((c) => {
                       const deltaMA = pctDelta(c[`${CUR_YEAR}_MAMELI`], c[`${PREV_YEAR}_MAMELI`])
                       const deltaPN = pctDelta(c[`${CUR_YEAR}_PREDDA_NIEDDA`], c[`${PREV_YEAR}_PREDDA_NIEDDA`])
                       return (
-                        <tr key={i} className="hover:bg-gray-50">
+                        <tr key={c.mese} className="hover:bg-gray-50">
                           <td className="px-4 py-2.5 font-medium">{c.mese}</td>
                           <td className="px-4 py-2.5 text-right text-gray-400">{eur(c[`${PREV2_YEAR}_MAMELI`])}</td>
                           <td className="px-4 py-2.5 text-right">{eur(c[`${PREV_YEAR}_MAMELI`])}</td>
@@ -357,11 +357,11 @@ export default function ChiusurePage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {mensile.slice().reverse().map((m, i) => {
+                {mensile.slice().reverse().map((m) => {
                   const maxV = Math.max(...mensile.map(x => parseFloat(x.tot_venduto) || 0))
                   const barPct = maxV > 0 ? ((parseFloat(m.tot_venduto) || 0) / maxV * 100).toFixed(1) : 0
                   return (
-                    <tr key={i} className="hover:bg-gray-50">
+                    <tr key={`${m.mese}-${m.location}`} className="hover:bg-gray-50">
                       <td className="px-4 py-2.5 font-medium">{m.mese}</td>
                       <td className="px-4 py-2.5">
                         <span className={`badge ${m.location === 'MAMELI' ? 'badge-blue' : 'badge-green'}`}>
@@ -431,13 +431,13 @@ export default function ChiusurePage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {recenti.map((r, i) => {
+                {recenti.map((r) => {
                   const avgStat = stats.find(s => s.location === r.location)
                   const avg = avgStat?.avg_coperto_medio
                   const isAbove = avg && r.coperto_medio > avg * 1.05
                   const isBelow = avg && r.coperto_medio < avg * 0.95
                   return (
-                    <tr key={i} className={`hover:bg-gray-50 ${r.chiusura_anticipata ? 'bg-amber-50' : ''}`}>
+                    <tr key={`${r.data}-${r.location}`} className={`hover:bg-gray-50 ${r.chiusura_anticipata ? 'bg-amber-50' : ''}`}>
                       <td className="px-4 py-2 font-medium">
                         {r.data}
                         {r.chiusura_anticipata && (
