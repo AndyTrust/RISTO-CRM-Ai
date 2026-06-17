@@ -10,6 +10,19 @@ import {
   employees as employeesApi,
   sediApi,
 } from '../api/supabase-client'
+import useClaudeAI from '../hooks/useClaudeAI'
+
+// Periodo di calcolo del quantum (base) per i target individuali
+const PERIOD_OPTS = [
+  { value: 'media',      label: 'Media ultimi N mesi' },
+  { value: 'anno',       label: 'Media anno in corso' },
+  { value: 'stagionale', label: 'Stagionale (stesso mese anno prec.)' },
+  { value: 'max',        label: 'MAX(media, stagionale)' },
+]
+const METRICA_BASE_OPTS = [
+  { value: 'FATTURATO_VENDUTO', label: 'Fatturato €' },
+  { value: 'PEZZI_TOTALI',      label: 'Pezzi' },
+]
 
 const TABS = [
   { id: 'costi',        label: 'Costi Fissi',       icon: '🏠' },
@@ -510,18 +523,25 @@ function TabIndividuali({ sede, anno, mese, nMesi = 3, refresh }) {
   const [mappedIds, setMappedIds] = useState(new Set())
   const [soloSala, setSoloSala]   = useState(true)
   const [prevPerf, setPrevPerf]   = useState({})
+  const [periodMode, setPeriodMode] = useState('media')
+  const [baseMetrica, setBaseMetrica] = useState('FATTURATO_VENDUTO')
+  const [fatAttuale, setFatAttuale] = useState({})
+  const [claudeOut, setClaudeOut]   = useState(null)
+  const [claudeLoading, setClaudeLoading] = useState(false)
+  const { callClaude } = useClaudeAI()
 
   const load = async () => {
     setLoading(true)
     try {
       const prevMese = mese === 1 ? 12 : mese - 1
       const prevAnno = mese === 1 ? anno - 1 : anno
-      const [e, t, p, mapping, pp] = await Promise.all([
+      const [e, t, p, mapping, pp, fa] = await Promise.all([
         employeesApi.getAll({ location: sede === 'MA' ? 'MAMELI' : 'PREDDA_NIEDDA', active: 'true' }),
         kpiTargetsApi.listIndividuale({ sede, anno, mese }),
         kpiPerformanceApi.getIndividuale({ sede, anno, mese }),
         kpiPerformanceApi.getMappingBySede({ sede }),
         kpiPerformanceApi.getIndividuale({ sede, anno: prevAnno, mese: prevMese }),
+        kpiPerformanceApi.getFatturatoMensile({ sede, anno, mese }),
       ])
       setEmps(e)
       const tMap = {}; for (const x of t) tMap[x.employee_id] = x
@@ -531,9 +551,17 @@ function TabIndividuali({ sede, anno, mese, nMesi = 3, refresh }) {
       setMappedIds(new Set((mapping || []).map(m => m.employee_id)))
       const ppMap = {}; for (const x of pp) if (x.employee_id) ppMap[x.employee_id] = x
       setPrevPerf(ppMap)
+      setFatAttuale(fa || {})
     } catch (er) { setErr(er.message) } finally { setLoading(false) }
   }
   useEffect(() => { load() }, [sede, anno, mese, nMesi, refresh])
+
+  // Valore "attuale" reale in base alla metrica del target
+  const attualeOf = (empId, metrica) => {
+    if (metrica === 'FATTURATO_VENDUTO') return fatAttuale[empId]?.fatturato ?? null
+    const p = perf[empId] || {}
+    return metrica === 'VALORE_VARIANTI' ? p.valore_varianti_netto : p.pezzi_totali
+  }
 
   const updateField = (empId, field, value) => {
     setTargets(prev => {
@@ -576,31 +604,64 @@ function TabIndividuali({ sede, anno, mese, nMesi = 3, refresh }) {
   const autoGeneraTutti = async () => {
     setGenerando(true); setMsg(null); setErr(null)
     try {
-      const results = await kpiPerformanceApi.autoTargetAllOperatori({ sede, anno, mese, mesiLookback: nMesi })
+      const results = await kpiPerformanceApi.autoTargetAllOperatori({ sede, anno, mese, mesiLookback: nMesi, periodMode })
+      const isFat = baseMetrica === 'FATTURATO_VENDUTO'
       const newStorico = {}
       const newTargets = { ...targets }
       let count = 0
       for (const r of results) {
         newStorico[r.employee_id] = r
-        if (r.quantum_pezzi > 0 || r.quantum_fat > 0) {
+        const q = isFat ? r.quantum_fat : r.quantum_pezzi
+        const tg = isFat ? r.target_fat : r.target_pezzi
+        if (q > 0) {
           const curr = newTargets[r.employee_id] || {
-            employee_id: r.employee_id, sede, anno, mese,
-            metrica: 'PEZZI_TOTALI', premio_max_euro: 0
+            employee_id: r.employee_id, sede, anno, mese, premio_max_euro: 0
           }
           newTargets[r.employee_id] = {
             ...curr,
-            quantum: r.quantum_pezzi,
-            target:  r.target_pezzi,
-            mese_precedente_valore: parseFloat(r.storico[0]?.pezzi_totali || 0),
+            metrica: baseMetrica,
+            quantum: q,
+            target:  tg,
+            mese_precedente_valore: parseFloat(r.storico[0]?.[isFat ? 'fatturato_totale' : 'pezzi_totali'] || 0),
           }
           count++
         }
       }
       setStoricoMap(newStorico)
       setTargets(newTargets)
-      const baseLabel = nMesi === 1 ? 'mese prec.' : `media ${nMesi}m`
-      setMsg(`✓ Generati ${count} target — Formula: MAX(${baseLabel}, ${anno-1}/${String(mese).padStart(2,'0')}) × 1.10. Verifica e salva.`)
+      const fonte = results.find(r => r.baseFonte)?.baseFonte || periodMode
+      const metricaLabel = isFat ? 'Fatturato €' : 'Pezzi'
+      setMsg(`✓ Generati ${count} target (${metricaLabel}) — base: ${fonte} × 1.10. Verifica e salva.`)
     } catch (e) { setErr(e.message) } finally { setGenerando(false) }
+  }
+
+  // ─── Analisi strategica Claude su target + performance reale ──────────────
+  const analizzaConClaude = async () => {
+    setClaudeLoading(true); setClaudeOut(null); setErr(null)
+    try {
+      const lista = soloSala ? emps.filter(e => mappedIds.has(e.id)) : emps
+      const righe = lista.map(emp => {
+        const t = targets[emp.id] || {}
+        const metrica = t.metrica || baseMetrica
+        const att = attualeOf(emp.id, metrica)
+        const q = parseFloat(t.quantum) || 0
+        const tg = parseFloat(t.target) || 0
+        const pct = q > 0 && att != null ? Math.round((att / q) * 100) : null
+        return {
+          nome: emp.name, metrica,
+          quantum: q, target: tg,
+          attuale: att != null ? Math.round(att) : null,
+          pct_su_quantum: pct,
+          mese_prec: t.mese_precedente_valore != null ? Math.round(t.mese_precedente_valore) : null,
+          premio_max: parseFloat(t.premio_max_euro) || 0,
+        }
+      })
+      const mesiLabel = new Date(2000, mese - 1).toLocaleString('it', { month: 'long' })
+      const system = `Sei l'assistente strategico di 140 Grammi, ristorazione (sedi MA=Mameli Cagliari, PN=Predda Niedda Sassari). Analizzi target KPI individuali calcolati su dati reali Supabase. Rispondi in italiano, conciso e azionabile: 1) chi è sotto/sopra il quantum e di quanto, 2) se i target sono realistici vs stagionalità del mese, 3) suggerimenti su premi e priorità. Niente preamboli, vai dritto ai punti. Usa importi in €.`
+      const user = `Sede ${sede} — ${mesiLabel} ${anno}. Metrica: ${baseMetrica === 'FATTURATO_VENDUTO' ? 'Fatturato €' : 'Pezzi'}. Periodo base quantum: ${PERIOD_OPTS.find(o => o.value === periodMode)?.label}.\nQuantum = soglia minima bonus, Target = obiettivo (+10%).\nDati operatori (JSON):\n${JSON.stringify(righe, null, 1)}\n\nFornisci: (a) sintesi 2 righe, (b) 3-5 azioni concrete per ${mesiLabel}, (c) eventuali target da rivedere.`
+      const out = await callClaude([{ role: 'user', content: user }], system, { max_tokens: 1500 })
+      setClaudeOut(out || 'Nessuna risposta.')
+    } catch (e) { setErr('Claude: ' + e.message) } finally { setClaudeLoading(false) }
   }
 
   if (loading) return <Spinner />
@@ -620,6 +681,18 @@ function TabIndividuali({ sede, anno, mese, nMesi = 3, refresh }) {
           </p>
         </div>
         <div className="flex gap-2 flex-wrap items-center">
+          <label className="text-xs text-gray-500 flex flex-col">
+            Periodo base
+            <select className="input input-xs text-xs" value={periodMode} onChange={e => setPeriodMode(e.target.value)} title="Su quale storico calcolare il quantum">
+              {PERIOD_OPTS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </label>
+          <label className="text-xs text-gray-500 flex flex-col">
+            Metrica
+            <select className="input input-xs text-xs" value={baseMetrica} onChange={e => setBaseMetrica(e.target.value)} title="Metrica su cui impostare i target">
+              {METRICA_BASE_OPTS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </label>
           <button
             className={`btn text-sm ${soloSala ? 'btn-secondary' : 'btn-outline'}`}
             onClick={() => setSoloSala(v => !v)}
@@ -642,6 +715,14 @@ function TabIndividuali({ sede, anno, mese, nMesi = 3, refresh }) {
           >
             💾 Salva tutti
           </button>
+          <button
+            className="btn btn-outline text-sm"
+            onClick={analizzaConClaude}
+            disabled={claudeLoading || generando}
+            title="Analisi strategica dei target con Claude AI su dati reali"
+          >
+            {claudeLoading ? '⏳ Analizzo...' : '🧠 Analisi Claude'}
+          </button>
         </div>
       </div>
       {soloSala && hiddenCount > 0 && (
@@ -661,6 +742,18 @@ function TabIndividuali({ sede, anno, mese, nMesi = 3, refresh }) {
       </div>
 
       {msg && <div className="p-3 bg-green-50 border border-green-200 rounded text-sm text-green-800">{msg}</div>}
+
+      {(claudeLoading || claudeOut) && (
+        <div className="p-4 bg-violet-50 border border-violet-200 rounded-lg">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-semibold text-violet-800">🧠 Analisi strategica Claude</h3>
+            {claudeOut && <button className="text-xs text-violet-500 hover:text-violet-800" onClick={() => setClaudeOut(null)}>✕ chiudi</button>}
+          </div>
+          {claudeLoading
+            ? <p className="text-sm text-violet-600 animate-pulse">Analisi dei target su dati reali in corso…</p>
+            : <div className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{claudeOut}</div>}
+        </div>
+      )}
 
       <div className="overflow-x-auto">
         <table className="min-w-full text-sm">
@@ -685,9 +778,10 @@ function TabIndividuali({ sede, anno, mese, nMesi = 3, refresh }) {
             )}
             {empsFiltered.map(emp => {
               const t = targets[emp.id] || { quantum: 0, target: 0, premio_max_euro: 0, metrica: 'PEZZI_TOTALI' }
-              const p = perf[emp.id] || {}
               const s = storicoMap[emp.id]
-              const attuale = t.metrica === 'VALORE_VARIANTI' ? p.valore_varianti_netto : p.pezzi_totali
+              const isFatRow = t.metrica === 'FATTURATO_VENDUTO'
+              const attuale = attualeOf(emp.id, t.metrica)
+              const fmtVal = (v) => v == null ? '—' : (isFatRow ? euro(v) : Math.round(v).toLocaleString('it'))
               const bonus = calcBonusIndividuale(
                 parseFloat(attuale) || 0,
                 parseFloat(t.quantum) || 0,
@@ -710,14 +804,15 @@ function TabIndividuali({ sede, anno, mese, nMesi = 3, refresh }) {
                     <td className="p-2 font-medium">{emp.name}</td>
                     <td className="p-2">
                       <select className="input input-xs text-xs" value={t.metrica} onChange={e => updateField(emp.id, 'metrica', e.target.value)}>
+                        <option value="FATTURATO_VENDUTO">Fatturato €</option>
                         <option value="PEZZI_TOTALI">Pezzi</option>
                         <option value="VALORE_VARIANTI">Varianti €</option>
                       </select>
                     </td>
                     <td className="p-2 text-right text-gray-500 font-mono text-xs" title={s ? `Fonte: storico Auto-genera (${s.storico[0]?.label || 'mese prec.'})` : 'Fonte: v_kpi_performance_individuale mese precedente'}>
                       {s
-                        ? (s.storico[0]?.pezzi_totali ? Math.round(s.storico[0].pezzi_totali).toLocaleString('it') : '—')
-                        : (prevPerf[emp.id]?.pezzi_totali != null ? Math.round(prevPerf[emp.id].pezzi_totali).toLocaleString('it') : '—')
+                        ? fmtVal(isFatRow ? s.storico[0]?.fatturato_totale : s.storico[0]?.pezzi_totali)
+                        : (prevPerf[emp.id]?.pezzi_totali != null && !isFatRow ? Math.round(prevPerf[emp.id].pezzi_totali).toLocaleString('it') : '—')
                       }
                     </td>
                     <td className="p-2">
@@ -729,7 +824,7 @@ function TabIndividuali({ sede, anno, mese, nMesi = 3, refresh }) {
                     <td className="p-2">
                       <input type="number" step="10" className="input input-xs w-24 text-right" value={t.premio_max_euro || ''} onChange={e => updateField(emp.id, 'premio_max_euro', parseFloat(e.target.value) || 0)} />
                     </td>
-                    <td className="p-2 text-right font-mono">{attuale != null ? Math.round(attuale).toLocaleString('it') : '—'}</td>
+                    <td className="p-2 text-right font-mono">{fmtVal(attuale)}</td>
                     <td className="p-2 text-right font-mono text-green-600">{euro(bonus)}</td>
                     <td className="p-2 text-center text-xs text-gray-400">
                       {s ? <span className="text-indigo-600 font-medium" title={`Base: ${s.baseFonte}`}>📊 {s.baseFonte}</span> : '—'}

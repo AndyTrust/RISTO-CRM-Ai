@@ -3383,9 +3383,13 @@ export const kpiPerformanceApi = {
 
   // ─── Auto-genera targets per tutti gli operatori della sede ───────────────
   // Fonte: employee_operator_mapping (link emp→op) + v_fatturato_operatore_mensile
-  // Regola: quantum = MAX(media3m, stesso_mese_anno_prec); target = quantum × 1.10
-  // Una sola chiamata Supabase per tutta la sede (batch efficiente)
-  autoTargetAllOperatori: async ({ sede, anno, mese, mesiLookback = 3 }) => {
+  // periodMode (base di calcolo del quantum):
+  //   'media'      → media ultimi N mesi (mesiLookback)
+  //   'anno'       → media di tutti i mesi dell'anno in corso (esclude il mese target)
+  //   'stagionale' → stesso mese dell'anno precedente (utile per stagionalità)
+  //   'max'        → MAX(media N mesi, stesso mese anno prec)  [default storico]
+  // target = quantum × 1.10. Una sola chiamata Supabase per tutta la sede.
+  autoTargetAllOperatori: async ({ sede, anno, mese, mesiLookback = 3, periodMode = 'max' }) => {
     const s = locationToSede(sede) || sede
     const { data: mappings } = await supabase.from('employee_operator_mapping')
       .select('employee_id, op_name_ipratico').eq('sede', s)
@@ -3400,16 +3404,20 @@ export const kpiPerformanceApi = {
     const { data: fatRows } = await supabase.from('v_fatturato_operatore_mensile')
       .select('anno, mese, operator, pezzi_totali, fatturato_totale, margine_pct')
       .eq('sede', s).gte('anno', minAnno)
-    // Lookup: UPPER(operator) → { 'ANNO-MESE': row }
-    const fatLookup = {}
+    // Lookup: UPPER(operator) → { 'ANNO-MESE': row }  +  lista completa righe per operatore
+    const fatLookup = {}, allByOp = {}
     for (const r of fatRows || []) {
       const k = r.operator?.toUpperCase()
-      if (!fatLookup[k]) fatLookup[k] = {}
+      if (!fatLookup[k]) { fatLookup[k] = {}; allByOp[k] = [] }
       fatLookup[k][`${r.anno}-${r.mese}`] = r
+      allByOp[k].push(r)
     }
+    const avg = (arr, key) => arr.length
+      ? arr.reduce((s, r) => s + parseFloat(r[key] || 0), 0) / arr.length : 0
     return mappings.map(m => {
       const opKey   = m.op_name_ipratico?.toUpperCase()
       const opData  = fatLookup[opKey] || {}
+      const opAll   = allByOp[opKey] || []
       const storicoMesi = mesiQuery.map(({ anno, mese }) => ({
         anno, mese, label: `${String(mese).padStart(2,'0')}/${anno}`,
         ...opData[`${anno}-${mese}`] || {},
@@ -3417,32 +3425,78 @@ export const kpiPerformanceApi = {
       }))
       const prevYearRow   = opData[`${anno - 1}-${mese}`] || null
       const mesiConDati   = storicoMesi.filter(x => x.haDati)
-      const media3m_pezzi = mesiConDati.length > 0
-        ? mesiConDati.reduce((s, r) => s + parseFloat(r.pezzi_totali || 0), 0) / mesiConDati.length : 0
-      const media3m_fat   = mesiConDati.length > 0
-        ? mesiConDati.reduce((s, r) => s + parseFloat(r.fatturato_totale || 0), 0) / mesiConDati.length : 0
+      const annoRows      = opAll.filter(r => r.anno === anno && r.mese !== mese)
+      const media_pezzi   = avg(mesiConDati, 'pezzi_totali')
+      const media_fat     = avg(mesiConDati, 'fatturato_totale')
+      const anno_pezzi    = avg(annoRows, 'pezzi_totali')
+      const anno_fat      = avg(annoRows, 'fatturato_totale')
       const prevYearPezzi = parseFloat(prevYearRow?.pezzi_totali || 0)
       const prevYearFat   = parseFloat(prevYearRow?.fatturato_totale || 0)
-      const basePezzi = Math.max(media3m_pezzi, prevYearPezzi)
-      const baseFat   = Math.max(media3m_fat, prevYearFat)
+      const mm = `${anno - 1}/${String(mese).padStart(2,'0')}`
+      let basePezzi, baseFat, baseFonte
+      switch (periodMode) {
+        case 'media':
+          basePezzi = media_pezzi; baseFat = media_fat
+          baseFonte = mesiLookback === 1 ? 'mese prec.' : `media ${mesiConDati.length || mesiLookback}m`
+          break
+        case 'anno':
+          basePezzi = anno_pezzi; baseFat = anno_fat
+          baseFonte = `media ${anno} (${annoRows.length}m)`
+          break
+        case 'stagionale':
+          basePezzi = prevYearPezzi; baseFat = prevYearFat
+          baseFonte = `stagionale ${mm}`
+          break
+        case 'max':
+        default:
+          basePezzi = Math.max(media_pezzi, prevYearPezzi)
+          baseFat   = Math.max(media_fat, prevYearFat)
+          baseFonte = media_pezzi >= prevYearPezzi ? `media ${mesiConDati.length || mesiLookback}m` : mm
+          break
+      }
       return {
         employee_id:   m.employee_id,
         operatore:     m.op_name_ipratico,
         storico:       storicoMesi,
         datiAnnoPrec:  prevYearRow,
-        media3m_pezzi: Math.round(media3m_pezzi),
-        media3m_fat:   Math.round(media3m_fat),
+        media3m_pezzi: Math.round(media_pezzi),
+        media3m_fat:   Math.round(media_fat),
+        anno_pezzi:    Math.round(anno_pezzi),
+        anno_fat:      Math.round(anno_fat),
         prevYearPezzi: Math.round(prevYearPezzi),
         prevYearFat:   Math.round(prevYearFat),
         quantum_pezzi: Math.round(basePezzi),
         target_pezzi:  Math.round(basePezzi * 1.10),
         quantum_fat:   Math.round(baseFat),
         target_fat:    Math.round(baseFat * 1.10),
-        baseFonte: media3m_pezzi >= prevYearPezzi
-          ? `media ${mesiConDati.length}m` : `${anno - 1}/${String(mese).padStart(2,'0')}`,
-        nMesiConDati: mesiConDati.length,
+        baseFonte, periodMode,
+        nMesiConDati:  mesiConDati.length,
       }
     })
+  },
+
+  // ─── Fatturato/pezzi reali per operatore (per metrica FATTURATO_VENDUTO) ────
+  // Ritorna mappa employee_id → { fatturato, pezzi } del mese richiesto.
+  getFatturatoMensile: async ({ sede, anno, mese }) => {
+    const s = locationToSede(sede) || sede
+    const [{ data: fat }, { data: map }] = await Promise.all([
+      supabase.from('v_fatturato_operatore_mensile')
+        .select('operator, pezzi_totali, fatturato_totale')
+        .eq('sede', s).eq('anno', parseInt(anno)).eq('mese', parseInt(mese)),
+      supabase.from('employee_operator_mapping')
+        .select('employee_id, op_name_ipratico').eq('sede', s),
+    ])
+    const fatByOp = {}
+    for (const r of fat || []) fatByOp[r.operator?.toUpperCase()] = r
+    const out = {}
+    for (const m of map || []) {
+      const r = fatByOp[m.op_name_ipratico?.toUpperCase()]
+      if (r) out[m.employee_id] = {
+        fatturato: parseFloat(r.fatturato_totale || 0),
+        pezzi:     parseFloat(r.pezzi_totali || 0),
+      }
+    }
+    return out
   },
 }
 
