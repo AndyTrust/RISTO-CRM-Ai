@@ -64,9 +64,14 @@ export default function KPIConfig() {
 
   // Reactivity: ricarica se altre pagine cambiano dati KPI
   useEffect(() => {
-    const onStorage = (e) => { if (e.key === 'crm_kpi_updated') setRefresh(r => r + 1) }
+    const bump = () => setRefresh(r => r + 1)
+    const onStorage = (e) => { if (e.key === 'crm_kpi_updated') bump() }
     window.addEventListener('storage', onStorage)
-    return () => window.removeEventListener('storage', onStorage)
+    window.addEventListener('crm-kpi-updated', bump)
+    return () => {
+      window.removeEventListener('storage', onStorage)
+      window.removeEventListener('crm-kpi-updated', bump)
+    }
   }, [])
 
   return (

@@ -1441,15 +1441,16 @@ export const analytics = {
     } catch { return [] }
   },
 
-  // Stagionalità: indici mensili 2025 + coperto medio per sede
+  // Stagionalità: indici mensili dell'ultimo anno completo + coperto medio per sede
   seasonality: async (p = {}) => {
     try {
       const { data: rows } = await supabase.from('chiusure_giornaliere')
         .select('sede, data, totale_venduto_ipratico, coperti, coperto_medio')
         .order('data').range(0, 4999) // bypass limite default 1000 righe
 
-      // Solo anno 2025 per indici stagionali
-      const rows2025 = (rows ?? []).filter(r => r.data?.startsWith('2025'))
+      // Anno base = ultimo anno completo (dinamico, non hardcoded)
+      const baseYear = String(new Date().getFullYear() - 1)
+      const rows2025 = (rows ?? []).filter(r => r.data?.startsWith(baseYear))
 
       // Aggrega per mese_num
       const byMn = {}
@@ -1651,10 +1652,11 @@ export const analytics = {
         }
       }
 
-      // Indici stagionali dal 2025 (per sede)
+      // Indici stagionali dall'ultimo anno completo (dinamico, per sede)
+      const baseYear = new Date().getFullYear() - 1
       const { data: rows2025 } = await supabase.from('chiusure_giornaliere')
         .select('sede, data, totale_venduto_ipratico')
-        .gte('data', '2025-01-01').lte('data', '2025-12-31').range(0, 4999) // bypass limite 1000
+        .gte('data', `${baseYear}-01-01`).lte('data', `${baseYear}-12-31`).range(0, 4999) // bypass limite 1000
 
       const bySedeM = { MA: {}, PN: {} }
       for (const r of rows2025 ?? []) {
@@ -1673,7 +1675,7 @@ export const analytics = {
 
       // Totale coperti nell'ultimo mese disponibile per quota di mercato
       const lastAvailPeriod = Object.values(byOp)
-        .flatMap(o => Object.keys(o.mesi)).sort().at(-1) || '2026-04'
+        .flatMap(o => Object.keys(o.mesi)).sort().at(-1) || ''
       const totCopertiSede = { MA: 0, PN: 0 }
       for (const op of Object.values(byOp)) {
         totCopertiSede[op.sede] = (totCopertiSede[op.sede] || 0) + (op.mesi[lastAvailPeriod]?.coperti || 0)
@@ -3008,7 +3010,7 @@ export const fattureCategorieApi = {
   setCategoriaFornitore: async (fornitoreId, categoriaId) => {
     const { error } = await supabase.from('fornitori_fatture').update({ categoria_id: categoriaId }).eq('id', fornitoreId)
     if (error) throw error
-    try { localStorage.setItem('crm_kpi_updated', JSON.stringify({ ts: Date.now() })) } catch (_) {}
+    try { localStorage.setItem('crm_kpi_updated', JSON.stringify({ ts: Date.now() })); window.dispatchEvent(new Event('crm-kpi-updated')) } catch (_) {}
     return { success: true }
   },
 }
@@ -3035,7 +3037,7 @@ export const costiFissiApi = {
     }
     const { data, error } = await supabase.from('costi_fissi').insert(payload).select().single()
     if (error) throw error
-    try { localStorage.setItem('crm_kpi_updated', JSON.stringify({ ts: Date.now() })) } catch (_) {}
+    try { localStorage.setItem('crm_kpi_updated', JSON.stringify({ ts: Date.now() })); window.dispatchEvent(new Event('crm-kpi-updated')) } catch (_) {}
     return data
   },
   update: async (id, d) => {
@@ -3043,13 +3045,13 @@ export const costiFissiApi = {
     if (d.importo !== undefined) payload.importo = parseFloat(d.importo)
     const { error } = await supabase.from('costi_fissi').update(payload).eq('id', id)
     if (error) throw error
-    try { localStorage.setItem('crm_kpi_updated', JSON.stringify({ ts: Date.now() })) } catch (_) {}
+    try { localStorage.setItem('crm_kpi_updated', JSON.stringify({ ts: Date.now() })); window.dispatchEvent(new Event('crm-kpi-updated')) } catch (_) {}
     return { success: true }
   },
   delete: async (id) => {
     const { error } = await supabase.from('costi_fissi').delete().eq('id', id)
     if (error) throw error
-    try { localStorage.setItem('crm_kpi_updated', JSON.stringify({ ts: Date.now() })) } catch (_) {}
+    try { localStorage.setItem('crm_kpi_updated', JSON.stringify({ ts: Date.now() })); window.dispatchEvent(new Event('crm-kpi-updated')) } catch (_) {}
     return { success: true }
   },
   // Lista arricchita con categoria e mese_str (da v_costi_fissi_arricchiti)
@@ -3083,7 +3085,7 @@ export const costiFissiApi = {
       p_ricorrente: !!ricorrente, p_note: note || null,
     })
     if (error) throw error
-    try { localStorage.setItem('crm_kpi_updated', JSON.stringify({ ts: Date.now() })) } catch (_) {}
+    try { localStorage.setItem('crm_kpi_updated', JSON.stringify({ ts: Date.now() })); window.dispatchEvent(new Event('crm-kpi-updated')) } catch (_) {}
     return { creati: data }
   },
 
@@ -3096,7 +3098,7 @@ export const costiFissiApi = {
       p_pct_aumento: parseFloat(pct_aumento) || 0,
     })
     if (error) throw error
-    try { localStorage.setItem('crm_kpi_updated', JSON.stringify({ ts: Date.now() })) } catch (_) {}
+    try { localStorage.setItem('crm_kpi_updated', JSON.stringify({ ts: Date.now() })); window.dispatchEvent(new Event('crm-kpi-updated')) } catch (_) {}
     return { aggiornate: data }
   },
 
@@ -3155,7 +3157,7 @@ export const kpiTargetsApi = {
     const { data, error } = await supabase.from('kpi_targets_team')
       .upsert(payload, { onConflict: 'sede,anno,mese' }).select().single()
     if (error) throw error
-    try { localStorage.setItem('crm_kpi_updated', JSON.stringify({ ts: Date.now() })) } catch (_) {}
+    try { localStorage.setItem('crm_kpi_updated', JSON.stringify({ ts: Date.now() })); window.dispatchEvent(new Event('crm-kpi-updated')) } catch (_) {}
     return data
   },
 
@@ -3184,7 +3186,7 @@ export const kpiTargetsApi = {
     const { data, error } = await supabase.from('kpi_targets_individuale')
       .upsert(payload, { onConflict: 'employee_id,sede,anno,mese' }).select().single()
     if (error) throw error
-    try { localStorage.setItem('crm_kpi_updated', JSON.stringify({ ts: Date.now() })) } catch (_) {}
+    try { localStorage.setItem('crm_kpi_updated', JSON.stringify({ ts: Date.now() })); window.dispatchEvent(new Event('crm-kpi-updated')) } catch (_) {}
     return data
   },
 
@@ -3647,7 +3649,7 @@ export const bonusApi = {
       p_pct_sala: parseFloat(pct_sala),
     })
     if (error) throw error
-    try { localStorage.setItem('crm_kpi_updated', JSON.stringify({ ts: Date.now() })) } catch (_) {}
+    try { localStorage.setItem('crm_kpi_updated', JSON.stringify({ ts: Date.now() })); window.dispatchEvent(new Event('crm-kpi-updated')) } catch (_) {}
     return data
   },
 }

@@ -29,7 +29,21 @@ function DeltaBadge({ pct }) {
 export default function PageStatsWidget() {
   const [stats, setStats] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [reloadTick, setReloadTick] = useState(0)
   const mounted = useRef(true)
+
+  // Invalida la cache e ricarica quando i dati KPI cambiano (sia in questa tab
+  // via CustomEvent 'crm-kpi-updated', sia da altre tab via storage 'crm_kpi_updated').
+  useEffect(() => {
+    const bust = () => { _cache = null; _cacheTs = 0; setReloadTick(t => t + 1) }
+    const onStorage = (e) => { if (e.key === 'crm_kpi_updated') bust() }
+    window.addEventListener('crm-kpi-updated', bust)
+    window.addEventListener('storage', onStorage)
+    return () => {
+      window.removeEventListener('crm-kpi-updated', bust)
+      window.removeEventListener('storage', onStorage)
+    }
+  }, [])
 
   useEffect(() => {
     mounted.current = true
@@ -181,7 +195,7 @@ export default function PageStatsWidget() {
 
     loadStats()
     return () => { mounted.current = false }
-  }, [])
+  }, [reloadTick])
 
   if (loading) {
     return (
