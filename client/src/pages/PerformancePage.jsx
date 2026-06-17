@@ -467,7 +467,8 @@ function TabTeam({ sede, anno, mese }) {
   const tt  = state.tt  || {}
   const fat = parseFloat(be.fatturato) || 0
   const tgt = parseFloat(tt.target_fatturato) || 0
-  const beT = parseFloat(tt.be_totale || be.costi_totali) || 0
+  // BE live (v_be_mensile) prioritario sul valore salvato, che può essere obsoleto
+  const beT = parseFloat(be.costi_totali ?? tt.be_totale) || 0
   const pctFat  = tgt > 0 ? (fat / tgt) * 100 : 0
   const margine = parseFloat(be.margine) || 0
   const pctMarg = fat > 0 ? (margine / fat) * 100 : 0

@@ -308,14 +308,19 @@ function TabTeamTarget({ sede, anno, mese, nMesi = 3, refresh }) {
       const beCalc = Number(c.be_totale) || 0
       // Usa il quorum appena caricato (q), non lo stato 'quorum' che è ancora stale in questo render
       const targetSuggerito = Math.max(beCalc * 1.10, Math.max(ap || 0, q || 0))
-      setTarget(t || {
-        be_totale: beCalc,
-        target_fatturato: Math.round(targetSuggerito),
-        premio_team_euro: 0,
-        pct_cucina: 50, pct_sala: 50,
-        coeff_stagionale: 1.0,
-        note: '',
-      })
+      // Il BE è SEMPRE quello live da v_costi_mensili (personale+fatture+fissi):
+      // anche con un target salvato, sovrascrivo be_totale col valore aggiornato,
+      // così non resta congelato a una vecchia istantanea (es. fatture non ancora importate).
+      setTarget(t
+        ? { ...t, be_totale: beCalc }
+        : {
+            be_totale: beCalc,
+            target_fatturato: Math.round(targetSuggerito),
+            premio_team_euro: 0,
+            pct_cucina: 50, pct_sala: 50,
+            coeff_stagionale: 1.0,
+            note: '',
+          })
     } finally { setLoading(false) }
   }
   useEffect(() => { load() }, [sede, anno, mese, nMesi, refresh])
