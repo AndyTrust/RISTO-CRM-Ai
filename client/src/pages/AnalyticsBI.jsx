@@ -377,11 +377,11 @@ function OverviewSection({ overview, loading, meseRange, periodoAttivo }) {
             <Tooltip content={<CustomTooltip prefix={tab === 'venduto' ? '€' : ''} />} />
             <Legend wrapperStyle={{ fontSize: 11 }} />
             {tab === 'venduto' ? <>
-              <Bar dataKey="venduto_2025" name="2025" fill="#cbd5e1" radius={[3,3,0,0]} />
-              <Bar dataKey="venduto_2026" name="2026" fill={C.MA} radius={[3,3,0,0]} />
+              <Bar dataKey="venduto_2025" name={String(annoC - 1)} fill="#cbd5e1" radius={[3,3,0,0]} />
+              <Bar dataKey="venduto_2026" name={String(annoC)} fill={C.MA} radius={[3,3,0,0]} />
             </> : <>
-              <Bar dataKey="coperti_2025" name="Coperti 2025" fill="#cbd5e1" radius={[3,3,0,0]} />
-              <Bar dataKey="coperti_2026" name="Coperti 2026" fill={C.PN} radius={[3,3,0,0]} />
+              <Bar dataKey="coperti_2025" name={`Coperti ${annoC - 1}`} fill="#cbd5e1" radius={[3,3,0,0]} />
+              <Bar dataKey="coperti_2026" name={`Coperti ${annoC}`} fill={C.PN} radius={[3,3,0,0]} />
             </>}
           </BarChart>
         </ResponsiveContainer>

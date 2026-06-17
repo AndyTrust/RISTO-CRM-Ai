@@ -16,7 +16,7 @@ import PageAssistant from '../components/PageAssistant'
 const SEDE_LABEL  = { MA: 'Sede MA', PN: 'Sede PN' }
 const SEDE_COLOR  = { MA: 'bg-blue-100 text-blue-700', PN: 'bg-emerald-100 text-emerald-700' }
 const SEDE_BORDER = { MA: 'border-blue-200', PN: 'border-emerald-200' }
-const CCNL_MULT   = 1.9653   // netto → costo azienda
+const CCNL_MULT   = 1.79     // netto → costo azienda (cascata reale 769 buste; il vecchio 1.9653 sovrastimava 10-35%)
 
 const RUOLI_DEFAULT = [
   'Responsabile','Cameriere','Commis','Cuoco','Aiuto Cuoco','Chef',

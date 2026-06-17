@@ -3224,11 +3224,21 @@ export const kpiTargetsApi = {
 
 export const kpiPerformanceApi = {
   // Costi mensili aggregati (personale + fatture + fissi)
+  // FONTE UNICA: v_be_mensile (la stessa usata da Performance/KpiTeam/KPIWaiters),
+  // così il BE è identico su tutte le pagine. Mappa i campi della view sul formato
+  // storico { costo_personale, costo_fatture, costo_fissi, be_totale }.
   getCosti: async ({ sede, anno, mese }) => {
     const s = locationToSede(sede) || sede
-    const { data } = await supabase.from('v_costi_mensili').select('*')
+    const { data } = await supabase.from('v_be_mensile').select('*')
       .eq('sede', s).eq('anno', parseInt(anno)).eq('mese', parseInt(mese)).maybeSingle()
-    return data || { sede: s, anno, mese, costo_personale: 0, costo_fatture: 0, costo_fissi: 0, be_totale: 0 }
+    if (!data) return { sede: s, anno, mese, costo_personale: 0, costo_fatture: 0, costo_fissi: 0, be_totale: 0 }
+    return {
+      sede: s, anno, mese,
+      costo_personale: Number(data.costo_personale) || 0,
+      costo_fatture:   Number(data.tot_fatture_acquisto) || 0,
+      costo_fissi:     Number(data.costi_fissi) || 0,
+      be_totale:       Number(data.costi_totali) || 0,
+    }
   },
 
   // Performance per operatore/dipendente in tempo reale

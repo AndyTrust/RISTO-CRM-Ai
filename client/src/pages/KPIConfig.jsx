@@ -361,9 +361,9 @@ function TabTeamTarget({ sede, anno, mese, nMesi = 3, refresh }) {
         <div className="p-3 bg-amber-50 border border-amber-300 rounded-lg flex gap-2 text-sm">
           <span>⚠️</span>
           <div>
-            <b>Buste paga non importate per {mesiLabel} {anno}</b> — il costo personale risulta €0.
-            Importa i cedolini nella sezione <em>Buste Paga</em> per avere il BE corretto.
-            Stima approssimativa basata su gen 2026: <b>~€53K MA / ~€40K PN</b>.
+            <b>Buste paga non importate per {mesiLabel} {anno}</b> — il costo personale risulta €0,
+            quindi il BE mostrato è parziale (solo fatture + costi fissi).
+            Importa i cedolini nella sezione <em>Buste Paga</em> per avere il BE completo.
           </div>
         </div>
       )}
@@ -374,13 +374,13 @@ function TabTeamTarget({ sede, anno, mese, nMesi = 3, refresh }) {
           label="Costo Personale"
           value={euro(costi.costo_personale)}
           hint={`${pct(costi.costo_personale, beCalc)} del BE`}
-          note="Fonte: buste_paga.costo_azienda (se null → netto × 1.9653 CCNL)"
+          note="Fonte: v_be_mensile · buste_paga.costo_azienda (se null → netto × 1.79 CCNL)"
         />
         <KpiCard
           label="Fatture Acquisto"
           value={euro(costi.costo_fatture)}
           hint={`${pct(costi.costo_fatture, beCalc)} del BE`}
-          note="Fonte: fatture_importate × allocazione % (sede_ma_pct / sede_pn_pct)"
+          note="Fonte: v_be_mensile · fatture allocate per sede (v_fatture_arricchite)"
         />
         <KpiCard
           label="Costi Fissi"
@@ -389,7 +389,7 @@ function TabTeamTarget({ sede, anno, mese, nMesi = 3, refresh }) {
           note="Fonte: tabella costi_fissi (affitto, consulenze, manuali)"
         />
         <KpiCard label="BE Totale" value={euro(beCalc)} color="border-red-500" highlight
-          note="BE = Personale + Fatture + Fissi. Fonte: vista v_costi_mensili"
+          note="BE = Personale + Fatture + Fissi. Fonte: vista v_be_mensile (stessa di Performance/KpiTeam)"
         />
       </div>
 

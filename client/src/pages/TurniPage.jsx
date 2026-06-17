@@ -26,7 +26,7 @@ const TURNO_META = {
 }
 
 const GIORNI = ['Lun','Mar','Mer','Gio','Ven','Sab','Dom']
-const CCNL = 1.9653
+const CCNL = 1.79  // netto → costo azienda (cascata reale; vecchio 1.9653 sovrastimava 10-35%)
 const MESI_IT = ['Gennaio','Febbraio','Marzo','Aprile','Maggio','Giugno','Luglio','Agosto','Settembre','Ottobre','Novembre','Dicembre']
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────

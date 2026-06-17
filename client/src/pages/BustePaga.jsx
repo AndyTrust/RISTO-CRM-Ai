@@ -15,7 +15,7 @@ import PageStatsWidget from '../components/PageStatsWidget'
 // ═══════════════════════════════════════════════════════════════════════════
 // CONSTANTS & UTILS
 // ═══════════════════════════════════════════════════════════════════════════
-const COSTO_AZ_FALLBACK = 1.9653  // usato solo se costo_azienda mancante
+const COSTO_AZ_FALLBACK = 1.79  // netto → costo azienda, usato solo se costo_azienda mancante (vecchio 1.9653 sovrastimava 10-35%)
 const EUR  = new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', maximumFractionDigits: 2 })
 const EUR0 = new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 })
 const NUM  = new Intl.NumberFormat('it-IT', { maximumFractionDigits: 0 })
@@ -416,7 +416,7 @@ function AddModal({ employees, onSave, onClose }) {
               <label className="text-xs text-gray-400 mb-1 block">Anno</label>
               <select className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
                 value={form.anno} onChange={e => set('anno', parseInt(e.target.value))}>
-                {[2024,2025,2026].map(y => <option key={y} value={y}>{y}</option>)}
+                {Array.from({length:new Date().getFullYear()-2023},(_,i)=>2024+i).map(y => <option key={y} value={y}>{y}</option>)}
               </select>
             </div>
             <div>
@@ -1049,7 +1049,7 @@ function CostoPersonaleTab({ costoMensile, sedeFilter }) {
         <AlertCircle size={18} className="text-blue-400 flex-shrink-0 mt-0.5"/>
         <div className="text-sm text-blue-300">
           <p className="font-medium">Costo Aziendale — CCNL Turismo Pubblici Esercizi</p>
-          <p className="text-xs mt-0.5 opacity-80">Formula: costo = lorda × 1.3857 (38.57% contributi c/az). Fallback: netto × 1.9653 quando lorda non disponibile.</p>
+          <p className="text-xs mt-0.5 opacity-80">Formula: costo = lorda × 1.3857 (38.57% contributi c/az). Fallback: netto × 1.79 quando lorda non disponibile.</p>
         </div>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -1351,7 +1351,7 @@ export default function BustePaga({ startTab = 'riepilogo' }) {
             <label className="block text-sm font-medium text-gray-300 mb-2 flex items-center gap-2"><Calendar size={14}/> Anno</label>
             <select value={anno} onChange={e => setAnno(Number(e.target.value))}
               className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
-              {[2023,2024,2025,2026].map(y => <option key={y} value={y}>{y}</option>)}
+              {Array.from({length:new Date().getFullYear()-2022},(_,i)=>2023+i).map(y => <option key={y} value={y}>{y}</option>)}
             </select>
           </div>
           <div>

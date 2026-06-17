@@ -274,10 +274,11 @@ export default function ChiusurePage() {
                     <Tooltip formatter={v => eur(v)} />
                     <Legend />
                     {[
-                      { anno: '2024', keyMA: '2024_MAMELI', keyPN: '2024_PREDDA_NIEDDA', fillMA: '#e2e8f0', fillPN: '#d1fae5' },
-                      { anno: '2025', keyMA: '2025_MAMELI', keyPN: '2025_PREDDA_NIEDDA', fillMA: '#93c5fd', fillPN: '#6ee7b7' },
-                      { anno: '2026', keyMA: '2026_MAMELI', keyPN: '2026_PREDDA_NIEDDA', fillMA: '#3b82f6', fillPN: '#22c55e' },
-                    ].flatMap(({ anno, keyMA, keyPN, fillMA, fillPN }) => {
+                      { anno: PREV2_YEAR, fillMA: '#e2e8f0', fillPN: '#d1fae5' },
+                      { anno: PREV_YEAR,  fillMA: '#93c5fd', fillPN: '#6ee7b7' },
+                      { anno: CUR_YEAR,   fillMA: '#3b82f6', fillPN: '#22c55e' },
+                    ].flatMap(({ anno, fillMA, fillPN }) => {
+                      const keyMA = `${anno}_MAMELI`, keyPN = `${anno}_PREDDA_NIEDDA`
                       const hasMA = confronto.some(c => c[keyMA] != null)
                       const hasPN = confronto.some(c => c[keyPN] != null)
                       return [

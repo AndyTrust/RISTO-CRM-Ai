@@ -209,7 +209,7 @@ export default function CamerieriBi() {
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">Anno</label>
           <select className="border border-gray-300 rounded-lg px-3 py-2 text-sm" value={anno} onChange={e=>setAnno(Number(e.target.value))}>
-            {[2024,2025,2026].map(y=><option key={y} value={y}>{y}</option>)}
+            {Array.from({length:new Date().getFullYear()-2023},(_,i)=>2024+i).map(y=><option key={y} value={y}>{y}</option>)}
           </select>
         </div>
         <div>
