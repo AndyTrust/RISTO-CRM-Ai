@@ -8,9 +8,11 @@ import {
   Calendar, MapPin, AlertCircle, PlusCircle, Trash2, CheckCircle, X,
   FileText, ShieldCheck, BarChart2, Info,
 } from 'lucide-react'
-import { bustePaga as bp, employees as empApi } from '../api/client'
+import { bustePaga as bp, employees as empApi, repartiApi, roles as rolesApi } from '../api/client'
 import PageAssistant from '../components/PageAssistant'
 import PageStatsWidget from '../components/PageStatsWidget'
+import { EmployeeForm } from './Employees'
+import { Settings as SettingsIcon } from 'lucide-react'
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CONSTANTS & UTILS
@@ -542,9 +544,41 @@ function RiepilogoTab({ anno, mese, sedeFilter, riepilogo }) {
 // ═══════════════════════════════════════════════════════════════════════════
 // TAB — DIPENDENTI (con schede personali cliccabili)
 // ═══════════════════════════════════════════════════════════════════════════
-function DipendentiTab({ cedolini, sedeFilter, anno }) {
+function DipendentiTab({ cedolini, sedeFilter, anno, employees: employeesData = [], onRefresh }) {
   const [selected, setSelected] = useState(null)
   const [search, setSearch]     = useState('')
+  const [editing, setEditing]   = useState(null)
+  const [reparti, setReparti]   = useState([])
+  const [ruoliDB, setRuoliDB]   = useState([])
+
+  useEffect(() => {
+    repartiApi.getAll().then(setReparti).catch(() => setReparti([]))
+    if (rolesApi?.getAll) rolesApi.getAll().then(setRuoliDB).catch(() => setRuoliDB([]))
+  }, [])
+
+  // Mappa nome cedolino → employee record (per matching anche con buste_paga_name)
+  const empByName = useMemo(() => {
+    const m = {}
+    for (const e of employeesData) {
+      m[(e.name || '').toUpperCase()] = e
+      if (e.buste_paga_name) m[e.buste_paga_name.toUpperCase()] = e
+    }
+    return m
+  }, [employeesData])
+
+  const handleSaveEmployee = async (form) => {
+    const payload = {
+      ...form,
+      location: form.sede === 'MA' ? 'MAMELI' : 'PREDDA_NIEDDA',
+    }
+    if (editing?.id) {
+      await empApi.update(editing.id, payload)
+    } else {
+      await empApi.create(payload)
+    }
+    setEditing(null)
+    if (onRefresh) onRefresh()
+  }
 
   const byEmployee = useMemo(() => {
     const map = {}
@@ -591,6 +625,15 @@ function DipendentiTab({ cedolini, sedeFilter, anno }) {
   return (
     <div className="space-y-4">
       {selectedEmp && <SchedaDipendente emp={selectedEmp} onClose={() => setSelected(null)} />}
+      {editing && (
+        <EmployeeForm
+          initial={editing}
+          reparti={reparti}
+          ruoliDB={ruoliDB}
+          onSave={handleSaveEmployee}
+          onClose={() => setEditing(null)}
+        />
+      )}
 
       {/* Stats globali */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -624,16 +667,42 @@ function DipendentiTab({ cedolini, sedeFilter, anno }) {
           const pt       = parseFloat(emp.percentuale_pt)
           const ultCed   = [...emp.cedolini].sort((a, b) => b.anno * 100 + b.mese - (a.anno * 100 + a.mese))[0]
 
+          // Match employee record (per edit) tramite name o buste_paga_name
+          const empRecord = empByName[(emp.employee_name || '').toUpperCase()]
+
           return (
-            <button key={emp.employee_name} onClick={() => setSelected(emp.employee_name)}
-              className="bg-gray-800 border border-gray-700 rounded-xl p-4 text-left hover:border-blue-500/60 hover:bg-gray-800/80 transition-all group cursor-pointer">
+            <div key={emp.employee_name} className="relative bg-gray-800 border border-gray-700 rounded-xl p-4 hover:border-blue-500/60 hover:bg-gray-800/80 transition-all group">
+              {/* Pulsante Modifica scheda dipendente */}
+              {empRecord && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); setEditing(empRecord) }}
+                  title="Modifica scheda dipendente (sede, reparto, ore, split costi)"
+                  className="absolute top-2 right-2 z-10 p-1.5 rounded-lg bg-gray-900/80 text-violet-300 hover:bg-violet-700 hover:text-white border border-gray-700 hover:border-violet-500 opacity-0 group-hover:opacity-100 transition-all">
+                  <SettingsIcon size={13} />
+                </button>
+              )}
+              <button onClick={() => setSelected(emp.employee_name)}
+                className="block w-full text-left cursor-pointer">
 
               {/* Row 1: nome + netto/costo */}
               <div className="flex items-start justify-between mb-3">
-                <div className="flex-1 min-w-0">
+                <div className="flex-1 min-w-0 pr-7">
                   <h4 className="font-semibold text-white truncate group-hover:text-blue-300 transition-colors text-sm">{emp.employee_name}</h4>
                   <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                     <span className={`px-1.5 py-0.5 rounded text-xs font-semibold ${emp.sede === 'MA' ? 'bg-red-900/30 text-red-300' : 'bg-blue-900/30 text-blue-300'}`}>{emp.sede}</span>
+                    {empRecord?.sede_split_ma != null && empRecord.sede_split_ma !== 100 && empRecord.sede_split_ma !== 0 && (
+                      <span className="text-[10px] bg-violet-900/40 text-violet-300 border border-violet-700/40 px-1 py-0.5 rounded">
+                        {empRecord.sede_split_ma}%MA·{100 - empRecord.sede_split_ma}%PN
+                      </span>
+                    )}
+                    {empRecord?.reparto_split && Object.keys(empRecord.reparto_split).length > 0 && (() => {
+                      const rs = empRecord.reparto_split
+                      const top = Object.entries(rs).sort(([,a],[,b]) => b - a)
+                      const r0 = reparti.find(r => r.id === top[0]?.[0])
+                      if (!r0) return null
+                      const multi = top.length > 1 ? ` +${top.length - 1}` : ''
+                      return <span className="text-[10px] bg-emerald-900/30 text-emerald-300 border border-emerald-700/40 px-1 py-0.5 rounded">{r0.icona}{r0.nome.substring(0, 4)}{multi}</span>
+                    })()}
                     {emp.qualifica && <span className="text-xs text-gray-500">{emp.qualifica.replace('PART TIME ', 'PT ')}</span>}
                   </div>
                 </div>
@@ -668,7 +737,8 @@ function DipendentiTab({ cedolini, sedeFilter, anno }) {
 
               {ultCed && <p className="text-xs text-gray-600 mt-2">Ultimo: {MESI_FULL[(ultCed.mese || 1) - 1]} {ultCed.anno}</p>}
               <p className="text-xs text-blue-500/50 group-hover:text-blue-400/70 mt-1 transition-colors">Clicca per la scheda completa →</p>
-            </button>
+              </button>
+            </div>
           )
         })}
       </div>
@@ -1411,7 +1481,7 @@ export default function BustePaga({ startTab = 'riepilogo' }) {
         ) : (
           <>
             {activeTab === 'riepilogo'  && <RiepilogoTab anno={anno} mese={meseFilter} sedeFilter={sedeFilter} riepilogo={riepilogo}/>}
-            {activeTab === 'dipendenti' && <DipendentiTab cedolini={cedolini} sedeFilter={sedeFilter} anno={anno}/>}
+            {activeTab === 'dipendenti' && <DipendentiTab cedolini={cedolini} sedeFilter={sedeFilter} anno={anno} employees={employees} onRefresh={loadData}/>}
             {activeTab === 'analisi'    && <AnalisiTab cedolini={cedolini} sedeFilter={sedeFilter} anno={anno}/>}
             {activeTab === 'costo'      && <CostoPersonaleTab costoMensile={costoMensile} sedeFilter={sedeFilter}/>}
             {activeTab === 'dettaglio'  && <DettaglioCedoliniTab cedolini={cedolini} sedeFilter={sedeFilter} meseFilter={meseFilter} onRefresh={loadData} employees={employees}/>}

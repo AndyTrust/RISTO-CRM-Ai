@@ -10,70 +10,83 @@ import {
 import { data as dataApi } from '../api/client'
 
 // ── Struttura navigazione a due livelli: sezioni → sottopagine con descrizione ───
+// Riorganizzazione 2026-06-19 — sequenza logica: panoramica → operativo → personale → sala → BI → costi → admin
 const NAV_GROUPS = [
+  // 1) PANORAMICA — sempre aperta, vista d'insieme
+  {
+    label: 'Panoramica',
+    defaultOpen: true,
+    items: [
+      { id: 'dashboard',    path: '/dashboard',    icon: LayoutDashboard, label: 'Dashboard',       desc: 'KPI sintetici e andamento sedi' },
+      { id: 'stato_dati',   path: '/stato-dati',   icon: Activity,        label: 'Stato Dati',      desc: 'Semafori salute dati 🟢🟡🔴', alwaysEnabled: true },
+    ]
+  },
+  // 2) OPERATIVO — quotidiano (incassi, vendite)
   {
     label: 'Operativo',
     defaultOpen: true,
     items: [
-      { id: 'dashboard',    path: '/dashboard',    icon: LayoutDashboard, label: 'Statistiche',      desc: 'KPI e andamento sedi' },
-      { id: 'stato_dati',   path: '/stato-dati',   icon: Activity,        label: 'Stato Dati',       desc: 'Semafori salute dati 🟢🟡🔴', alwaysEnabled: true },
-      { id: 'chiusure',     path: '/chiusure',     icon: Receipt,         label: 'Chiusure Cassa',   desc: 'Corrispettivi giornalieri' },
-      { id: 'venduto',      path: '/venduto',      icon: TrendingUp,      label: 'Venduto BI',       desc: 'Analisi avanzata venduto + heatmap' },
+      { id: 'chiusure',     path: '/chiusure',     icon: Receipt,         label: 'Chiusure Cassa',  desc: 'Corrispettivi giornalieri MA + PN' },
+      { id: 'venduto',      path: '/venduto',      icon: TrendingUp,      label: 'Venduto & BI',    desc: 'Analisi venduto, heatmap, calendario' },
+      { id: 'prodotti_bi',  path: '/prodotti-bi',  icon: Tag,             label: 'Prodotti & Menu', desc: 'Food cost, BCG, menu engineering', alwaysEnabled: true },
+      { id: 'forecast',     path: '/forecast',     icon: Cloud,           label: 'Forecast',        desc: 'Previsioni incasso prossimi giorni', alwaysEnabled: true },
     ]
   },
+  // 3) PERSONALE — dipendenti, paga, KPI, turni — UNIFICATO
   {
     label: 'Personale',
     defaultOpen: false,
     items: [
-      { id: 'buste_paga',    path: '/buste-paga',  icon: Users,           label: 'Dipendenti & Paga',  desc: 'Anagrafica, cedolini e costi' },
-      { id: 'kpi_camerieri', path: '/kpi',          icon: Target,          label: 'KPI & Performance',  desc: 'Camerieri · Team · BI · Performance' },
-      { id: 'kpi_config',    path: '/kpi-config',   icon: Target,          label: 'KPI Config',         desc: 'BE, target team, bonus, prodotti', alwaysEnabled: true },
-      { id: 'turni',         path: '/turni',        icon: CalendarDays,    label: 'Turni',              desc: 'Pianificazione orari' },
+      { id: 'buste_paga',    path: '/buste-paga',  icon: Users,        label: 'Dipendenti & Paga',  desc: 'Anagrafica, cedolini, split sede/reparto' },
+      { id: 'kpi_camerieri', path: '/kpi',         icon: Target,       label: 'KPI & Performance',  desc: 'Operatori · Team · BI · Performance' },
+      { id: 'turni',         path: '/turni',       icon: CalendarDays, label: 'Turni',              desc: 'Pianificazione orari settimanali' },
+      { id: 'analisi_reparti', path: '/analisi-reparti', icon: Building2, label: 'Analisi Reparti', desc: 'Marginalità sala/cucina/admin/marketing', alwaysEnabled: true },
     ]
   },
+  // 4) SALA — tavoli, prenotazioni, statistiche
   {
-    label: 'Sala & Analisi',
+    label: 'Sala',
     defaultOpen: false,
     items: [
-      { id: 'statistiche',      path: '/statistiche',       icon: UtensilsCrossed, label: 'Statistiche Sala',     desc: 'Tavoli e coperti' },
-      { id: 'coperti_bi',       path: '/coperti-bi',        icon: UtensilsCrossed, label: 'Coperti & Tavoli BI',  desc: 'Analisi tavoli, durate, rotazioni', alwaysEnabled: true },
-      { id: 'turni_bi',         path: '/turni-bi',          icon: CalendarDays,    label: 'Turni Pranzo/Cena BI', desc: 'Pranzo vs cena, BE per turno', alwaysEnabled: true },
-      { id: 'prenotazioni',     path: '/prenotazioni',      icon: CalendarDays,    label: 'Prenotazioni BI',      desc: 'Filling rate, canali, no-show', alwaysEnabled: true },
+      { id: 'statistiche',  path: '/statistiche',  icon: UtensilsCrossed, label: 'Statistiche Sala',     desc: 'Coperti, tavoli, fasce orarie' },
+      { id: 'coperti_bi',   path: '/coperti-bi',   icon: UtensilsCrossed, label: 'Coperti & Tavoli BI',  desc: 'Durate, rotazioni, occupancy', alwaysEnabled: true },
+      { id: 'turni_bi',     path: '/turni-bi',     icon: CalendarDays,    label: 'Pranzo vs Cena',       desc: 'Confronto turni e BE per turno', alwaysEnabled: true },
+      { id: 'prenotazioni', path: '/prenotazioni', icon: CalendarDays,    label: 'Prenotazioni',         desc: 'Filling rate, canali, no-show', alwaysEnabled: true },
     ]
   },
+  // 5) COSTI — fissi, fornitori, contabilità
   {
-    label: 'Business Intelligence',
+    label: 'Costi & Margini',
     defaultOpen: false,
     items: [
-      { id: 'prodotti_bi',      path: '/prodotti-bi',       icon: Tag,             label: 'Prodotti & Menu',      desc: 'Food cost, BCG, menu engineering', alwaysEnabled: true },
-      { id: 'food_cost',        path: '/prodotti-bi?tab=foodcost', icon: Coins,    label: 'Food Cost',            desc: 'Modifica food cost per prodotto', alwaysEnabled: true },
-      { id: 'contabilita_bi',   path: '/contabilita-bi',    icon: BarChart3,       label: 'Contabilità BI',       desc: 'BE, costi, margini, proiezioni', alwaysEnabled: true },
-      { id: 'forecast',         path: '/forecast',          icon: Cloud,           label: 'Forecast Revenue',     desc: 'Previsioni incasso prossimi giorni', alwaysEnabled: true },
-      { id: 'analytics_bi',     path: '/analytics',         icon: BarChart2,       label: 'Analytics & BI',       desc: 'Reportistica avanzata' },
+      { id: 'costi_fissi',    path: '/costi-fissi',    icon: Wallet,    label: 'Costi Fissi',       desc: 'Affitti, consulenze, oneri (editabile)', alwaysEnabled: true },
+      { id: 'fornitori',      path: '/fornitori',      icon: Building2, label: 'Fornitori & Fatture', desc: 'Fatture, costi, riconciliazione' },
+      { id: 'contabilita_bi', path: '/contabilita-bi', icon: BarChart3, label: 'Contabilità BI',    desc: 'BE, margini, proiezioni', alwaysEnabled: true },
+      { id: 'kpi_config',     path: '/kpi-config',     icon: Target,    label: 'Target & BE',       desc: 'Break-even, target, bonus', alwaysEnabled: true },
     ]
   },
+  // 6) BI AVANZATA
   {
-    label: 'Costi & Fornitori',
+    label: 'BI Avanzata',
     defaultOpen: false,
     items: [
-      { id: 'fornitori',        path: '/fornitori',         icon: Building2,       label: 'Fornitori & Costi',    desc: 'Fatture e costi fornitore' },
-      { id: 'costi_fissi',      path: '/costi-fissi',       icon: Wallet,          label: 'Costi Fissi',          desc: 'Affitti, consulenze, oneri', alwaysEnabled: true },
-      { id: 'chat_claude',      path: '/chat',              icon: Bot,             label: 'Chat Claude AI',       desc: 'Assistente AI integrato' },
+      { id: 'analytics_bi', path: '/analytics', icon: BarChart2, label: 'Analytics & BI', desc: 'Reportistica avanzata' },
+      { id: 'chat_claude',  path: '/chat',      icon: Bot,       label: 'Chat AI',        desc: 'Assistente Claude AI integrato' },
     ]
   },
+  // 7) ADMIN — gestione sistema
   {
     label: 'Admin',
     defaultOpen: false,
     isAdmin: true,
     items: [
-      { id: 'admin_dipendenti', path: '/admin/dipendenti', icon: Users,     label: 'Dipendenti',      desc: 'Modifica, trasferisci, split costi', alwaysEnabled: true },
-      { id: 'admin_ruoli',      path: '/admin/ruoli',       icon: Tag,       label: 'Ruoli',           desc: 'Aggiungi e gestisci ruoli',          alwaysEnabled: true },
-      { id: 'admin_kpi',        path: '/admin/kpi',         icon: Target,    label: 'KPI Config',      desc: 'Target mensili per operatore',       alwaysEnabled: true },
-      { id: 'admin_sedi',       path: '/admin/sedi',        icon: MapPin,    label: 'Sedi',            desc: 'Location e multi-sede',              alwaysEnabled: true },
-      { id: 'admin_database',   path: '/admin/database',    icon: Database,  label: 'Database',        desc: 'Vista dati grezzi Supabase',         alwaysEnabled: true },
-      { id: 'admin_backup',     path: '/admin/backup',      icon: Archive,   label: 'Backup',          desc: 'Snapshot & ripristino dati',         alwaysEnabled: true },
-      { id: 'admin_memoria',    path: '/admin/memoria',     icon: Brain,     label: 'Memoria AI',      desc: 'Note e contesto Claude',             alwaysEnabled: true },
-      { id: 'admin_sync',       path: '/admin/sync',        icon: Cloud,     label: 'Sync & Deploy',   desc: 'Vercel, Supabase, moduli',           alwaysEnabled: true },
+      { id: 'admin_dipendenti', path: '/admin/dipendenti', icon: Users,     label: 'Dipendenti (avanzato)', desc: 'Bulk, merge, transfer',           alwaysEnabled: true },
+      { id: 'admin_ruoli',      path: '/admin/ruoli',       icon: Tag,       label: 'Ruoli & Reparti',       desc: 'Aggiungi e gestisci ruoli',       alwaysEnabled: true },
+      { id: 'admin_sedi',       path: '/admin/sedi',        icon: MapPin,    label: 'Sedi',                  desc: 'Location e multi-sede',           alwaysEnabled: true },
+      { id: 'admin_database',   path: '/admin/database',    icon: Database,  label: 'Database',              desc: 'Vista dati grezzi Supabase',      alwaysEnabled: true },
+      { id: 'admin_backup',     path: '/admin/backup',      icon: Archive,   label: 'Backup',                desc: 'Snapshot & ripristino dati',      alwaysEnabled: true },
+      { id: 'admin_memoria',    path: '/admin/memoria',     icon: Brain,     label: 'Memoria AI',            desc: 'Note e contesto Claude',          alwaysEnabled: true },
+      { id: 'admin_sync',       path: '/admin/sync',        icon: Cloud,     label: 'Sync & Deploy',         desc: 'Vercel, Supabase, moduli',        alwaysEnabled: true },
     ]
   },
   {

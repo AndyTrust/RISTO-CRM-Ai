@@ -155,6 +155,10 @@ export const employees = {
       payload.ore_settimanali = parseInt(d.ore_settimanali)
     if (d.reparto_id !== undefined)             payload.reparto_id = d.reparto_id || null
     if (d.sede_split_ma !== undefined)          payload.sede_split_ma = d.sede_split_ma
+    if (d.reparto_split !== undefined)          payload.reparto_split = d.reparto_split || {}
+    if (d.ral !== undefined && d.ral !== '')    payload.ral = parseFloat(d.ral)
+    if (d.ruolo_servizio !== undefined)         payload.ruolo_servizio = d.ruolo_servizio || null
+    if (d.partecipa_kpi_target !== undefined)   payload.partecipa_kpi_target = !!d.partecipa_kpi_target
 
     if (Object.keys(payload).length > 0) {
       const { error } = await supabase.from('employees').update(payload).eq('id', id)
