@@ -5,7 +5,7 @@ import {
   LayoutDashboard, Users, Target, TrendingUp, Receipt, Bot,
   Building2, Settings, ChevronLeft, ChevronRight, RefreshCw,
   BarChart2, Lock, Wallet, UtensilsCrossed, CalendarDays,
-  ChevronDown, Tag, MapPin, Archive, Brain, Cloud, Database, Award, BarChart3, Activity, Coins
+  ChevronDown, Tag, MapPin, Archive, Brain, Cloud, Database, Award, BarChart3, Activity, Coins, Star, MessageSquare
 } from 'lucide-react'
 import { data as dataApi } from '../api/client'
 
@@ -52,6 +52,7 @@ const NAV_GROUPS = [
       { id: 'coperti_bi',   path: '/coperti-bi',   icon: UtensilsCrossed, label: 'Coperti & Tavoli BI',  desc: 'Durate, rotazioni, occupancy', alwaysEnabled: true },
       { id: 'turni_bi',     path: '/turni-bi',     icon: CalendarDays,    label: 'Pranzo vs Cena',       desc: 'Confronto turni e BE per turno', alwaysEnabled: true },
       { id: 'prenotazioni', path: '/prenotazioni', icon: CalendarDays,    label: 'Prenotazioni',         desc: 'Filling rate, canali, no-show', alwaysEnabled: true },
+      { id: 'sondaggi',     path: '/sondaggi',     icon: Star,            label: 'Sondaggi Clienti',     desc: 'NPS, dimensioni, feedback, canali', alwaysEnabled: true },
     ]
   },
   // 5) COSTI — fissi, fornitori, contabilità

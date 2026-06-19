@@ -67,6 +67,7 @@ import ContabilitaBi from './pages/ContabilitaBi'
 import CopertiBi from './pages/CopertiBi'
 import StatoDati from './pages/StatoDati'
 import AnalisiReparti from './pages/AnalisiReparti'
+import SondaggiPage from './pages/SondaggiPage'
 import { modules as modulesApi, crmConfig } from './api/client'
 
 export const ModulesContext = React.createContext({})
@@ -159,6 +160,7 @@ export default function App() {
           <Route path="/costi-fissi" element={<CostiFissiPage />} />
           <Route path="/analisi-reparti" element={<AnalisiReparti />} />
           <Route path="/reparti" element={<Navigate to="/analisi-reparti" replace />} />
+          <Route path="/sondaggi" element={<SondaggiPage />} />
           <Route path="/prenotazioni" element={<PrenotazioniBI />} />
           <Route path="/menu-engineering" element={<Navigate to="/prodotti-bi?tab=menu" replace />} />
           <Route path="/forecast" element={<ForecastPage />} />
