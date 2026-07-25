@@ -65,9 +65,10 @@ function DetailDrawer({ tipo, data, loading, onClose, be, targetFatt, fatturatoT
 
   const fornitori = {}
   fatture.forEach(f => {
-    const key = f.denominazione_fornitore || f.piva_fornitore || 'Altro'
+    // Fix: colonne reali di fatture_importate sono fornitore / p_iva / totale
+    const key = f.fornitore || f.p_iva || 'Altro'
     if (!fornitori[key]) fornitori[key] = 0
-    fornitori[key] += Number(f.importo_totale) || 0
+    fornitori[key] += Number(f.totale) || 0
   })
   const fornitoriList = Object.entries(fornitori)
     .sort((a,b) => b[1]-a[1])
@@ -360,8 +361,9 @@ function DetailDrawer({ tipo, data, loading, onClose, be, targetFatt, fatturatoT
                         </thead>
                         <tbody>
                           {bustePaga.map((b) => (
-                            <tr key={b.operatore} className="border-b border-gray-50">
-                              <td className="py-1 text-gray-700">{b.operatore}</td>
+                            /* Fix: in buste_paga il nome sta in employee_name (non "operatore") */
+                            <tr key={b.employee_name} className="border-b border-gray-50">
+                              <td className="py-1 text-gray-700">{b.employee_name}</td>
                               <td className="py-1 text-right text-gray-600">{fmtEur(Number(b.netto||0))}</td>
                               <td className="py-1 text-right font-medium text-orange-600">{fmtEur(Number(b.costo_azienda||0))}</td>
                             </tr>
@@ -937,7 +939,9 @@ export default function KPIWaiters() {
     setActiveModal(tipo)
     setModalLoading(true)
     const dateFrom = `${anno}-${String(mese).padStart(2,'0')}-01`
-    const dateTo = `${anno}-${String(mese).padStart(2,'0')}-31`
+    // Fix: ultimo giorno reale del mese (il "-31" fisso generava date invalide → errore Postgres 22008)
+    const ultimoGiorno = new Date(anno, mese, 0).getDate()
+    const dateTo = `${anno}-${String(mese).padStart(2,'0')}-${String(ultimoGiorno).padStart(2,'0')}`
     const sedeFilter = sede !== 'ALL' ? sede : null
     const result = {}
 
@@ -951,14 +955,16 @@ export default function KPIWaiters() {
     }
 
     if (tipo === 'margine') {
+      // Fix: nomi colonna reali su fatture_importate (fornitore / totale / p_iva)
       let qf = supabase.from('fatture_importate')
-        .select('denominazione_fornitore,importo_totale,data_fattura,piva_fornitore')
+        .select('fornitore,totale,data_fattura,p_iva')
         .gte('data_fattura', dateFrom).lte('data_fattura', dateTo)
       const { data: fatture } = await qf
       result.fatture = fatture || []
 
+      // Fix: su buste_paga le colonne reali sono employee_name e totale_competenze (non operatore/lorda)
       let qb = supabase.from('buste_paga')
-        .select('operatore,netto,lorda,costo_azienda,mese,anno,sede')
+        .select('employee_name,netto,totale_competenze,costo_azienda,mese,anno,sede')
         .eq('anno', anno).eq('mese', mese)
       if (sedeFilter) qb = qb.eq('sede', sedeFilter)
       const { data: bustePaga } = await qb

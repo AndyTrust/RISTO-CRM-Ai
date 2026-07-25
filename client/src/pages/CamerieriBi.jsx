@@ -144,7 +144,8 @@ export default function CamerieriBi() {
     setExpandedCat(null)
     setDrillLoading(true)
     const dateFrom = `${anno}-${String(mese).padStart(2,'0')}-01`
-    const dateTo = `${anno}-${String(mese).padStart(2,'0')}-31`
+    // Fix: ultimo giorno reale del mese (il "-31" fisso generava date invalide → errore Postgres 22008)
+    const dateTo = `${anno}-${String(mese).padStart(2,'0')}-${String(new Date(anno, mese, 0).getDate()).padStart(2,'0')}`
     const sedeFilter = sede !== 'ALL' ? sede : null
     let q = supabase.from('venduto_camerieri')
       .select('categoria,prodotto,quantita,totale,prezzo_unitario')

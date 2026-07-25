@@ -84,16 +84,23 @@ export default function StatoDati() {
       try { contesto = await buildCrmContext({ includeBuste: true }) } catch { /* contesto opzionale */ }
 
       const system = [
-        'Sei il controller finanziario di "140 Grammi", due ristoranti a Sassari: Mameli (MA) e Predda Niedda (PN).',
-        'Ricevi (1) un report a semaforo sulla SALUTE DEI DATI del CRM e (2) il contesto operativo reale (chiusure, coperti, venduto, fatture, break-even).',
+        'Sei il controller finanziario di "140 Grammi", due ristoranti in Sardegna: Mameli (MA, Cagliari) e Predda Niedda (PN, Sassari).',
+        'Ricevi (1) un report a semaforo sulla SALUTE DEI DATI del CRM e (2) il contesto operativo reale (chiusure, coperti, venduto, fatture, break-even, costo personale).',
+        '',
+        '⚠️ REGOLA FONDAMENTALE — RAPPORTO COSTO/FATTURATO COERENTE:',
+        'Per QUALSIASI rapporto costo personale vs fatturato, usa ESCLUSIVAMENTE i valori della sezione "ANALISI COERENTE costo personale vs fatturato (stesso periodo)" o "Mese in corso — costo personale PRO-RATA reale".',
+        'NON CONFRONTARE MAI il costo personale mensile pieno (es. €40.997 di maggio) con il fatturato degli ultimi 30 giorni mobili (€23.797): sono periodi diversi e produrrebbero un ratio falso e allarmante.',
+        'Per il MESE IN CORSO usa SOLO il valore "costo personale pro-rata stimato" già calcolato (è proporzionale ai giorni effettivi con fatturato del mese in corso).',
+        '',
         'Compito: tradurre gli avvisi in azioni concrete e dare indicazioni economiche pratiche. Rispondi SEMPRE in italiano, conciso e operativo, senza preamboli.',
         'Struttura la risposta ESATTAMENTE con queste tre sezioni in markdown:',
         '## 🔴 Priorità — cosa fare subito',
-        'Elenco puntato ordinato per urgenza: per ogni avviso critico/giallo di’ il problema in una riga e l’azione precisa (quale skill/comando o operazione nel CRM).',
+        'Elenco puntato ordinato per urgenza: per ogni avviso critico/giallo di\' il problema in una riga e l\'azione precisa (quale skill/comando o operazione nel CRM).',
         '## ✂️ Dove tagliare',
-        'Dove i costi (personale, fornitori, BE) sono alti o anomali rispetto ai ricavi: indica leve concrete. Se i dati costi mancano, dillo e spiega quale dato serve.',
+        'Dove i costi (personale, fornitori, BE) sono alti o anomali rispetto ai ricavi: indica leve concrete. Usa SOLO i ratio % della sezione "ANALISI COERENTE". Se i dati costi mancano, dillo e spiega quale dato serve.',
         '## 🚀 Dove spingere',
         'Dove i ricavi rendono di più (sedi/turni/giorni con margine): suggerisci dove concentrare spinta commerciale, sempre basandoti sui numeri forniti.',
+        '',
         'Non inventare numeri: usa solo quelli nei dati. Se un dato manca, segnalalo come lacuna invece di stimarlo.',
       ].join('\n')
 
@@ -118,6 +125,14 @@ export default function StatoDati() {
   const overall = report?.overall
   const ov = st(overall)
   const summary = report?.summary || { ok: 0, warn: 0, error: 0 }
+
+  // Auto-richiama AI quando il report è caricato e ci sono criticità
+  useEffect(() => {
+    if (report && !aiText && !aiLoading && (summary.error > 0 || summary.warn > 0)) {
+      const t = setTimeout(() => interpreta(), 300)
+      return () => clearTimeout(t)
+    }
+  }, [report])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const anni = []
   for (let y = now.getFullYear(); y >= now.getFullYear() - 3; y--) anni.push(y)

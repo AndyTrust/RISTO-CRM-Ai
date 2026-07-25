@@ -21,8 +21,9 @@ import {
   AlertCircle, Info, ArrowDownRight
 } from 'lucide-react'
 
-// chiusure_turni copre fino a questa data (dichiarato in pagina)
-const TURNI_COPERTURA_FINE = '2026-06-04'
+// Fix: la copertura di chiusure_turni non è più hardcoded — viene letta a runtime
+// (max(data) sulla tabella). Il valore qui sotto resta solo come fallback iniziale.
+const TURNI_COPERTURA_FALLBACK = '2026-06-04'
 
 const SEDE_OPTIONS = [
   { value: 'MA',  label: 'Mameli (CA)' },
@@ -117,6 +118,18 @@ export default function TurniAnalysisBi() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [sortAsc, setSortAsc] = useState(false)
+  // Fix: data massima realmente presente in chiusure_turni (niente costante hardcoded)
+  const [coperturaFine, setCoperturaFine] = useState(TURNI_COPERTURA_FALLBACK)
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const { data, error } = await supabase.from('chiusure_turni')
+        .select('data').order('data', { ascending: false }).limit(1)
+      if (!cancelled && !error && data?.[0]?.data) setCoperturaFine(data[0].data)
+    })()
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -155,8 +168,8 @@ export default function TurniAnalysisBi() {
   }, [sede, dateFrom, dateTo])
 
   // Avviso copertura: il periodo richiesto eccede la copertura di chiusure_turni
-  const copAvviso = dateTo > TURNI_COPERTURA_FINE
-    ? `I dati turni coprono fino al ${TURNI_COPERTURA_FINE.split('-').reverse().join('/')}. I giorni successivi non sono ancora disponibili.`
+  const copAvviso = dateTo > coperturaFine
+    ? `I dati turni coprono fino al ${coperturaFine.split('-').reverse().join('/')}. I giorni successivi non sono ancora disponibili.`
     : null
 
   // ── Aggregati per turno (sul periodo+sede selezionati) ──────────────────────
@@ -255,14 +268,14 @@ export default function TurniAnalysisBi() {
   const systemContext = useMemo(() => `Pagina: Turni Pranzo/Cena BI
 Sede: ${sede === 'ALL' ? 'Entrambe (MA+PN)' : SEDE_LABEL[sede]}
 Periodo: ${dateFrom} → ${dateTo}
-Copertura dati: chiusure_turni fino al ${TURNI_COPERTURA_FINE}
+Copertura dati: chiusure_turni fino al ${coperturaFine}
 KPI:
 - Incasso pranzo: ${eur(agg.pranzo.incasso)} (${agg.pctPranzo.toFixed(1)}% del totale, ${agg.pranzo.nTurni} turni)
 - Incasso cena: ${eur(agg.cena.incasso)} (${agg.pctCena.toFixed(1)}% del totale, ${agg.cena.nTurni} turni)
 - Coperto medio pranzo: ${eur2(agg.pranzo.scontrinoMedio)} · cena: ${eur2(agg.cena.scontrinoMedio)}
 - Costi del periodo (pro-rata v_be_mensile): ${costiPeriodo.tot > 0 ? eur(costiPeriodo.tot) : 'n/d'}
 - Quota costi coperta: pranzo ${quotaPranzo != null ? quotaPranzo.toFixed(1) + '%' : 'n/d'} · cena ${quotaCena != null ? quotaCena.toFixed(1) + '%' : 'n/d'}`,
-    [sede, dateFrom, dateTo, agg, quotaPranzo, quotaCena, costiPeriodo])
+    [sede, dateFrom, dateTo, agg, quotaPranzo, quotaCena, costiPeriodo, coperturaFine])
 
   const noData = !loading && turni.length === 0
 

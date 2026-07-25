@@ -346,7 +346,8 @@ function TabObiettivi({ sede, anno, mese }) {
       // Build target map: firstWord(employee.name) → target row
       const tMap = {}
       for (const t of targets || []) {
-        const name = t.employees?.nome || ''
+        // Fix: la colonna employees si chiama "name" (la select è già employees(name,...))
+        const name = t.employees?.name || ''
         tMap[firstWord(name)] = t
       }
       const merged = filtered.map(op => ({

@@ -176,8 +176,11 @@ function useTurniData(selectedSede, selectedWeek, selectedMonth) {
   useEffect(() => {
     const load = async () => {
       try {
-        const { data } = await supabase.from('venduto_camerieri').select('operatore').order('operatore')
-        const uniq = [...new Set((data||[]).map(r => r.operatore))]
+        // Fix: venduto_camerieri ha ~19k righe e il cap PostgREST (1000) tagliava l'elenco a 2 operatori.
+        // Uso la vista aggregata v_operatore_mese (147 righe) che contiene già tutti i 29 operatori distinti.
+        const { data, error } = await supabase.from('v_operatore_mese').select('operatore').order('operatore')
+        if (error) throw error
+        const uniq = [...new Set((data||[]).map(r => r.operatore).filter(Boolean))]
         setVendutoOps(uniq)
       } catch(e) { console.error('venduto ops', e) }
     }

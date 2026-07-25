@@ -147,30 +147,101 @@ export async function buildCrmContext(options = {}) {
       }
     }
 
-    // Buste paga — costo personale ultimi 3 mesi
+    // Buste paga + ANALISI PRO-RATA COERENTE (costo personale vs fatturato sullo stesso periodo)
+    // USA v_costo_personale_mensile_categoria per separare ATTIVI da EX-DIPENDENTI/TFR
     if (includeBuste) {
-      const { data: bp } = await supabase
-        .from('buste_paga')
-        .select('sede, anno, mese, costo_azienda')
+      const { data: bpView } = await supabase
+        .from('v_costo_personale_mensile_categoria')
+        .select('sede, anno, mese, categoria, tot_costo, n_cedolini')
         .order('anno', { ascending: false })
         .order('mese', { ascending: false })
-        .limit(60)
-      if (bp?.length) {
+        .limit(200)
+      if (bpView?.length) {
+        // Aggrega per sede+mese, ma separa categorie
         const byMese = {}
-        for (const b of bp) {
-          const anno = Number(b.anno) || 0
-          const mese = Number(b.mese) || 0
-          const k = `${b.sede}|${anno}|${mese}`
-          if (!byMese[k]) byMese[k] = { sede: b.sede, anno, mese, tot: 0 }
-          byMese[k].tot += parseFloat(b.costo_azienda) || 0
+        for (const r of bpView) {
+          const anno = Number(r.anno) || 0
+          const mese = Number(r.mese) || 0
+          const k = `${r.sede}|${anno}|${mese}`
+          if (!byMese[k]) byMese[k] = { sede: r.sede, anno, mese, tot: 0, attivi: 0, ex: 0, cf: 0 }
+          const v = parseFloat(r.tot_costo) || 0
+          byMese[k].tot += v
+          if (r.categoria === 'attivo') byMese[k].attivi += v
+          else if (r.categoria === 'ex_dipendente') byMese[k].ex += v
+          else byMese[k].cf += v
         }
-        parts.push(`\n## Costo personale per mese`)
-        Object.values(byMese)
-          .sort((a, b) => (b.anno - a.anno) || (b.mese - a.mese))
-          .slice(0, 6)
-          .forEach(v => {
-            parts.push(`${v.sede} ${String(v.mese).padStart(2, '0')}/${v.anno}: €${v.tot.toFixed(0)}`)
-          })
+        parts.push(`\n## Costo personale mensile — SEPARATO per categoria`)
+        parts.push(`USA "attivi" per il vero costo operativo. "ex" sono TFR/ferie residue di chi ha cessato. NON sommarli quando calcoli ratio.`)
+        const mesiSorted = Object.values(byMese).sort((a, b) => (b.anno - a.anno) || (b.mese - a.mese)).slice(0, 8)
+        mesiSorted.forEach(v => {
+          parts.push(`${v.sede} ${String(v.mese).padStart(2, '0')}/${v.anno}: attivi €${v.attivi.toFixed(0)} | ex/TFR €${v.ex.toFixed(0)} | cf_anonimo €${v.cf.toFixed(0)} | tot €${v.tot.toFixed(0)}`)
+        })
+        // Per la sezione pro-rata uso SOLO attivi
+        mesiSorted.forEach(v => { v.tot = v.attivi })
+
+        // ── ANALISI PRO-RATA: rapporto costo/fatturato sullo STESSO PERIODO ──
+        // Carico fatturato mensile per gli stessi mesi
+        const { data: chTutti } = await supabase
+          .from('chiusure_giornaliere')
+          .select('sede, data, totale_venduto_ipratico, coperti')
+          .gte('data', '2026-01-01')
+          .order('data', { ascending: false })
+          .limit(2000)
+        if (chTutti?.length) {
+          // Aggrega fatturato per sede+mese + conta giorni con fatturato
+          const fatMese = {}
+          for (const r of chTutti) {
+            const d = new Date(r.data + 'T12:00:00')
+            const k = `${r.sede}|${d.getFullYear()}|${d.getMonth() + 1}`
+            if (!fatMese[k]) fatMese[k] = { sede: r.sede, anno: d.getFullYear(), mese: d.getMonth() + 1, fat: 0, giorni: 0 }
+            const v = parseFloat(r.totale_venduto_ipratico) || 0
+            if (v > 0) {
+              fatMese[k].fat += v
+              fatMese[k].giorni += 1
+            }
+          }
+          // Per ogni mese di costo personale, calcola rapporto coerente
+          parts.push(`\n## ⚠️ ANALISI COERENTE costo personale vs fatturato (stesso periodo)`)
+          parts.push(`USA SOLO QUESTI VALORI per il rapporto %, NON quelli mensili sopra confrontati con i 30gg mobili!`)
+          for (const v of mesiSorted) {
+            const k = `${v.sede}|${v.anno}|${v.mese}`
+            const f = fatMese[k]
+            if (!f) {
+              parts.push(`${v.sede} ${String(v.mese).padStart(2, '0')}/${v.anno}: costo €${v.tot.toFixed(0)} | fatturato MANCANTE`)
+              continue
+            }
+            const costoPerGiorno = f.giorni > 0 ? v.tot / f.giorni : 0
+            const fatPerGiorno = f.giorni > 0 ? f.fat / f.giorni : 0
+            const ratio = f.fat > 0 ? (v.tot / f.fat) * 100 : null
+            parts.push(`${v.sede} ${String(v.mese).padStart(2, '0')}/${v.anno}: ${f.giorni}gg apertura · costo €${v.tot.toFixed(0)} (€${costoPerGiorno.toFixed(0)}/g) · fat €${f.fat.toFixed(0)} (€${fatPerGiorno.toFixed(0)}/g) · ratio ${ratio != null ? ratio.toFixed(1) + '%' : 'n/d'}`)
+          }
+
+          // ── COSTO PERSONALE PRO-RATA per il MESE IN CORSO ──
+          const today = new Date()
+          const mY = today.getFullYear(), mM = today.getMonth() + 1
+          parts.push(`\n## 📊 Mese in corso ${String(mM).padStart(2, '0')}/${mY} — costo personale PRO-RATA reale`)
+          for (const sede of ['MA', 'PN']) {
+            const kCurr = `${sede}|${mY}|${mM}`
+            const fCurr = fatMese[kCurr]
+            if (!fCurr || fCurr.giorni === 0) {
+              parts.push(`${sede}: nessun fatturato registrato ancora questo mese`)
+              continue
+            }
+            // Trova mese-base per stimare costo/giorno (ultimo mese chiuso disponibile)
+            const baseMese = mesiSorted.find(m => m.sede === sede && (m.anno < mY || (m.anno === mY && m.mese < mM)))
+            if (!baseMese) {
+              parts.push(`${sede}: nessuna busta paga storica per stimare costo/giorno`)
+              continue
+            }
+            const baseK = `${sede}|${baseMese.anno}|${baseMese.mese}`
+            const baseF = fatMese[baseK]
+            const giorniBase = baseF?.giorni || 30
+            const costoPerGiornoBase = baseMese.tot / giorniBase
+            const costoProRata = costoPerGiornoBase * fCurr.giorni
+            const ratioPro = (costoProRata / fCurr.fat) * 100
+            parts.push(`${sede}: ${fCurr.giorni}gg aperti · fatturato €${fCurr.fat.toFixed(0)} · costo personale pro-rata stimato €${costoProRata.toFixed(0)} (base ${String(baseMese.mese).padStart(2,'0')}/${baseMese.anno}=€${costoPerGiornoBase.toFixed(0)}/g) · ratio ${ratioPro.toFixed(1)}%`)
+          }
+        }
       }
     }
 
@@ -245,6 +316,7 @@ export default function useClaudeAI() {
       max_tokens = 2048,
       stream = false,
       onChunk = null,
+      signal = null, // AbortSignal: consente di annullare la chiamata/stream all'unmount
     } = options
 
     const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
@@ -263,6 +335,7 @@ export default function useClaudeAI() {
         system: systemPrompt,
         messages,
       }),
+      signal,
     })
 
     if (!response.ok) {
@@ -278,6 +351,8 @@ export default function useClaudeAI() {
       let buffer = ''
 
       while (true) {
+        // Se il chiamante ha abortito (es. componente smontato) chiudiamo il reader
+        if (signal?.aborted) { await reader.cancel().catch(() => {}); return full }
         const { done, value } = await reader.read()
         if (done) break
         // stream:true mantiene i caratteri multibyte spezzati tra i chunk
@@ -292,6 +367,7 @@ export default function useClaudeAI() {
             const event = JSON.parse(line.slice(6))
             if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
               full += event.delta.text
+              if (signal?.aborted) { await reader.cancel().catch(() => {}); return full }
               onChunk(full)
             }
           } catch { }

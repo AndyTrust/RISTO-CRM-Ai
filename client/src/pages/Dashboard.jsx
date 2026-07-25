@@ -1,13 +1,15 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { chiusure as chiusureApi, kpi as kpiApi, analytics as analyticsApi } from '../api/client'
+import supabase from '../supabase'
 import {
   AreaChart, Area, BarChart, Bar, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart
 } from 'recharts'
 import {
   TrendingUp, TrendingDown, Users, Euro, Target, BarChart2,
-  ArrowRight, RefreshCw, Minus, Info
+  ArrowRight, RefreshCw, Minus, Info, Star, MessageSquare, Building2,
+  Wallet, FileText, UtensilsCrossed,
 } from 'lucide-react'
 import { periodToDates } from '../components/DateRangePicker'
 import PeriodFilter from '../components/PeriodFilter'
@@ -128,6 +130,8 @@ export default function Dashboard() {
   const [monthly, setMonthly] = useState([])
   const [yoy, setYoy] = useState([])
   const [topCoperti, setTopCoperti] = useState([])
+  // Customer Experience
+  const [cxStats, setCxStats] = useState({ npsScore: null, avgNps: null, nSurveys: 0, tornera: 0, avgVoto: null, nReviews: 0, nNeg: 0 })
 
   const load = useCallback(async (d) => {
     setLoading(true)
@@ -195,6 +199,32 @@ export default function Dashboard() {
       // Top per coperti
       const kqList = Array.isArray(kpiTeam) ? kpiTeam : []
       setTopCoperti(kqList.filter(k => k.coperti_gestiti > 0).slice(0, 8))
+
+      // ── Customer Experience: NPS + Recensioni nel periodo ──
+      try {
+        const [{ data: survRows }, { data: revRows }] = await Promise.all([
+          supabase.from('sondaggi_strutturati')
+            .select('nps, tornera, data_prenotazione')
+            .gte('data_prenotazione', d.from).lte('data_prenotazione', d.to)
+            .limit(2000),
+          supabase.from('recensioni_pienissimo')
+            .select('voto, data_recensione')
+            .gte('data_recensione', d.from).lte('data_recensione', d.to)
+            .limit(2000),
+        ])
+        const npsVals = (survRows || []).map(r => r.nps).filter(v => v != null)
+        const promoters = npsVals.filter(v => v >= 9).length
+        const detractors = npsVals.filter(v => v <= 6).length
+        const npsScore = npsVals.length > 0 ? Math.round(((promoters - detractors) / npsVals.length) * 1000) / 10 : null
+        const avgNps = npsVals.length > 0 ? Math.round(npsVals.reduce((s, v) => s + v, 0) / npsVals.length * 10) / 10 : null
+        const tornera = (survRows || []).filter(r => r.tornera === true).length
+        const voti = (revRows || []).map(r => Number(r.voto)).filter(v => Number.isFinite(v))
+        const avgVoto = voti.length > 0 ? Math.round(voti.reduce((s, v) => s + v, 0) / voti.length * 100) / 100 : null
+        const nNeg = voti.filter(v => v <= 3).length
+        setCxStats({ npsScore, avgNps, nSurveys: (survRows || []).length, tornera, avgVoto, nReviews: voti.length, nNeg })
+      } catch (cxErr) {
+        console.warn('[Dashboard CX]', cxErr.message)
+      }
 
     } catch (e) {
       console.error(e)
@@ -326,6 +356,62 @@ export default function Dashboard() {
           icon={BarChart2}
           tooltip={`Media giornaliera dello scontrino medio (venduto ÷ numero tavoli/conti chiusi). Confronto vs periodo precedente.`}
         />
+      </div>
+
+      {/* ── Customer Experience (NPS + Recensioni) ── */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <Link to="/sondaggi" className="block rounded-xl p-4 text-white relative overflow-hidden hover:shadow-lg transition-all"
+          style={{ background: 'linear-gradient(135deg,#8b5cf6,#7c3aed)' }}>
+          <div className="flex items-start justify-between">
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-medium uppercase tracking-wider opacity-80 mb-1">NPS Sondaggi Clienti</p>
+              <p className="text-3xl font-bold leading-tight">
+                {cxStats.npsScore != null ? cxStats.npsScore : '—'}
+              </p>
+              <p className="text-xs opacity-80 mt-1">
+                {cxStats.nSurveys} sondaggi · media {cxStats.avgNps != null ? `${cxStats.avgNps}/10` : '—'}
+              </p>
+            </div>
+            <Star size={20} className="opacity-70" />
+          </div>
+          <p className="text-xs opacity-70 mt-2 flex items-center gap-1">
+            Vedi sondaggi <ArrowRight size={11} />
+          </p>
+        </Link>
+
+        <Link to="/recensioni" className="block rounded-xl p-4 text-white relative overflow-hidden hover:shadow-lg transition-all"
+          style={{ background: 'linear-gradient(135deg,#f59e0b,#d97706)' }}>
+          <div className="flex items-start justify-between">
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-medium uppercase tracking-wider opacity-80 mb-1">Voto Google + Tripadvisor</p>
+              <p className="text-3xl font-bold leading-tight">
+                {cxStats.avgVoto != null ? `${cxStats.avgVoto}/5` : '—'}
+              </p>
+              <p className="text-xs opacity-80 mt-1">
+                {cxStats.nReviews} recensioni · {cxStats.nNeg} critiche
+              </p>
+            </div>
+            <MessageSquare size={20} className="opacity-70" />
+          </div>
+          <p className="text-xs opacity-70 mt-2 flex items-center gap-1">
+            Vedi recensioni <ArrowRight size={11} />
+          </p>
+        </Link>
+
+        <Link to="/analisi-reparti" className="block rounded-xl p-4 text-white relative overflow-hidden hover:shadow-lg transition-all"
+          style={{ background: 'linear-gradient(135deg,#0ea5e9,#0284c7)' }}>
+          <div className="flex items-start justify-between">
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-medium uppercase tracking-wider opacity-80 mb-1">Marginalità per Reparto</p>
+              <p className="text-2xl font-bold leading-tight">Sala · Cucina · Admin · Marketing</p>
+              <p className="text-xs opacity-80 mt-1">Costo personale + quota fissi per reparto</p>
+            </div>
+            <Building2 size={20} className="opacity-70" />
+          </div>
+          <p className="text-xs opacity-70 mt-2 flex items-center gap-1">
+            Analizza reparti <ArrowRight size={11} />
+          </p>
+        </Link>
       </div>
 
       {/* ── Locali a confronto ── */}
@@ -502,13 +588,27 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* ── Quick links ai moduli ── */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      {/* ── Quick links: TUTTE le sezioni principali ── */}
+      <div>
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-2">Accesso rapido a tutte le sezioni</h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {[
-          { to: '/kpi',        label: 'KPI Camerieri',  icon: '🎯', color: '#6366f1', sub: 'Quantum & target' },
-          { to: '/chiusure',   label: 'Chiusure',       icon: '💰', color: '#0ea5e9', sub: 'Report giornalieri' },
-          { to: '/analytics',  label: 'Analytics & BI', icon: '📡', color: '#8b5cf6', sub: 'Previsioni & trend' },
-          { to: '/fornitori',  label: 'Fornitori',      icon: '🏭', color: '#10b981', sub: 'Costi & fatture' },
+          { to: '/buste-paga',       label: 'Dipendenti & Paga',  icon: '👤', color: '#6366f1', sub: 'Scheda, split sede/reparto, cedolini' },
+          { to: '/kpi',              label: 'KPI Camerieri',      icon: '🎯', color: '#0ea5e9', sub: 'Quantum, target, bonus' },
+          { to: '/turni',            label: 'Turni',              icon: '📅', color: '#7c3aed', sub: 'Pianificazione orari' },
+          { to: '/analisi-reparti',  label: 'Analisi Reparti',    icon: '🏢', color: '#ec4899', sub: 'Marginalità per reparto' },
+          { to: '/chiusure',         label: 'Chiusure Cassa',     icon: '💰', color: '#0ea5e9', sub: 'Report giornalieri' },
+          { to: '/venduto',          label: 'Venduto & BI',       icon: '📈', color: '#10b981', sub: 'Calendario, heatmap, trend' },
+          { to: '/prodotti-bi',      label: 'Prodotti & Menu',    icon: '🍽️', color: '#f59e0b', sub: 'Food cost, BCG, menu engineering' },
+          { to: '/forecast',         label: 'Forecast',           icon: '☁️', color: '#06b6d4', sub: 'Previsioni incasso' },
+          { to: '/statistiche',      label: 'Statistiche Sala',   icon: '🪑', color: '#8b5cf6', sub: 'Tavoli, fasce orarie' },
+          { to: '/coperti-bi',       label: 'Coperti & Tavoli BI',icon: '👥', color: '#3b82f6', sub: 'Durate, rotazioni' },
+          { to: '/prenotazioni',     label: 'Prenotazioni',       icon: '📋', color: '#14b8a6', sub: 'Filling rate, no-show' },
+          { to: '/sondaggi',         label: 'Sondaggi Clienti',   icon: '⭐', color: '#a855f7', sub: 'NPS, feedback, canali' },
+          { to: '/recensioni',       label: 'Recensioni',         icon: '💬', color: '#f59e0b', sub: 'Google, Tripadvisor' },
+          { to: '/costi-fissi',      label: 'Costi Fissi',        icon: '💼', color: '#ef4444', sub: 'Affitti, consulenze' },
+          { to: '/fornitori',        label: 'Fornitori & Fatture',icon: '🏭', color: '#10b981', sub: 'Costi, fatture, P.IVA' },
+          { to: '/analytics',        label: 'Analytics & BI',     icon: '📡', color: '#8b5cf6', sub: 'Reportistica avanzata' },
         ].map(item => (
           <Link key={item.to} to={item.to}
             className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 flex items-center gap-3 hover:border-indigo-200 hover:shadow-md transition-all group">
@@ -523,6 +623,7 @@ export default function Dashboard() {
             <ArrowRight size={14} className="text-gray-300 group-hover:text-indigo-400 ml-auto flex-shrink-0" />
           </Link>
         ))}
+        </div>
       </div>
 
     </div>

@@ -43,6 +43,12 @@ const QUERY_CRM_ALLOWED_TABLES = [
   'revenue_forecast',
   'clienti_stats',
   'chiusure_turni',
+  // Allineate a QUERY_CRM_ALLOWED_COLUMNS (prima definite lì ma assenti qui:
+  // mappatura morta). Tutte operative, nessun dato personale o retributivo.
+  'prodotti_venduti_live',
+  'revenue_shift',
+  'sondaggi_strutturati',
+  'bookings_filling',
 ]
 
 // Colonne consentite per tabella (esclude dati sensibili come importi paga)
@@ -50,11 +56,17 @@ const QUERY_CRM_ALLOWED_COLUMNS = {
   venduto_camerieri:         ['sede', 'operatore', 'data_inizio', 'data_fine', 'categoria', 'prodotto', 'quantita', 'totale'],
   chiusure_giornaliere:      ['sede', 'data', 'totale_venduto_dgfe', 'totale_venduto_ipratico', 'totale_fiscalizzato_fatture', 'n_doc_fiscali_emessi', 'coperti', 'coperto_medio', 'scontrino_medio'],
   varianti_camerieri:        ['sede', 'operatore', 'data_inizio', 'data_fine', 'variante', 'aggiunta_qty', 'aggiunta_importo', 'rimozione_qty', 'rimozione_importo'],
-  statistiche_tavoli:        ['sede', 'data_inizio', 'data_fine', 'tavolo', 'coperti', 'incasso'],
-  kpi_targets_individuale:   ['operatore', 'sede', 'anno', 'mese', 'target'],
-  kpi_targets_team:          ['sede', 'anno', 'mese', 'target'],
+  // Nomi colonna verificati sul DB (2026-07-25): 'coperti', 'operatore' e
+  // 'target' su kpi_targets_team NON esistevano e rompevano la query ora che
+  // '*' viene espanso nella whitelist
+  statistiche_tavoli:        ['sede', 'data_inizio', 'data_fine', 'tavolo', 'n_coperti', 'n_coperture', 'n_ordini', 'durata_media_min', 'incasso', 'scontrino_medio', 'operatore', 'nome_stanza'],
+  kpi_targets_individuale:   ['employee_id', 'sede', 'anno', 'mese', 'metrica', 'quantum', 'quorum', 'target', 'premio_max_euro', 'mese_precedente_valore'],
+  kpi_targets_team:          ['sede', 'anno', 'mese', 'be_totale', 'target_fatturato', 'premio_team_euro', 'pct_cucina', 'pct_sala', 'coeff_stagionale', 'stato'],
   target_venduto_operatori:  ['sede', 'operatore', 'anno', 'mese', 'target_pezzi', 'target_pezzi_valorizzati'],
-  fatture_importate:         ['id', 'denominazione', 'piva', 'numero_fattura', 'data_fattura', 'imponibile', 'iva', 'totale', 'sede', 'totale_pagato'],
+  // Nomi colonna verificati sul DB: la tabella usa `fornitore` e `p_iva`
+  // (non 'denominazione'/'piva', che non esistono e facevano fallire la query
+  // ora che '*' viene espanso nella whitelist)
+  fatture_importate:         ['id', 'fornitore', 'p_iva', 'numero_fattura', 'data_fattura', 'imponibile', 'iva', 'totale', 'sede', 'totale_pagato', 'stato_pagamento', 'tipo_documento'],
   prenotazioni_summary:      ['sede', 'data_inizio', 'data_fine', 'periodo', 'turno', 'stato', 'canale', 'n_prenotazioni', 'n_persone'],
   venduto_categorie:         ['sede', 'data_inizio', 'data_fine', 'categoria', 'tipologia', 'quantita', 'prezzo_medio', 'totale', 'food_cost_pct', 'n_documenti'],
   revenue_forecast:          ['sede', 'data_competenza', 'previsione_coperti', 'previsione_incasso', 'valutazione', 'note_meteo', 'aggiornato_il'],
@@ -70,25 +82,38 @@ const QUERY_CRM_ALLOWED_COLUMNS = {
 const QUERY_CRM_ALLOWED_OPS = ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'ilike', 'in']
 
 /**
+ * Espande '*' nell'elenco esplicito delle colonne consentite.
+ * Senza questa espansione il default `select = '*'` salterebbe interamente la
+ * validazione e restituirebbe TUTTE le colonne della tabella, incluse quelle
+ * volutamente escluse da QUERY_CRM_ALLOWED_COLUMNS.
+ */
+function resolveSelect(table, select) {
+  const allowed = QUERY_CRM_ALLOWED_COLUMNS[table] || []
+  if (!select || select === '*') return allowed.join(',')
+  return select
+}
+
+/**
  * Valida l'input di query_crm contro le whitelist.
  * Ritorna una stringa di errore se non valido, altrimenti null.
  */
 function validateQueryCRMInput(input) {
-  const { table, select = '*', filters = [], not_ilike, order_by } = input
+  const { table, filters = [], not_ilike, order_by } = input
 
   if (!QUERY_CRM_ALLOWED_TABLES.includes(table)) {
     return `Tabella non consentita: "${table}". Tabelle disponibili: ${QUERY_CRM_ALLOWED_TABLES.join(', ')}`
   }
 
   const allowed = QUERY_CRM_ALLOWED_COLUMNS[table] || []
+  if (allowed.length === 0) {
+    return `Nessuna colonna consentita configurata per la tabella "${table}"`
+  }
 
-  // Valida colonne in select (se non è '*')
-  if (select && select !== '*') {
-    const selectedCols = select.split(',').map(c => c.trim())
-    for (const col of selectedCols) {
-      if (!allowed.includes(col)) {
-        return `Colonna non consentita in select: "${col}" su tabella "${table}"`
-      }
+  // Valida le colonne: '*' viene prima espanso nella whitelist, mai saltato
+  const selectedCols = resolveSelect(table, input.select).split(',').map(c => c.trim()).filter(Boolean)
+  for (const col of selectedCols) {
+    if (!allowed.includes(col)) {
+      return `Colonna non consentita in select: "${col}" su tabella "${table}"`
     }
   }
 
@@ -123,11 +148,11 @@ Tabelle disponibili:
 - venduto_camerieri: sede, operatore, data_inizio, data_fine, categoria, prodotto, quantita, totale — venduto per operatore
 - chiusure_giornaliere: sede, data, totale_venduto_dgfe, totale_venduto_ipratico, totale_fiscalizzato_fatture, n_doc_fiscali_emessi, coperti, coperto_medio, scontrino_medio — chiusure cassa giornaliere
 - varianti_camerieri: sede, operatore, data_inizio, data_fine, variante, aggiunta_qty, aggiunta_importo, rimozione_qty, rimozione_importo — varianti per operatore
-- statistiche_tavoli: sede, data_inizio, data_fine, tavolo, coperti, incasso — statistiche tavoli
-- kpi_targets_individuale: operatore, sede, anno, mese, target — target KPI individuali
-- kpi_targets_team: sede, anno, mese, target — target KPI team
+- statistiche_tavoli: sede, data_inizio, data_fine, tavolo, n_coperti, n_coperture, durata_media_min, incasso, scontrino_medio, operatore — statistiche tavoli
+- kpi_targets_individuale: employee_id, sede, anno, mese, metrica, quantum, quorum, target, premio_max_euro — target KPI individuali (nessuna colonna col nome operatore: si passa da employee_id)
+- kpi_targets_team: sede, anno, mese, be_totale, target_fatturato, premio_team_euro, pct_cucina, pct_sala — target KPI team
 - target_venduto_operatori: sede, operatore, anno, mese, target_pezzi, target_pezzi_valorizzati — target venduto
-- fatture_importate: denominazione, piva, numero_fattura, data_fattura, imponibile, iva, totale, sede — fatture fornitori
+- fatture_importate: fornitore, p_iva, numero_fattura, data_fattura, imponibile, iva, totale, sede — fatture fornitori
 - prenotazioni_summary: sede, periodo, turno, stato, n_prenotazioni, n_persone — prenotazioni aggregate da Pienissimo
 - venduto_categorie: sede, data_inizio, data_fine, categoria, tipologia, quantita, totale, food_cost_pct — venduto per categoria (menu engineering)
 - revenue_forecast: sede, data_competenza, previsione_incasso, valutazione, note_meteo — previsioni revenue prossimi giorni
@@ -171,7 +196,9 @@ async function executeQueryCRM(input) {
   const validationError = validateQueryCRMInput(input)
   if (validationError) return `Accesso negato: ${validationError}`
 
-  const { table, select = '*', filters = [], not_ilike, order_by, order_asc = false, limit = 100 } = input
+  const { table, filters = [], not_ilike, order_by, order_asc = false, limit = 100 } = input
+  // '*' espanso nella whitelist: mai passare select grezzo a PostgREST
+  const select = resolveSelect(table, input.select)
   try {
     let q = supabase.from(table).select(select)
     for (const f of filters) {

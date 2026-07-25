@@ -46,6 +46,10 @@ function statoBadge(stato) {
     ok: ['🟢', 'Nella norma', 'text-gray-500'],
     alto: ['⚠️', 'Costo alto', 'text-red-600'],
     sottodimensionato: ['🔴', 'Sotto organico', 'text-red-600'],
+    // costi orari non disponibili: nessuna valutazione possibile
+    dati_mancanti: ['❔', 'Dati costo mancanti', 'text-amber-600'],
+    // costo calcolato sui valori di default, non su buste paga reali
+    stimato: ['≈', 'Costo stimato', 'text-amber-600'],
   }
   return map[stato] || map.ok
 }

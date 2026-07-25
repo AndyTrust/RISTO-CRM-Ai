@@ -8,7 +8,9 @@ import supabase from '../supabase'
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
 function locationToSede(location) {
-  if (!location || location === 'all') return null
+  // 'Tutte' è il valore usato dai filtri sede della UI (Buste Paga, Fornitori):
+  // senza questo caso si generava .eq('sede','Tutte') → zero righe
+  if (!location || location === 'all' || location === 'ALL' || location === 'Tutte') return null
   if (location === 'MAMELI')        return 'MA'
   if (location === 'PREDDA_NIEDDA') return 'PN'
   return location // già MA/PN
@@ -29,6 +31,130 @@ function applyDateRangeFatture(query, from, to) {
 async function sbFetch(queryBuilder) {
   const { data, error } = await queryBuilder
   if (error) throw error
+  return data ?? []
+}
+
+/**
+ * Scarica TUTTE le righe di una tabella superando il cap PostgREST (1000 righe).
+ * Itera con .range() finché il batch è pieno. Propaga gli errori: mai `?? []`,
+ * altrimenti un guasto RLS/rete diventa indistinguibile da "tabella vuota".
+ * @param {string} table  nome tabella
+ * @param {string} select colonne (default '*')
+ * @param {number} page   dimensione batch
+ */
+async function sbFetchAll(table, select = '*', page = 1000) {
+  const out = []
+  for (let i = 0; ; i += page) {
+    // .order('id') è obbligatorio: senza ordinamento stabile Postgres non
+    // garantisce la stessa sequenza tra una pagina e l'altra, e il backup
+    // potrebbe contenere righe duplicate o perderne alcune.
+    const { data, error } = await supabase.from(table).select(select).order('id').range(i, i + page - 1)
+    if (error) throw new Error(`${table}: ${error.message}`)
+    const batch = data ?? []
+    out.push(...batch)
+    if (batch.length < page) break
+  }
+  return out
+}
+
+/** Escape dei metacaratteri LIKE (% e _) per evitare match involontari in ilike(). */
+function escapeLike(s) {
+  return String(s ?? '').replace(/[\\%_]/g, m => `\\${m}`)
+}
+
+/**
+ * Registro degli errori "inghiottiti" dalle API che ritornano [] o null.
+ *
+ * Quelle API non possono propagare l'eccezione senza rompere le pagine che le
+ * consumano, ma restituire un array vuoto rende un guasto (rete, RLS, colonna
+ * rinominata) indistinguibile da "nessun dato": è lo scenario in cui BE e KPI
+ * sembrano sbagliati senza causa visibile. Qui l'errore viene comunque loggato
+ * e conservato, così la UI (Admin → Stato dati) può mostrarlo.
+ */
+const _apiErrors = []
+export function getApiErrors() { return [..._apiErrors] }
+export function clearApiErrors() { _apiErrors.length = 0 }
+
+function swallow(scope, e, fallback) {
+  const entry = { scope, message: e?.message || String(e), at: new Date().toISOString() }
+  _apiErrors.push(entry)
+  if (_apiErrors.length > 50) _apiErrors.shift()
+  console.error(`[api:${scope}] ${entry.message}`)
+  return fallback
+}
+
+/**
+ * Scrive turni in modo IDEMPOTENTE sulla chiave logica
+ * (employee_id, date, turno_tipo, sede): rimuove gli eventuali turni già
+ * presenti sulle stesse chiavi e reinserisce le righe nuove.
+ *
+ * Prima si usava `.insert()`, quindi ogni rigenerazione del piano settimanale
+ * duplicava i turni gonfiando ore e costi nei riepiloghi.
+ *
+ * Prova prima l'upsert atomico lato DB; se l'indice unico non esiste ancora
+ * (vedi supabase/20260725_dedup_shifts_unique_index.sql) ricade su un percorso
+ * insert+delete equivalente. Funziona in entrambi gli scenari.
+ */
+async function replaceShifts(rows) {
+  if (!rows?.length) return []
+
+  const keyOf = r => `${r.sede}|${r.date}|${r.turno_tipo}|${r.employee_id ?? `n:${r.employee_name}`}`
+
+  // 1. Dedup dell'input: il planner AI può produrre due righe sulla stessa
+  //    chiave; senza questo passaggio si reinserirebbero duplicati (e, una
+  //    volta creato l'indice unico, l'intero batch fallirebbe con 23505).
+  const uniche = new Map()
+  for (const r of rows) uniche.set(keyOf(r), r)     // vince l'ultima occorrenza
+  const payload = [...uniche.values()]
+
+  // 2. Percorso preferito: UPSERT atomico lato DB. Funziona solo se esiste
+  //    l'indice uq_shifts_dipendente_data_turno (vedi
+  //    supabase/20260725_dedup_shifts_unique_index.sql).
+  const up = await supabase.from('shifts')
+    .upsert(payload, { onConflict: 'employee_id,date,turno_tipo,sede' })
+    .select()
+  if (!up.error) return up.data ?? []
+
+  // 42P10 = "no unique or exclusion constraint matching the ON CONFLICT
+  // specification": l'indice non è ancora stato creato. Qualunque altro errore
+  // è reale e va propagato.
+  if (up.error.code !== '42P10') throw up.error
+
+  // 3. Fallback senza indice: individua per CHIAVE ESATTA le righe da
+  //    sostituire. Filtrare separatamente per elenco di turni ed elenco di
+  //    dipendenti colpirebbe il prodotto cartesiano, cancellando turni che non
+  //    stavamo rimpiazzando.
+  const daEliminare = []
+  const perGiorno = new Map()
+  for (const r of payload) {
+    const k = `${r.sede}|${r.date}`
+    if (!perGiorno.has(k)) perGiorno.set(k, { sede: r.sede, date: r.date, righe: [] })
+    perGiorno.get(k).righe.push(r)
+  }
+
+  for (const { sede, date, righe } of perGiorno.values()) {
+    const { data: esistenti, error } = await supabase.from('shifts')
+      .select('id, employee_id, employee_name, turno_tipo, sede, date')
+      .eq('sede', sede).eq('date', date)
+    if (error) throw error
+    const chiaviNuove = new Set(righe.map(keyOf))
+    for (const e of esistenti ?? []) {
+      if (chiaviNuove.has(keyOf(e))) daEliminare.push(e.id)
+    }
+  }
+
+  // INSERT prima, DELETE dopo: se l'insert fallisce i turni preesistenti
+  // restano intatti. L'ordine inverso, in caso di errore, lascerebbe la
+  // griglia vuota senza possibilità di rollback.
+  const { data, error } = await supabase.from('shifts').insert(payload).select()
+  if (error) throw error
+
+  if (daEliminare.length) {
+    const { error: delErr } = await supabase.from('shifts').delete().in('id', daEliminare)
+    // Un fallimento qui lascia duplicati (recuperabili), non una perdita di dati
+    if (delErr) console.error('[turni] insert riuscito ma pulizia dei turni sostituiti fallita:', delErr.message)
+  }
+
   return data ?? []
 }
 
@@ -155,6 +281,10 @@ export const employees = {
       payload.ore_settimanali = parseInt(d.ore_settimanali)
     if (d.reparto_id !== undefined)             payload.reparto_id = d.reparto_id || null
     if (d.sede_split_ma !== undefined)          payload.sede_split_ma = d.sede_split_ma
+    if (d.reparto_split !== undefined)          payload.reparto_split = d.reparto_split || {}
+    if (d.ral !== undefined && d.ral !== '')    payload.ral = parseFloat(d.ral)
+    if (d.ruolo_servizio !== undefined)         payload.ruolo_servizio = d.ruolo_servizio || null
+    if (d.partecipa_kpi_target !== undefined)   payload.partecipa_kpi_target = !!d.partecipa_kpi_target
 
     if (Object.keys(payload).length > 0) {
       const { error } = await supabase.from('employees').update(payload).eq('id', id)
@@ -255,7 +385,9 @@ export const chiusure = {
     const sede = locationToSede(p.location)
     if (sede) q = q.eq('sede', sede)
     q = applyDateRange(q, p.from || defaultFrom, p.to)
-    return sbFetch(q)
+    // .range esplicito: v_chiusure ha gia' >1000 righe e PostgREST troncava in
+    // silenzio in ordine data crescente, facendo sparire i giorni piu' recenti
+    return sbFetch(q.range(0, 19999))
   },
 
   stats: async (p = {}) => {
@@ -354,7 +486,7 @@ export const kpi = {
 
   operator: async (name, p = {}) => {
     const sede = locationToSede(p.location)
-    let q = supabase.from('kpi_revenues').select('*').ilike('op', `%${name}%`)
+    let q = supabase.from('kpi_revenues').select('*').ilike('op', `%${escapeLike(name)}%`)
     if (sede) q = q.eq('sede', sede)
     q = applyPeriodFilter(q, p)
     return sbFetch(q)
@@ -663,9 +795,20 @@ export const fornitori = {
   },
 
   create: async (d) => {
-    const { data, error } = await supabase.from('fornitori_fatture').insert({
-      p_iva:      (d.p_iva || d.partita_iva || '').replace(/^IT/, ''),
-      nome:       d.nome || d.name || '',
+    // Il consolidamento fornitori è ESCLUSIVAMENTE per P.IVA (mai per nome):
+    // senza P.IVA la riga sarebbe inaggregabile e romperebbe v_fornitori_completi
+    const pIva = (d.p_iva || d.partita_iva || '').replace(/^IT/i, '').trim()
+    if (!pIva) throw new Error('P.IVA obbligatoria: i fornitori sono consolidati per partita IVA')
+    // Essendo un upsert su p_iva, un nome vuoto sovrascriverebbe con '' il nome
+    // di un fornitore già consolidato
+    const nomeFornitore = (d.nome || d.name || '').trim()
+    if (!nomeFornitore) throw new Error('Nome fornitore obbligatorio')
+
+    // UPSERT su p_iva (vincolo fornitori_fatture_p_iva_key): prima un insert
+    // puro poteva creare N volte lo stesso fornitore
+    const { data, error } = await supabase.from('fornitori_fatture').upsert({
+      p_iva:      pIva,
+      nome:       nomeFornitore,
       categoria:  d.categoria || 'ALTRO',
       indirizzo:  d.indirizzo || null,
       cap:        d.cap || null,
@@ -676,7 +819,7 @@ export const fornitori = {
       iban:       d.iban || null,
       note:       d.note || null,
       active:     true,
-    }).select().single()
+    }, { onConflict: 'p_iva' }).select().single()
     if (error) throw error
     return { id: data.id }
   },
@@ -774,8 +917,10 @@ export const fornitori = {
     try {
       // Fatture nel periodo → base per tutto
       let qFat = supabase.from('fatture_importate')
-        .select('data_fattura, totale, p_iva, fornitore, sede')
-        .order('data_fattura').limit(10000)
+        .select('data_fattura, totale, p_iva, fornitore, sede, tipo_documento')
+        // .limit() NON aggira il cap PostgREST di 1000 righe: serve .range().
+        // Senza, con periodo "anno corrente" (2189 fatture) si perdevano i mesi recenti.
+        .order('data_fattura').range(0, 49999)
       if (p.from) qFat = qFat.gte('data_fattura', p.from)
       if (p.to)   qFat = qFat.lte('data_fattura', p.to)
       if (p.sede) qFat = qFat.eq('sede', p.sede)
@@ -801,7 +946,12 @@ export const fornitori = {
       for (const f of fattureRows) {
         if (!f.data_fattura) continue
         const mese = f.data_fattura.substring(0, 7)
-        const tot  = parseFloat(f.totale) || 0
+        // TD04 = nota di credito: il totale è memorizzato POSITIVO ma va
+        // sottratto dalla spesa. Sommandolo si sovrastimava il costo fornitori
+        // (103 note di credito, ~17.500 € contati al contrario).
+        // Stessa convenzione già usata dalla vista v_costi_mensili.
+        const segno = f.tipo_documento === 'TD04' ? -1 : 1
+        const tot  = (parseFloat(f.totale) || 0) * segno
         const cat  = fornitoriMap[f.p_iva] || 'ALTRO'
 
         // Mensile
@@ -1114,8 +1264,10 @@ export const listinoApi = {
     const base = { costo_acquisto: costo, updated_at: new Date().toISOString() }
     // Aggiorna TUTTE le righe con quel nome (il listino può avere duplicati;
     // la view ne legge una qualsiasi, quindi vanno allineate tutte).
+    // escapeLike: un nome contenente % o _ (wildcard LIKE) aggiornerebbe
+    // il costo di prodotti diversi
     const { data: updated, error: eUpd } = await supabase
-      .from('listino_prodotti').update(base).ilike('nome_prodotto', nome).select('id')
+      .from('listino_prodotti').update(base).ilike('nome_prodotto', escapeLike(nome)).select('id')
     if (eUpd) throw eUpd
     if (updated && updated.length) return { updated: updated.length }
     // Nessuna riga esistente → insert
@@ -1426,7 +1578,7 @@ export const analytics = {
       if (p.from) q = q.gte('mese', p.from.substring(0, 7))
       if (p.to)   q = q.lte('mese', p.to.substring(0, 7))
       return sbFetch(q)
-    } catch { return [] }
+    } catch (e) { return swallow('analytics.mensile', e, []) }
   },
 
   kpiSummary: async (p = {}) => {
@@ -1438,7 +1590,7 @@ export const analytics = {
       if (p.from) q = q.gte('period', p.from.substring(0, 7))
       if (p.to)   q = q.lte('period', p.to.substring(0, 7))
       return sbFetch(q)
-    } catch { return [] }
+    } catch (e) { return swallow('analytics.kpiSummary', e, []) }
   },
 
   // Stagionalità: indici mensili dell'ultimo anno completo + coperto medio per sede
@@ -1501,7 +1653,7 @@ export const analytics = {
       }
 
       return { combined, byLocation }
-    } catch { return null }
+    } catch (e) { return swallow('analytics.seasonality', e, null) }
   },
 
   // Previsioni prossimi 3 mesi via regressione lineare + stagionalità anno prec.
@@ -1511,20 +1663,30 @@ export const analytics = {
       const { data: rows } = await supabase.from('chiusure_giornaliere')
         .select('sede, data, totale_venduto_ipratico, coperti').order('data').range(0, 4999) // bypass limite 1000
 
-      // Indici stagionali da 2025 (combinati MA+PN)
-      const byMn2025 = {}
-      let tot2025 = 0
+      // Indici stagionali dall'ultimo anno COMPLETO disponibile (combinati MA+PN).
+      // Era hardcoded a '2025': dal 2027 la stagionalità sarebbe rimasta ferma
+      // su un anno sempre più vecchio. Ora scorre indietro fino a trovare un
+      // anno con dati (l'anno in corso è escluso perché incompleto).
+      const annoRif = (() => {
+        const anni = new Set((rows ?? []).map(r => r.data?.substring(0, 4)).filter(Boolean))
+        const corrente = new Date().getFullYear()
+        for (let y = corrente - 1; y >= corrente - 5; y--) if (anni.has(String(y))) return String(y)
+        return String(corrente)   // fallback: solo l'anno in corso ha dati
+      })()
+
+      const byMnRif = {}
+      let totRif = 0
       for (const r of rows ?? []) {
-        if (!r.data?.startsWith('2025')) continue
+        if (!r.data?.startsWith(annoRif)) continue
         const mn = parseInt(r.data.substring(5, 7))
-        if (!byMn2025[mn]) byMn2025[mn] = 0
-        byMn2025[mn] += parseFloat(r.totale_venduto_ipratico) || 0
-        tot2025 += parseFloat(r.totale_venduto_ipratico) || 0
+        if (!byMnRif[mn]) byMnRif[mn] = 0
+        byMnRif[mn] += parseFloat(r.totale_venduto_ipratico) || 0
+        totRif += parseFloat(r.totale_venduto_ipratico) || 0
       }
-      const avg2025 = Object.keys(byMn2025).length > 0 ? tot2025 / Object.keys(byMn2025).length : 0
+      const avgRif = Object.keys(byMnRif).length > 0 ? totRif / Object.keys(byMnRif).length : 0
       const seasonIdx = {}
-      for (const [mn, v] of Object.entries(byMn2025)) {
-        seasonIdx[parseInt(mn)] = avg2025 > 0 ? Math.round(v / avg2025 * 100) / 100 : 1.0
+      for (const [mn, v] of Object.entries(byMnRif)) {
+        seasonIdx[parseInt(mn)] = avgRif > 0 ? Math.round(v / avgRif * 100) / 100 : 1.0
       }
 
       const byLocMese = {}
@@ -1594,7 +1756,7 @@ export const analytics = {
         result[loc] = { storico: storicoFiltrato.length ? storicoFiltrato : storico, forecasts, regressione: { r2 } }
       }
       return result
-    } catch { return null }
+    } catch (e) { return swallow('analytics.forecast', e, null) }
   },
 
   // Target operatori — fonte: kpi_revenues (coperti e fatturato reali per operatore)
@@ -1783,7 +1945,7 @@ export const analytics = {
 
       allDays.sort((a,b)=>b.venduto-a.venduto)
       return { byDow: byDowFinal, top5: allDays.slice(0,5) }
-    } catch { return null }
+    } catch (e) { return swallow('analytics.heatmap', e, null) }
   },
 
   // BE mensile: costi (personale + fatture + fissi) vs incasso per sede
@@ -1931,7 +2093,7 @@ export const bustePaga = {
     if (p.anno)  q = q.eq('anno', parseInt(p.anno))
     if (p.mese)  q = q.eq('mese', parseInt(p.mese))
     if (p.sede && p.sede !== 'Tutte') q = q.eq('sede', p.sede)
-    const rows = await sbFetch(q)
+    const rows = await sbFetch(q.range(0, 9999))   // coerente con riepilogo/costoMensile
     return rows.map(r => {
       // Usa costo_azienda salvato dal LUL PDF.
       // Fallback CCNL: paga_base × 1.9653, poi netto × 1.9653
@@ -1961,7 +2123,12 @@ export const bustePaga = {
   riepilogo: async (p = {}) => {
     let q = supabase.from('buste_paga').select('sede,anno,mese,netto,costo_azienda,paga_base,totale_competenze,employee_code').order('anno').order('mese')
     if (p.anno) q = q.eq('anno', parseInt(p.anno))
-    const rows = await sbFetch(q)
+    // I filtri sede/mese erano ignorati: si scaricava l'intera tabella e, oltre
+    // le 1000 righe, PostgREST troncava in silenzio → costo personale sottostimato
+    const sedeFiltro = locationToSede(p.sede || p.location)
+    if (sedeFiltro) q = q.eq('sede', sedeFiltro)
+    if (p.mese)    q = q.eq('mese', parseInt(p.mese))
+    const rows = await sbFetch(q.range(0, 9999))
     // Aggrega per sede+anno+mese
     const map = {}
     for (const r of rows) {
@@ -2042,7 +2209,12 @@ export const bustePaga = {
   costoMensile: async (p = {}) => {
     let q = supabase.from('buste_paga').select('sede,anno,mese,netto,costo_azienda,paga_base,totale_competenze').order('anno').order('mese')
     if (p.anno) q = q.eq('anno', parseInt(p.anno))
-    const rows = await sbFetch(q)
+    // Filtri sede/mese applicati + range esplicito (vedi riepilogo: senza .range()
+    // PostgREST tronca a 1000 righe senza segnalarlo)
+    const sedeFiltro = locationToSede(p.sede || p.location)
+    if (sedeFiltro) q = q.eq('sede', sedeFiltro)
+    if (p.mese)    q = q.eq('mese', parseInt(p.mese))
+    const rows = await sbFetch(q.range(0, 9999))
     const map = {}
     for (const r of rows) {
       const key = `${r.sede}-${r.anno}-${r.mese}`
@@ -2066,7 +2238,7 @@ export const bustePaga = {
     if (!employeeId && (d.employee_code || d.employee_name)) {
       let q = supabase.from('employees').select('id')
       if (d.employee_code) q = q.eq('code', d.employee_code)
-      else                  q = q.ilike('name', d.employee_name)
+      else                  q = q.ilike('name', escapeLike(d.employee_name))
       const { data: found } = await q.limit(1).single()
       if (found) employeeId = found.id
     }
@@ -2086,7 +2258,13 @@ export const bustePaga = {
     if (d.ore_settimanali) row.ore_settimanali    = parseInt(d.ore_settimanali)
     if (d.percentuale_pt)  row.percentuale_pt     = parseFloat(d.percentuale_pt)
 
-    const { data, error } = await supabase.from('buste_paga').insert(row).select().single()
+    // UPSERT, non insert: reimportare lo stesso LUL raddoppiava i netti dello
+    // stesso dipendente/mese, gonfiando costo del personale, BE e target KPI.
+    // Vincolo esistente su Supabase: uq_buste_paga_dipendente_periodo.
+    const { data, error } = await supabase
+      .from('buste_paga')
+      .upsert(row, { onConflict: 'employee_name,anno,mese' })
+      .select().single()
     if (error) throw error
 
     // ── CASCADE: upsert employee_regole con ore della busta paga ─────────
@@ -2172,7 +2350,7 @@ export const statistiche = {
         avg_coperto_medio:   s.tot_coperti > 0 ? +(s.tot_venduto / s.tot_coperti).toFixed(2) : 0,
         avg_scontrino_medio: s.n_giorni > 0 ? +(s._sm / s.n_giorni).toFixed(2) : 0,
       }))
-    } catch { return [] }
+    } catch (e) { return swallow('statistiche.getAll', e, []) }
   },
 
   // Fasce orarie simulate da giornaliero (iPratico non esporta ore)
@@ -2217,7 +2395,7 @@ export const statistiche = {
           n_coperti:    coperti_fascia,
         }
       })
-    } catch { return [] }
+    } catch (e) { return swallow('statistiche.fasceOrarie', e, []) }
   },
 
   // Operatori da v_fatturato_operatore_mensile (solo veri camerieri da venduto_camerieri)
@@ -2255,7 +2433,7 @@ export const statistiche = {
           coperto_medio: o.tot_coperti > 0 && o.tot_importo > 0 ? +(o.tot_importo / o.tot_coperti).toFixed(2) : 0,
         }))
         .sort((a, b) => b.totale_incasso - a.totale_incasso)
-    } catch { return [] }
+    } catch (e) { return swallow('statistiche.operatori', e, []) }
   },
 
   // Tavoli da statistiche_tavoli
@@ -2295,7 +2473,7 @@ export const statistiche = {
           incasso_totale:    +t.tot_incasso.toFixed(2),
         }))
         .sort((a, b) => b.incasso_totale - a.incasso_totale)
-    } catch { return [] }
+    } catch (e) { return swallow('statistiche.tavoli', e, []) }
   },
 
   // Trend giornaliero
@@ -2319,7 +2497,7 @@ export const statistiche = {
         n_tavoli:      null,
         media_permanenza: null,
       }))
-    } catch { return [] }
+    } catch (e) { return swallow('statistiche.giornaliero', e, []) }
   },
 
   sync: async () => ({ success: true, message: 'Statistiche calcolate da Supabase in tempo reale' }),
@@ -2376,7 +2554,12 @@ export const turni = {
     let q = supabase.from('shifts').select('*').order('date')
     const sede = locationToSede(p.location)
     if (sede) q = q.eq('sede', sede)
-    if (mese) q = q.gte('date', `${mese}-01`).lte('date', `${mese}-31`)
+    if (mese) {
+      // `${mese}-31` genera date inesistenti (es. 2026-02-31) → errore Postgres 22008
+      const [aa, mm] = mese.split('-').map(Number)
+      const ultimo = new Date(aa, mm, 0).getDate()
+      q = q.gte('date', `${mese}-01`).lte('date', `${mese}-${ultimo}`)
+    }
     const rows = await sbFetch(q)
     const byEmp = {}
     for (const r of rows) {
@@ -2427,8 +2610,9 @@ export const turni = {
       reparto_id:    d.reparto_id || null,
       updated_at:    new Date().toISOString(),
     }
-    const { data: row, error } = await supabase.from('shifts').insert(payload).select().single()
-    if (error) throw error
+    // Idempotente come upsert/bulkUpsert: creare due volte lo stesso turno
+    // non deve generare doppioni
+    const [row] = await replaceShifts([payload])
     return row
   },
 
@@ -2457,9 +2641,11 @@ export const turni = {
       if (error) throw error
       return data
     }
-    const { data, error } = await supabase.from('shifts').insert(payload).select().single()
-    if (error) throw error
-    return data
+    // Senza id: era un insert puro, quindi due salvataggi della stessa cella
+    // della griglia creavano due turni identici. Ora rimpiazza l'eventuale
+    // turno già presente sulla stessa chiave logica.
+    const [saved] = await replaceShifts([payload])
+    return saved
   },
 
   // Aggiorna turno esistente
@@ -2496,9 +2682,10 @@ export const turni = {
       reparto_id:    d.reparto_id || null,
       updated_at:    new Date().toISOString(),
     }))
-    const { data, error } = await supabase.from('shifts').insert(rows).select()
-    if (error) throw error
-    return data
+    // Era .insert(): ogni rigenerazione del piano settimanale duplicava i turni,
+    // raddoppiando ore e costi nei riepiloghi. Ora è idempotente sulla chiave
+    // (employee_id, date, turno_tipo, sede).
+    return replaceShifts(rows)
   },
 
   // Bulk elimina turni per settimana/sede
@@ -2598,25 +2785,29 @@ export const admin = {
     const ts = new Date().toISOString()
     const lbl = label || `Backup ${ts.substring(0, 16).replace('T', ' ')}`
 
-    // Scarica tutte le tabelle in parallelo
+    // Scarica tutte le tabelle in parallelo, PAGINATE (il cap PostgREST è 1000
+    // righe: senza .range() il backup risulterebbe silenziosamente troncato).
+    // sbFetchAll propaga gli errori: meglio nessun backup che un backup finto.
     const [employees, chiusure, fornitori, fatture, buste, shifts, modules, kpiRev, settings] = await Promise.all([
-      supabase.from('employees').select('*').then(r => r.data ?? []),
-      supabase.from('chiusure_giornaliere').select('*').then(r => r.data ?? []),
-      supabase.from('fornitori_fatture').select('*').then(r => r.data ?? []),
-      supabase.from('fatture_importate').select('*').then(r => r.data ?? []),
-      supabase.from('buste_paga').select('*').then(r => r.data ?? []),
-      supabase.from('shifts').select('*').then(r => r.data ?? []),
-      supabase.from('modules').select('*').then(r => r.data ?? []),
-      supabase.from('kpi_revenues').select('*').then(r => r.data ?? []),
-      supabase.from('app_settings').select('*').then(r => r.data ?? []),
+      sbFetchAll('employees'),
+      sbFetchAll('chiusure_giornaliere'),
+      sbFetchAll('fornitori_fatture'),
+      sbFetchAll('fatture_importate'),
+      sbFetchAll('buste_paga'),
+      sbFetchAll('shifts'),
+      sbFetchAll('modules'),
+      sbFetchAll('kpi_revenues'),
+      sbFetchAll('app_settings'),
     ])
 
-    const backupData = {
-      created_at: ts,
-      version:    '1.0',
-      tables: { employees, chiusure_giornaliere: chiusure, fornitori_fatture: fornitori,
-                fatture_importate: fatture, buste_paga: buste, shifts, modules, kpi_revenues: kpiRev, app_settings: settings },
-    }
+    const tables = { employees, chiusure_giornaliere: chiusure, fornitori_fatture: fornitori,
+                     fatture_importate: fatture, buste_paga: buste, shifts, modules,
+                     kpi_revenues: kpiRev, app_settings: settings }
+
+    // Conteggi salvati nello snapshot: restoreBackup li confronta prima di scrivere.
+    const rowCounts = Object.fromEntries(Object.entries(tables).map(([k, v]) => [k, v.length]))
+
+    const backupData = { created_at: ts, version: '1.1', row_counts: rowCounts, tables }
 
     const jsonStr   = JSON.stringify(backupData)
     const sizeKb    = Math.round(jsonStr.length / 1024)
@@ -2627,7 +2818,7 @@ export const admin = {
       size_kb: sizeKb,
     }).select().single()
     if (error) throw error
-    return { id: row.id, label: lbl, size_kb: sizeKb, created_at: ts }
+    return { id: row.id, label: lbl, size_kb: sizeKb, created_at: ts, row_counts: rowCounts }
   },
 
   // Lista backup salvati
@@ -2682,6 +2873,24 @@ export const admin = {
 
     const tables = row.data?.tables || {}
 
+    // 1-bis. Validazione integrità: i backup creati prima della v1.1 sono stati
+    // scritti senza paginazione, quindi ogni tabella oltre le 1000 righe è
+    // TRONCATA. Ripristinarli significa reintrodurre dati parziali.
+    const counts = row.data?.row_counts
+    const warnings = []
+    if (!counts) {
+      const sospette = Object.entries(tables).filter(([, v]) => Array.isArray(v) && v.length === 1000).map(([k]) => k)
+      warnings.push(
+        `Backup in formato ${row.data?.version || 'legacy'} senza row_counts: creato prima del fix di paginazione.` +
+        (sospette.length ? ` Tabelle troncate a 1000 righe (quasi certamente incomplete): ${sospette.join(', ')}.` : '')
+      )
+    } else {
+      for (const [t, n] of Object.entries(counts)) {
+        const actual = Array.isArray(tables[t]) ? tables[t].length : 0
+        if (actual !== n) warnings.push(`${t}: attese ${n} righe nello snapshot, trovate ${actual}`)
+      }
+    }
+
     // Ordine di ripristino rispetta i FK (parents prima di children)
     const RESTORE_ORDER = [
       'roles', 'employees', 'modules', 'app_settings',
@@ -2727,6 +2936,7 @@ export const admin = {
       backup_date:     row.created_at,
       results,
       total_restored,
+      warnings,
     }
   },
 
@@ -3310,7 +3520,7 @@ export const kpiPerformanceApi = {
     const minAnno = Math.min(anno - 1, ...mesiQuery.map(x => x.anno))
     const { data: rows } = await supabase.from('v_fatturato_operatore_mensile')
       .select('anno, mese, operator, pezzi_totali, fatturato_totale, costo_materia_totale, margine_pct')
-      .eq('sede', s).ilike('operator', operatoreName).gte('anno', minAnno)
+      .eq('sede', s).ilike('operator', escapeLike(operatoreName)).gte('anno', minAnno)
     const rowMap = {}
     for (const r of rows || []) rowMap[`${r.anno}-${r.mese}`] = r
     const storico = mesiQuery.map(({ anno, mese }) => ({

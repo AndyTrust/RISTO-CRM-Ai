@@ -85,12 +85,27 @@ function round2(n) { return Math.round(n * 100) / 100 }
  * Unisce i costi orari reali con la config/override, garantendo sempre un valore.
  */
 export function resolveConfig(sede, costiReali = {}, override = {}) {
-  const cfg = { ...DEFAULT_CONFIG, ...override }
+  // FIX: le chiavi null/undefined dell'override non devono sovrascrivere i default
+  // (altrimenti a valle costoSala/costoPct diventavano NaN silenziosamente)
+  const ovr = {}
+  for (const [k, v] of Object.entries(override || {})) if (v != null) ovr[k] = v
+  const cfg = { ...DEFAULT_CONFIG, ...ovr }
   const reali = costiReali[sede] || {}
-  if (override.costo_orario_sala == null && (reali.sala || reali.generico))
+  if (ovr.costo_orario_sala == null && (reali.sala || reali.generico))
     cfg.costo_orario_sala = reali.sala || reali.generico
-  if (override.costo_orario_cucina == null && (reali.cucina || reali.generico))
+  if (ovr.costo_orario_cucina == null && (reali.cucina || reali.generico))
     cfg.costo_orario_cucina = reali.cucina || reali.generico
+  // Fallback finale: garantisce sempre un numero valido sui costi orari
+  // (meglio una stima che un NaN), ma segnala se il valore è un DEFAULT e non
+  // un costo reale calcolato dalle buste paga: senza questo flag la UI
+  // mostrerebbe un costo inventato etichettato come "ok".
+  // Il flag va valutato PER REPARTO: se esiste il costo reale di sala ma non
+  // quello di cucina, il secondo resta comunque una stima.
+  cfg.costo_sala_stimato   = !Number.isFinite(Number(cfg.costo_orario_sala))
+  cfg.costo_cucina_stimato = !Number.isFinite(Number(cfg.costo_orario_cucina))
+  cfg.costo_orario_sala   = Number(cfg.costo_orario_sala)   || DEFAULT_CONFIG.costo_orario_sala
+  cfg.costo_orario_cucina = Number(cfg.costo_orario_cucina) || DEFAULT_CONFIG.costo_orario_cucina
+  cfg.costi_stimati = cfg.costo_sala_stimato || cfg.costo_cucina_stimato
   return cfg
 }
 
@@ -129,19 +144,31 @@ export function suggestStaffing(coperti, incasso, turno, dayType, cfg = DEFAULT_
   const orari = shiftHours(turno, durataMediaMin)
 
   // COSTO LAVORO del turno (€): fissi+cucina ore piene, variabile ore ridotte
-  const oreTurno = turno === 'pranzo' ? cfg.ore_pranzo : cfg.ore_cena
-  const oreVar = cfg.ore_variabile
-  const hcSala = cfg.costo_orario_sala
-  const hcCucina = cfg.costo_orario_cucina
+  // FIX: numeri sempre finiti — un cfg incompleto non deve produrre NaN silenziosi
+  const num = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d)
+  const oreTurno = turno === 'pranzo'
+    ? num(cfg.ore_pranzo, DEFAULT_CONFIG.ore_pranzo)
+    : num(cfg.ore_cena, DEFAULT_CONFIG.ore_cena)
+  const oreVar = num(cfg.ore_variabile, DEFAULT_CONFIG.ore_variabile)
+  const hcSala = num(cfg.costo_orario_sala, NaN)
+  const hcCucina = num(cfg.costo_orario_cucina, NaN)
+  const costiOk = Number.isFinite(hcSala) && Number.isFinite(hcCucina)
   const costoSala = salaFissi * oreTurno * hcSala + salaVar * oreVar * hcSala
   const costoCucina = cucinaTot * oreTurno * hcCucina
-  const costoLavoro = Math.round(costoSala + costoCucina)
-  const costoPct = incasso > 0 ? Math.round(costoLavoro / incasso * 1000) / 10 : null
+  const costoTot = costoSala + costoCucina
+  const costoLavoro = costiOk && Number.isFinite(costoTot) ? Math.round(costoTot) : null
+  const costoPct = costoLavoro != null && incasso > 0 ? Math.round(costoLavoro / incasso * 1000) / 10 : null
 
   // Valutazione efficienza
   const copPerOp = totStaff > 0 ? Math.round((cop / totStaff) * 10) / 10 : null
   let stato = 'ok'
-  if (costoPct != null && costoPct > (cfg.target_costo_pct || 28) + 6) stato = 'alto'
+  // Costi orari non disponibili → lo segnaliamo invece di mostrare NaN come "ok".
+  // Raggiungibile quando suggestStaffing riceve un cfg NON prodotto da
+  // resolveConfig (che invece garantisce sempre un default finito).
+  if (!costiOk) stato = 'dati_mancanti'
+  // Costo calcolato ma sui valori di default: è una stima, non un dato reale
+  else if (cfg.costi_stimati) stato = 'stimato'
+  else if (costoPct != null && costoPct > (cfg.target_costo_pct || 28) + 6) stato = 'alto'
   else if (copPerOp != null && copPerOp > tc) stato = 'sottodimensionato'
   else if (costoPct != null && costoPct < (cfg.target_costo_pct || 28) - 10 && cop > 0) stato = 'ottimo'
 
@@ -149,6 +176,12 @@ export function suggestStaffing(coperti, incasso, turno, dayType, cfg = DEFAULT_
     coperti: cop, incasso: Math.round(incasso || 0),
     salaFissi, salaVar, cuochi, lavapiatti, totStaff,
     copPerOp, costoLavoro, costoPct, stato,
+    // `costi_stimati` viene da resolveConfig: il costo è calcolato ma sui valori
+    // di default, non su buste paga reali. Il numero è mostrabile, ma va detto.
+    costiStimati: !!cfg.costi_stimati,
+    warning: !costiOk
+      ? 'Costo orario non disponibile (buste paga/config mancanti)'
+      : (cfg.costi_stimati ? 'Costo orario stimato: nessuna busta paga per questa sede' : null),
     entrata: orari.entrata, uscita: orari.uscita,
     entrataVar: orari.entrataVar, uscitaVar: orari.uscitaVar,
   }

@@ -55,22 +55,65 @@ function oreToSett(ore) {
 }
 
 // ─── Modal: Modifica / Nuovo dipendente ────────────────────────────────────
-function EmployeeForm({ initial, reparti, ruoliDB, onSave, onClose }) {
+// Esportato per riuso in BustePaga e altre pagine
+export function EmployeeForm({ initial, reparti, ruoliDB, onSave, onClose }) {
   // Leggi i valori ore dalle regole in initial (non da initial direttamente, che è il record employees)
   const initOreMensili = initial?.regole?.ore_contratto_mensili ?? initial?.ore_contratto_mensili ?? ''
   const initOreSett    = initial?.regole?.ore_settimanali       ?? initial?.ore_settimanali       ?? ''
   const initPct        = initOreMensili ? oreToPercent(initOreMensili) : ''
+  // Default reparto_split: se vuoto, deriva da reparto_id (100% su quello)
+  const initRepartoSplit = (() => {
+    const rs = initial?.reparto_split
+    if (rs && Object.keys(rs).length > 0) return rs
+    if (initial?.reparto_id) return { [initial.reparto_id]: 100 }
+    return {}
+  })()
 
   const [form, setForm] = useState({
     name: '', role: 'Cameriere', sede: 'MA',
     hire_date: '', notes: '', reparto_id: '', buste_paga_name: '',
     sede_split_ma: 100,
     ...initial,
-    // Ore: sovrascriviamo DOPO ...initial per evitare undefined da employee row
+    // Sovrascrivi DOPO ...initial per evitare undefined da employee row
+    reparto_split:         initRepartoSplit,
     ore_contratto_mensili: initOreMensili,
     ore_settimanali:       initOreSett,
     percentuale_pt:        initPct,
   })
+
+  // ── Helpers split reparti ─────────────────────────────────────────────
+  const repartoSplitTotal = Object.values(form.reparto_split || {})
+    .reduce((s, v) => s + (parseFloat(v) || 0), 0)
+
+  const setRepartoPct = (rid, pct) => {
+    const v = Math.max(0, Math.min(100, parseInt(pct) || 0))
+    setForm(f => {
+      const next = { ...(f.reparto_split || {}) }
+      if (v === 0) delete next[rid]
+      else next[rid] = v
+      // Aggiorna anche reparto_id come quello con % più alta (per compat)
+      const top = Object.entries(next).sort(([,a],[,b]) => b - a)[0]
+      return { ...f, reparto_split: next, reparto_id: top ? top[0] : null }
+    })
+  }
+
+  const setRepartoSinglo = (rid) => {
+    setForm(f => ({
+      ...f,
+      reparto_split: rid ? { [rid]: 100 } : {},
+      reparto_id: rid || null,
+    }))
+  }
+
+  const distribuisciEquamente = () => {
+    const ids = reparti.map(r => r.id)
+    if (ids.length === 0) return
+    const base = Math.floor(100 / ids.length)
+    const rest = 100 - base * ids.length
+    const next = {}
+    ids.forEach((id, i) => { next[id] = base + (i === 0 ? rest : 0) })
+    setForm(f => ({ ...f, reparto_split: next, reparto_id: ids[0] }))
+  }
   const [saving, setSaving]   = useState(false)
   const [saveErr, setSaveErr] = useState(null)
 
@@ -165,23 +208,13 @@ function EmployeeForm({ initial, reparti, ruoliDB, onSave, onClose }) {
               onChange={e => set('buste_paga_name', e.target.value.toUpperCase())}
               placeholder="Es. MARIO (nome breve usato nei cedolini)" />
           </div>
-          {/* Reparto + Sede */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs text-gray-500 mb-1 block">Reparto</label>
-              <select className="select" value={form.reparto_id || ''}
-                onChange={e => set('reparto_id', e.target.value || null)}>
-                <option value="">— Nessun reparto —</option>
-                {reparti.map(r => <option key={r.id} value={r.id}>{r.icona} {r.nome}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="text-xs text-gray-500 mb-1 block">Locale *</label>
-              <select className="select" value={form.sede} onChange={e => set('sede', e.target.value)}>
-                <option value="MA">Sede MA (Sede MA)</option>
-                <option value="PN">Sede PN (Sede PN)</option>
-              </select>
-            </div>
+          {/* Sede principale */}
+          <div>
+            <label className="text-xs text-gray-500 mb-1 block">Sede principale *</label>
+            <select className="select" value={form.sede} onChange={e => set('sede', e.target.value)}>
+              <option value="MA">Mameli (Cagliari)</option>
+              <option value="PN">Predda Niedda (Sassari)</option>
+            </select>
           </div>
           {/* Ruolo */}
           <div>
@@ -191,19 +224,99 @@ function EmployeeForm({ initial, reparti, ruoliDB, onSave, onClose }) {
               {!ROLES_BY_REPARTO.includes(form.role) && <option>{form.role}</option>}
             </select>
           </div>
-          {/* Split sedi */}
-          <div>
-            <label className="text-xs text-gray-500 mb-1 block">
-              Ripartizione costo sedi
-              <span className="ml-1 text-gray-400">({form.sede_split_ma ?? 100}% MA · {100 - (form.sede_split_ma ?? 100)}% PN)</span>
-            </label>
+          {/* ── Ripartizione costo sedi ─────────────────────────────── */}
+          <div className="bg-violet-50 border border-violet-200 rounded-xl p-3">
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs font-semibold text-violet-900">
+                Ripartizione costo per sede
+              </label>
+              <span className="text-xs font-bold text-violet-700">
+                {form.sede_split_ma ?? 100}% MA · {100 - (form.sede_split_ma ?? 100)}% PN
+              </span>
+            </div>
             <input type="range" min="0" max="100" step="10"
               className="w-full accent-violet-600"
               value={form.sede_split_ma ?? 100}
               onChange={e => set('sede_split_ma', parseInt(e.target.value))} />
-            <div className="flex justify-between text-xs text-gray-400 mt-0.5">
+            <div className="flex justify-between text-[10px] text-gray-500 mt-0.5">
               <span>100% PN</span><span>50/50</span><span>100% MA</span>
             </div>
+            <div className="flex gap-1 mt-2">
+              {[
+                { label: '100% MA', v: 100 },
+                { label: '75/25', v: 75 },
+                { label: '50/50', v: 50 },
+                { label: '25/75', v: 25 },
+                { label: '100% PN', v: 0 },
+              ].map(p => (
+                <button key={p.label} type="button"
+                  onClick={() => set('sede_split_ma', p.v)}
+                  className={`text-[11px] px-2 py-0.5 rounded-full border transition-colors ${
+                    form.sede_split_ma === p.v
+                      ? 'bg-violet-600 text-white border-violet-600'
+                      : 'bg-white text-gray-600 border-gray-200 hover:border-violet-400'
+                  }`}>{p.label}</button>
+              ))}
+            </div>
+          </div>
+          {/* ── Ripartizione per reparto ────────────────────────────── */}
+          <div className={`border rounded-xl p-3 ${
+            repartoSplitTotal === 100 ? 'bg-emerald-50 border-emerald-200'
+            : repartoSplitTotal === 0 ? 'bg-gray-50 border-gray-200'
+            : 'bg-amber-50 border-amber-300'
+          }`}>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs font-semibold text-gray-800">
+                Ripartizione costo per reparto
+              </label>
+              <span className={`text-xs font-bold ${
+                repartoSplitTotal === 100 ? 'text-emerald-700'
+                : repartoSplitTotal === 0 ? 'text-gray-500'
+                : 'text-amber-700'
+              }`}>
+                Totale: {repartoSplitTotal}%
+                {repartoSplitTotal !== 100 && repartoSplitTotal !== 0 && ' ⚠️'}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-2 mb-2">
+              {reparti.map(r => {
+                const pct = form.reparto_split?.[r.id] || 0
+                return (
+                  <div key={r.id} className={`flex items-center gap-2 px-2 py-1.5 rounded-lg border ${
+                    pct > 0 ? 'bg-white border-violet-300' : 'bg-white/50 border-gray-200'
+                  }`}>
+                    <span className="text-base">{r.icona}</span>
+                    <span className="text-xs font-medium flex-1 truncate">{r.nome}</span>
+                    <input type="number" min="0" max="100" step="5"
+                      className="w-14 text-center text-xs font-bold border border-gray-300 rounded px-1 py-0.5"
+                      value={pct || ''}
+                      placeholder="0"
+                      onChange={e => setRepartoPct(r.id, e.target.value)} />
+                    <span className="text-xs text-gray-400">%</span>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="flex gap-1 flex-wrap">
+              <button type="button" onClick={distribuisciEquamente}
+                className="text-[11px] px-2 py-0.5 rounded-full border border-violet-300 text-violet-700 bg-white hover:bg-violet-100">
+                Distribuisci equamente
+              </button>
+              {reparti.map(r => (
+                <button key={r.id} type="button"
+                  onClick={() => setRepartoSinglo(r.id)}
+                  className="text-[11px] px-2 py-0.5 rounded-full border border-gray-200 text-gray-600 bg-white hover:border-violet-400">
+                  100% {r.nome}
+                </button>
+              ))}
+              <button type="button" onClick={() => setRepartoSinglo(null)}
+                className="text-[11px] px-2 py-0.5 rounded-full border border-gray-200 text-gray-400 hover:text-red-500 hover:border-red-300">
+                ✕ Azzera
+              </button>
+            </div>
+            <p className="text-[10px] text-gray-500 mt-2">
+              Es. 50% Sala + 50% Cucina → il costo viene spalmato per analisi marginalità reparto.
+            </p>
           </div>
 
           {/* ── Ore contratto (bidirezionale ↔) ─────────────────────── */}

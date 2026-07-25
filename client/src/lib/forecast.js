@@ -21,7 +21,10 @@ export function parseISO(s) { return new Date(s + 'T00:00:00') }
 export function dow(s) { return (parseISO(s).getDay() + 6) % 7 }
 export function addDays(s, n) { const d = parseISO(s); d.setDate(d.getDate() + n); return isoDate(d) }
 export function weeksBetween(a, b) {
-  return Math.round((parseISO(b) - parseISO(a)) / (7 * 86400000))
+  // FIX: floor (= settimane COMPLETE trascorse) e non round, altrimenti i bucket
+  // 0-4 / 4-8 settimane risultano asimmetrici e il decay pesa in modo diverso
+  // giorni appartenenti alla stessa settimana.
+  return Math.floor((parseISO(b) - parseISO(a)) / (7 * 86400000))
 }
 export const GIORNI = ['Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab', 'Dom']
 export function isWeekend(s) { const d = dow(s); return d >= 5 }

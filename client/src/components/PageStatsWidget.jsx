@@ -49,11 +49,12 @@ export default function PageStatsWidget() {
     mounted.current = true
     const now = Date.now()
 
-    // Usa cache se valida
+    // Usa cache se valida — anche qui va restituito il cleanup, altrimenti
+    // mounted.current resta true dopo l'unmount
     if (_cache && (now - _cacheTs) < CACHE_TTL) {
       setStats(_cache)
       setLoading(false)
-      return
+      return () => { mounted.current = false }
     }
 
     const loadStats = async () => {

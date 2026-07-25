@@ -10,7 +10,7 @@
  *  - ctaIdle / ctaDone: testo bottone
  *  - autoContext: se true, antepone buildCrmContext() al messaggio utente
  */
-import React, { useState, useCallback } from 'react'
+import React, { useState, useCallback, useRef, useEffect } from 'react'
 import { Sparkles, Loader, Scissors, TrendingUp } from 'lucide-react'
 import useClaudeAI from '../hooks/useClaudeAI'
 
@@ -49,8 +49,14 @@ export default function AiAdvisor({
   const [text, setText] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  // Annulla la richiesta/stream in corso quando il componente viene smontato
+  const abortRef = useRef(null)
+  useEffect(() => () => abortRef.current?.abort(), [])
 
   const run = useCallback(async () => {
+    abortRef.current?.abort()
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
     setLoading(true); setError(null); setText('')
     try {
       let userMsg = ''
@@ -65,12 +71,13 @@ export default function AiAdvisor({
       await callClaude(
         [{ role: 'user', content: userMsg }],
         system,
-        { model: 'claude-sonnet-4-6', max_tokens: 1600, stream: true, onChunk: setText },
+        { model: 'claude-sonnet-4-6', max_tokens: 1600, stream: true, onChunk: setText, signal: ctrl.signal },
       )
     } catch (e) {
+      if (e?.name === 'AbortError' || ctrl.signal.aborted) return // annullata: nessun update di stato
       setError(e?.message || 'Errore durante la generazione AI')
     } finally {
-      setLoading(false)
+      if (!ctrl.signal.aborted) setLoading(false)
     }
   }, [autoContext, buildCrmContext, buildUserMessage, callClaude, system])
 

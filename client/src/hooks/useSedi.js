@@ -22,18 +22,28 @@ function fetchSedi() {
     .select('codice, nome, colore, attiva')
     .eq('attiva', true)
     .order('nome')
-    .then(({ data }) => {
+    .then(({ data, error }) => {
+      _fetching = false
+      // Il client Supabase NON rigetta la promise su errore: risolve con
+      // { data: null, error }. Senza leggere `error` la cache verrebbe fissata
+      // a [] in modo permanente (la guardia `if (_cache)` impedisce ogni retry)
+      // e tutti i selettori sede resterebbero vuoti per l'intera sessione.
+      if (error) {
+        _listeners.forEach(fn => fn([]))   // sblocca gli attesi
+        _listeners.length = 0
+        throw error                        // NON popolare _cache: il prossimo tentativo riprova
+      }
       _cache = data ?? []
       _listeners.forEach(fn => fn(_cache))
       _listeners.length = 0
-      _fetching = false
       return _cache
     })
-    .catch(() => {
-      // In caso di errore: sblocca i listener in attesa e consenti un nuovo tentativo
+    .catch(err => {
+      // Errore di rete/parse: sblocca i listener e consenti un nuovo tentativo
       _fetching = false
       _listeners.forEach(fn => fn([]))
       _listeners.length = 0
+      console.error('[useSedi] caricamento sedi fallito:', err?.message || err)
       return []
     })
 }
@@ -62,8 +72,13 @@ export default function useSedi() {
   const [loading, setLoading] = useState(!_cache)
 
   useEffect(() => {
+    let cancelled = false
     if (_cache) { setSedi(_cache); setLoading(false); return }
-    fetchSedi().then(data => { setSedi(data); setLoading(false) })
+    fetchSedi().then(data => {
+      if (cancelled) return              // niente setState su componente smontato
+      setSedi(data); setLoading(false)
+    })
+    return () => { cancelled = true }
   }, [])
 
   const getSedeName = (codice) => {

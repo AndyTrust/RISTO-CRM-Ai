@@ -1514,11 +1514,12 @@ function SyncTab({ onToast }) {
       )
       setTableStats(results.map(r => r.value || { table: '?', count: null, error: 'unknown' }))
 
-      // Carica moduli abilitati
-      const { data: mods } = await supabase
-        .from('modules_config')
-        .select('id, name, enabled')
+      // Fix: la tabella reale è "modules" (modules_config non esiste)
+      const { data: mods, error: errMods } = await supabase
+        .from('modules')
+        .select('id, name, description, enabled')
         .order('name')
+      if (errMods) throw errMods
       if (mods) setModules(mods)
 
     } catch (e) { onToast({ type: 'err', text: e.message }) }
@@ -1529,8 +1530,9 @@ function SyncTab({ onToast }) {
 
   const toggleModule = async (mod) => {
     try {
+      // Fix: toggle sulla tabella reale "modules" (id è text, es. 'dashboard')
       const { error } = await supabase
-        .from('modules_config')
+        .from('modules')
         .update({ enabled: !mod.enabled })
         .eq('id', mod.id)
       if (error) throw error
@@ -1815,10 +1817,13 @@ function UnioneDoppioniTab({ onToast }) {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [{ data: emps }, { data: maps }] = await Promise.all([
-        supabase.from('employees').select('id,name,role,sede,location,active,buste_paga_name,code').order('name'),
+      // Fix: la colonna "location" non esiste su employees (errore 42703 silenzioso → tab Unioni sempre vuota)
+      const [{ data: emps, error: errEmps }, { data: maps, error: errMaps }] = await Promise.all([
+        supabase.from('employees').select('id,name,role,sede,active,buste_paga_name,code').order('name'),
         supabase.from('employee_operator_mapping').select('id,op_name_ipratico,sede,employee_id,verified'),
       ])
+      if (errEmps) throw errEmps
+      if (errMaps) throw errMaps
 
       // Operatori distinti da kpi_revenues
       const { data: kvRows } = await supabase
