@@ -9,7 +9,11 @@
  *  - Duplica da mese precedente
  */
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react'
+import {
+  ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+} from 'recharts'
 import { costiFissiApi, fattureCategorieApi } from '../api/client'
+import supabase from '../supabase'
 import { BottoneCsv, NotaCopertura } from '../lib/tabella'
 import useAnniDisponibili from '../hooks/useAnniDisponibili'
 import {
@@ -235,6 +239,111 @@ function CellaImporto({ value, id, onSaved }) {
     <button className="w-full text-right text-xs px-1.5 py-1 hover:bg-violet-50 rounded" onClick={() => setEditing(true)}>
       {eur(value)}
     </button>
+  )
+}
+
+// ─── Food Cost mensile (vista BI v_food_cost_mensile) ────────────────────
+// Trend food cost per sede sull'anno selezionato: food (dettaglio righe con
+// categoria FOOD), materie prime (food + non food consumabile), % su ricavi
+// netti. La colonna copertura_righe_pct dice quanta spesa ha il dettaglio
+// righe: sotto soglia il food cost è SOTTOSTIMATO e va detto.
+function FoodCostSection({ sedeF, annoF }) {
+  const [rows, setRows] = useState(null)
+  const [errore, setErrore] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let annullato = false
+    setLoading(true); setErrore(null)
+    // ≤ 24 righe/anno (2 sedi × 12 mesi): una query singola basta, ma
+    // l'errore va letto — il client Supabase non rigetta mai da solo.
+    supabase.from('v_food_cost_mensile').select('*')
+      .like('mese', `${annoF}-%`).order('mese', { ascending: true })
+      .then(({ data, error }) => {
+        if (annullato) return
+        if (error) { setErrore(error.message); setRows([]) }
+        else setRows(data || [])
+      })
+      .finally(() => { if (!annullato) setLoading(false) })
+    return () => { annullato = true }
+  }, [annoF])
+
+  const analisi = useMemo(() => {
+    if (!rows) return null
+    const filtrate = sedeF === 'ALL' ? rows : rows.filter(r => r.sede === sedeF)
+    if (!filtrate.length) return null
+    const byMese = {}
+    for (const r of filtrate) {
+      const mn = Number(r.mese.slice(5, 7))
+      if (!byMese[mn]) byMese[mn] = { mese: mn, label: MESI[mn - 1] }
+      // Con sede singola le chiavi sono piatte; con ALL una serie per sede
+      byMese[mn][`fc_${r.sede}`] = r.food_cost_pct != null ? Number(r.food_cost_pct) : null
+      byMese[mn][`food_${r.sede}`] = r.food != null ? Math.round(Number(r.food)) : null
+      byMese[mn][`cop_${r.sede}`] = r.copertura_righe_pct != null ? Number(r.copertura_righe_pct) : null
+    }
+    const serie = Object.values(byMese).sort((a, b) => a.mese - b.mese)
+    const scoperti = filtrate.filter(r => r.copertura_righe_pct != null && Number(r.copertura_righe_pct) < 90)
+    // Media ponderata annua per sede: sum(food)/sum(ricavi)
+    const perSede = {}
+    for (const r of filtrate) {
+      if (!perSede[r.sede]) perSede[r.sede] = { food: 0, ricavi: 0 }
+      perSede[r.sede].food += Number(r.food) || 0
+      perSede[r.sede].ricavi += Number(r.ricavi_netti) || 0
+    }
+    const medie = Object.entries(perSede).map(([s, v]) => ({
+      sede: s, pct: v.ricavi > 0 ? v.food / v.ricavi * 100 : null, food: v.food,
+    }))
+    return { serie, scoperti, medie }
+  }, [rows, sedeF])
+
+  return (
+    <div className="bg-white rounded-2xl border border-gray-200 p-4 space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <h2 className="font-bold text-gray-900 flex items-center gap-2 text-sm"><TrendingUp size={16} className="text-emerald-600"/> Food Cost mensile {annoF}</h2>
+          <p className="text-xs text-gray-400 mt-0.5">Vista <code>v_food_cost_mensile</code>: acquisti FOOD (netto IVA, note di credito sottratte) ÷ ricavi netti — segue i filtri sede e anno di questa pagina.</p>
+        </div>
+        {analisi && (
+          <div className="flex gap-2">
+            {analisi.medie.map(m => (
+              <span key={m.sede} className={`text-xs px-2.5 py-1 rounded-full font-semibold ${m.sede === 'MA' ? 'bg-indigo-50 text-indigo-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                {m.sede}: {m.pct != null ? `${m.pct.toFixed(1)}%` : '—'} anno
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {loading ? (
+        <div className="h-40 bg-gray-50 rounded-xl animate-pulse" />
+      ) : errore ? (
+        <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-3 text-xs">Errore lettura v_food_cost_mensile: {errore}</div>
+      ) : !analisi ? (
+        <p className="text-sm text-gray-400 py-6 text-center">Nessun dato food cost per il {annoF}{sedeF !== 'ALL' ? ` · sede ${sedeF}` : ''}.</p>
+      ) : (<>
+        {analisi.scoperti.length > 0 && (
+          <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-2.5 text-xs">
+            ⚠ Food cost <strong>sottostimato</strong> nei mesi con dettaglio righe incompleto:{' '}
+            {analisi.scoperti.map(r => `${MESI[Number(r.mese.slice(5, 7)) - 1]} ${r.sede} (righe ${Number(r.copertura_righe_pct).toFixed(0)}%, ${eur(r.fatture_senza_dettaglio)} senza dettaglio)`).join(' · ')}
+          </div>
+        )}
+        <ResponsiveContainer width="100%" height={280}>
+          <ComposedChart data={analisi.serie} margin={{ top: 15, right: 30, left: 0, bottom: 5 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+            <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+            <YAxis yAxisId="eur" tickFormatter={v => `€${(v / 1000).toFixed(0)}k`} tick={{ fontSize: 11 }} />
+            <YAxis yAxisId="pct" orientation="right" tickFormatter={v => `${v}%`} tick={{ fontSize: 11 }} domain={[0, 'auto']} />
+            <Tooltip formatter={(v, name) => String(name).includes('%') ? [`${Number(v).toFixed(1)}%`, name] : [eur(v), name]} />
+            <Legend wrapperStyle={{ fontSize: 11 }} />
+            {(sedeF === 'ALL' || sedeF === 'MA') && <Bar yAxisId="eur" dataKey="food_MA" name="Food € MA" fill="#a5b4fc" radius={[3, 3, 0, 0]} />}
+            {(sedeF === 'ALL' || sedeF === 'PN') && <Bar yAxisId="eur" dataKey="food_PN" name="Food € PN" fill="#6ee7b7" radius={[3, 3, 0, 0]} />}
+            {(sedeF === 'ALL' || sedeF === 'MA') && <Line yAxisId="pct" type="monotone" dataKey="fc_MA" name="Food cost % MA" stroke="#4f46e5" strokeWidth={2} connectNulls={false} />}
+            {(sedeF === 'ALL' || sedeF === 'PN') && <Line yAxisId="pct" type="monotone" dataKey="fc_PN" name="Food cost % PN" stroke="#059669" strokeWidth={2} connectNulls={false} />}
+          </ComposedChart>
+        </ResponsiveContainer>
+        <p className="text-[11px] text-gray-400">I buchi nelle linee sono mesi senza dati (non zeri). La differenza MA−PN sul food cost è una delle due leve del pareggio di Mameli.</p>
+      </>)}
+    </div>
   )
 }
 
@@ -491,6 +600,9 @@ export default function CostiFissiPage() {
           </table>
         </div>
       </div>
+
+      {/* Food cost mensile — vista BI, segue sede+anno della pagina */}
+      <FoodCostSection sedeF={sedeF} annoF={annoF} />
 
       {/* Guida inline */}
       <div className="bg-indigo-50 border border-indigo-100 rounded-2xl p-4 text-sm text-indigo-800">

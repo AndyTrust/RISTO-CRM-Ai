@@ -31,7 +31,10 @@ async function sbq(q) {
 async function sbqAll(buildQuery, pageSize = 1000) {
   const out = []
   for (let start = 0; start < 500000; start += pageSize) {
-    const rows = await sbq(buildQuery().range(start, start + pageSize - 1))
+    // Ordine per `id` OBBLIGATORIO: senza un ordinamento univoco Postgres non
+    // garantisce come spezza i pareggi fra una pagina e l'altra, quindi al
+    // confine si ottenevano righe duplicate e altre mai lette — in silenzio.
+    const rows = await sbq(buildQuery().order('id', { ascending: true }).range(start, start + pageSize - 1))
     out.push(...rows)
     if (rows.length < pageSize) break
   }

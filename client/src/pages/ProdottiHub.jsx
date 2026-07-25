@@ -1,11 +1,15 @@
 import { useTabParam } from '../hooks/useTabParam'
-import { Tag, UtensilsCrossed, Coins } from 'lucide-react'
+import { Tag, UtensilsCrossed, Coins, TrendingUp, Scale } from 'lucide-react'
 import ProdottiBi from './ProdottiBi'
 import MenuEngineering from './MenuEngineering'
 import FoodCostEditor from './FoodCostEditor'
+import ProdottiTrend from './ProdottiTrend'
+import MarginiPiatti from './MarginiPiatti'
 
 const TABS = [
   { id: 'bi', label: 'Prodotti BI', icon: Tag, desc: 'Food cost, matrice BCG, top seller' },
+  { id: 'trend', label: 'Trend Mensile', icon: TrendingUp, desc: 'Top/flop movers e variazioni prezzo (v_prodotti_trend_mensile)' },
+  { id: 'margini', label: 'Margini Piatti', icon: Scale, desc: 'Margine e food cost per piatto (v_margine_piatti)' },
   { id: 'menu', label: 'Menu Engineering', icon: UtensilsCrossed, desc: 'Categorie, food cost, classificazione menu' },
   { id: 'foodcost', label: 'Food Cost', icon: Coins, desc: 'Modifica il food cost di ogni prodotto' },
 ]
@@ -40,7 +44,11 @@ export default function ProdottiHub() {
           ))}
         </div>
       </div>
-      {tab === 'bi' ? <ProdottiBi /> : tab === 'foodcost' ? <FoodCostEditor /> : <MenuEngineering />}
+      {tab === 'bi' ? <ProdottiBi />
+        : tab === 'trend' ? <ProdottiTrend />
+        : tab === 'margini' ? <MarginiPiatti />
+        : tab === 'foodcost' ? <FoodCostEditor />
+        : <MenuEngineering />}
     </div>
   )
 }

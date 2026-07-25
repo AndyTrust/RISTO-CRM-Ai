@@ -166,6 +166,9 @@ export default function TurniAnalysisBi() {
             let q = supabase.from('chiusure_turni')
               .select('id, sede, data, turno, incasso, quantita')
               .gte('data', dateFrom).lte('data', dateTo)
+              // Solo pranzo/cena: senza questo filtro qualsiasi altro turno
+              // (null, aperitivo, ...) veniva conteggiato come "pranzo".
+              .in('turno', ['pranzo', 'cena'])
             if (sede !== 'ALL') q = q.eq('sede', sede)
             return q
           },
@@ -211,7 +214,8 @@ export default function TurniAnalysisBi() {
     const base = { incasso: 0, coperti: 0, nTurni: 0 }
     const out = { pranzo: { ...base }, cena: { ...base } }
     for (const r of turni) {
-      const t = r.turno === 'cena' ? 'cena' : 'pranzo'
+      const t = r.turno === 'cena' ? 'cena' : r.turno === 'pranzo' ? 'pranzo' : null
+      if (!t) continue // difesa in profondità: mai contare turni ignoti come pranzo
       out[t].incasso += Number(r.incasso) || 0
       out[t].coperti += Number(r.quantita) || 0
       out[t].nTurni += 1

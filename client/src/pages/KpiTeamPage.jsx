@@ -144,9 +144,15 @@ export default function KpiTeamPage() {
   const [bonusOp, setBonusOp] = useState([])
   const [kpiTeam, setKpiTeam] = useState(null)
   const [loading, setLoading] = useState(false)
+  // BUG storico: `setErrore` era chiamato in 3 punti senza che lo stato
+  // esistesse → ReferenceError a ogni load() e pagina ferma su "caricamento".
+  const [errore, setErrore] = useState(null)
   const [calcOpen, setCalcOpen] = useState(false)
   const [modalOb, setModalOb] = useState({ open: false, initial: null })
   const [showGuida, setShowGuida] = useState(false)
+
+  // Anni chiesti ai dati, non cablati (il selettore partiva fisso dal 2024)
+  const { anni: anniDisponibili } = useAnniDisponibili('chiusure_giornaliere', 'data')
 
   // Param calcolo
   const [premioTeam, setPremioTeam] = useState(500)
@@ -273,8 +279,15 @@ export default function KpiTeamPage() {
       }
     }
 
-    // 2) BE raggiunto o meno
-    if (fatturato < beTotale) {
+    // 2) BE raggiunto o meno — solo se il BE del mese esiste davvero:
+    // con be nullo "fatturato(0) >= beTotale(0)" produceva un falso
+    // "BE coperto — margine € 0,00" su un mese senza dati.
+    if (beTotale <= 0) {
+      out.push({
+        type: 'warn', icon: AlertCircle, title: 'Break-even non disponibile',
+        text: 'Nessun costo registrato per questo mese/sede: impossibile dire se il BE è coperto. Controlla buste paga, fatture e costi fissi del mese.',
+      })
+    } else if (fatturato < beTotale) {
       const gap = beTotale - fatturato
       out.push({
         type: 'err',
@@ -387,7 +400,9 @@ export default function KpiTeamPage() {
           <button onClick={() => setShowGuida(v => !v)} className="btn-secondary text-sm flex items-center gap-1.5">
             <Info size={14} /> Guida
           </button>
-          <button onClick={load} disabled={loading} className="btn-secondary text-sm flex items-center gap-1.5">
+          {/* Mai onClick={load}: l'evento click finirebbe nel parametro `attivo`
+              e `attivo()` su un SyntheticEvent è un TypeError. */}
+          <button onClick={() => load()} disabled={loading} className="btn-secondary text-sm flex items-center gap-1.5">
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Ricarica
           </button>
           <button onClick={() => setCalcOpen(true)} className="btn-primary text-sm flex items-center gap-1.5">
@@ -426,12 +441,12 @@ export default function KpiTeamPage() {
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium text-gray-600">Sede:</span>
           <div className="flex gap-1">
-            {['MA', 'PN'].map(s => (
+            {(sedi.length ? sedi.map(s => s.code).filter(Boolean) : ['MA', 'PN']).map(s => (
               <button key={s} onClick={() => setSede(s)}
                 className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
                   sede === s ? 'bg-indigo-600 text-white shadow' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                 }`}>
-                {s === 'MA' ? 'Sede MA' : 'Sede PN'}
+                Sede {s}
               </button>
             ))}
           </div>
@@ -439,9 +454,9 @@ export default function KpiTeamPage() {
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium text-gray-600">Anno:</span>
           <select className="input text-xs py-1" value={anno} onChange={e => setAnno(parseInt(e.target.value))}>
-            {/* Da 2024 all'anno corrente incluso: `anno-2022` includeva anche
-                l'anno successivo, che non ha ancora dati. */}
-            {Array.from({length:new Date().getFullYear()-2023},(_,i)=>2024+i).map(y => <option key={y} value={y}>{y}</option>)}
+            {/* Anni chiesti ai dati (chiusure_giornaliere), non più cablati "dal 2024". */}
+            {(anniDisponibili.includes(anno) ? anniDisponibili : [...anniDisponibili, anno].sort((a, b) => b - a))
+              .map(y => <option key={y} value={y}>{y}</option>)}
           </select>
         </div>
         <div className="flex items-center gap-2">
@@ -452,6 +467,15 @@ export default function KpiTeamPage() {
         </div>
         {loading && <span className="text-xs text-gray-400 flex items-center gap-1"><RefreshCw size={12} className="animate-spin" /> caricamento...</span>}
       </div>
+
+      {/* Errore persistente: il toast sparisce in 3,5s, questo no. Senza,
+          una lettura fallita era indistinguibile da un mese senza dati. */}
+      {errore && (
+        <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-3 text-sm flex items-start gap-2">
+          <AlertCircle size={16} className="flex-shrink-0 mt-0.5" />
+          <span>Errore nel caricamento: <strong>{errore}</strong> — i numeri sotto potrebbero essere incompleti.</span>
+        </div>
+      )}
 
       {/* KPI Cards principali */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

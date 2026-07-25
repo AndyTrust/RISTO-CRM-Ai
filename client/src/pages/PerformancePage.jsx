@@ -301,17 +301,20 @@ function TabVenduto({ sede, anno, mese }) {
             <tr>
               <th className="text-left px-3 py-2 text-xs font-semibold text-gray-500 uppercase">#</th>
               <th className="text-left px-3 py-2 text-xs font-semibold text-gray-500 uppercase">Operatore</th>
-              <SortBtn id="fatturato" label="Fatturato" />
-              <SortBtn id="pezzi"     label="Pezzi" />
-              <th className="text-right px-3 py-2 text-xs font-semibold text-gray-500 uppercase">% Team</th>
-              <SortBtn id="aggiunte"  label="Aggiunte €" />
+              {/* BUG storico: qui c'erano <SortBtn> e `sorted`, dichiarati DENTRO
+                  TabTavoli e quindi fuori scope → ReferenceError, tab bianco.
+                  Ora si usano ThOrd/righeOrdinate di QUESTO componente. */}
+              <ThOrd col="fatturato" label="Fatturato" />
+              <ThOrd col="pezzi"     label="Pezzi" />
+              <ThOrd col="pctTeam"   label="% Team" />
+              <ThOrd col="aggiunte"  label="Aggiunte €" />
               <th className="px-3 py-2" />
             </tr>
           </thead>
           <tbody>
-            {sorted.map((op, i) => {
-              const pctTeam = totFat > 0 ? (parseFloat(op.fatturato_stimato_operatore)||0) / totFat * 100 : 0
-              const isExp   = expanded === op.operatore
+            {righeOrdinate.map((r, i) => {
+              const op = r.op
+              const isExp = expanded === op.operatore
               return (
                 <React.Fragment key={op.operatore}>
                   <tr
@@ -323,18 +326,18 @@ function TabVenduto({ sede, anno, mese }) {
                     </td>
                     <td className="px-3 py-2.5 font-semibold text-gray-900">{op.operatore}</td>
                     <td className="px-3 py-2.5 text-right font-mono text-indigo-700 font-semibold">
-                      {fmtEur(op.fatturato_stimato_operatore)}
+                      {fmtEur(r.fatturato)}
                     </td>
-                    <td className="px-3 py-2.5 text-right font-mono">{fmt(op.tot_pezzi)}</td>
+                    <td className="px-3 py-2.5 text-right font-mono">{fmt(r.pezzi)}</td>
                     <td className="px-3 py-2.5 w-32">
                       <div className="flex items-center gap-2">
-                        <ProgressBar value={pctTeam} max={100} color="indigo" />
-                        <span className="text-xs text-gray-500 w-10 text-right">{pctTeam.toFixed(1)}%</span>
+                        <ProgressBar value={r.pctTeam} max={100} color="indigo" />
+                        <span className="text-xs text-gray-500 w-10 text-right">{r.pctTeam.toFixed(1)}%</span>
                       </div>
                     </td>
                     <td className="px-3 py-2.5 text-right text-emerald-700 font-mono">
-                      {fmtEur(op.tot_importo_aggiunte)}
-                      <span className="text-gray-400 text-xs ml-1">({fmt(op.tot_aggiunte)} pz)</span>
+                      {fmtEur(r.aggiunte)}
+                      <span className="text-gray-400 text-xs ml-1">({fmt(r.aggiuntePz)} pz)</span>
                     </td>
                     <td className="px-3 py-2.5 text-gray-400">{isExp ? <ChevronUp size={14}/> : <ChevronDown size={14}/>}</td>
                   </tr>
@@ -1314,12 +1317,15 @@ export default function PerformancePage() {
       const filtOps = (ops||[]).filter(o => !PSEUDO_OPS.includes(o.operatore?.toLowerCase()))
       const quantum = cop > 0 && fat > 0 ? fat / cop : 0
       setOverview({ fat, tgt, cop, marg, quantum, n_ops: filtOps.length })
+    }).catch(() => {
+      // Senza questo catch la rejection restava non gestita e l'overview
+      // precedente rimaneva a schermo come se fosse del nuovo mese.
+      setOverview(null)
     }).finally(() => setLoading(false))
   }, [sede, anno, mese])
 
-  const anni = useMemo(() => {
-    const a = []; for (let y = now.getFullYear(); y >= now.getFullYear() - 2; y--) a.push(y); return a
-  }, [])
+  // Anni chiesti ai dati (prima: finestra cablata di 3 anni dall'orologio)
+  const { anni } = useAnniDisponibili('venduto_camerieri', 'data_inizio')
 
   return (
     <div className="p-4 md:p-6 max-w-7xl mx-auto space-y-6">

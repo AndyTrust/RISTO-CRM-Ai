@@ -43,7 +43,11 @@ const PAGINA = 1000
 
 async function leggiPagina(build, orderCol, orderAsc, from) {
   let q = build()
-  if (orderCol) q = q.order(orderCol, { ascending: orderAsc })
+  // Le VISTE spesso non hanno una colonna univoca: si accetta anche un array
+  // di colonne la cui COMBINAZIONE è univoca (es. ['data','sede','ora']),
+  // così l'ordinamento totale resta deterministico fra una pagina e l'altra.
+  const cols = Array.isArray(orderCol) ? orderCol : (orderCol ? [orderCol] : [])
+  for (const c of cols) q = q.order(c, { ascending: orderAsc })
   const { data, error } = await q.range(from, from + PAGINA - 1)
   // Mai `?? []` senza guardare `error`: un guasto RLS o di rete diventerebbe
   // indistinguibile da "nessun dato", ed è così che un errore si traveste da
@@ -56,7 +60,7 @@ async function leggiPagina(build, orderCol, orderAsc, from) {
  * Scarica tutte le righe di una query, a pagine da 1000, in parallelo.
  *
  * @param {() => object} build      ricostruisce la query da zero a ogni pagina
- * @param {string}       orderCol   colonna di ordinamento stabile
+ * @param {string|string[]} orderCol colonna (o combinazione di colonne) di ordinamento stabile
  * @param {object}       [opts]
  * @param {boolean}      [opts.ascending=true]
  * @param {number}       [opts.max=200000]      tetto di sicurezza sulle righe

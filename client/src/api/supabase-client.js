@@ -1597,11 +1597,18 @@ export const analytics = {
       const fromPrev = shiftYears(from, -1)
       const toPrev   = shiftYears(to, -1)
 
-      // Carica periodo corrente + stesso periodo anno precedente
+      // Carica periodo corrente + stesso periodo anno precedente.
+      // FIX: il filtro sede era ignorato — il grafico YoY della Dashboard
+      // sommava sempre MA+PN qualunque sede fosse selezionata.
+      const sedeOverview = locationToSede(p.location)
       const rows = await sbFetchPaged(
-        () => supabase.from('chiusure_giornaliere')
-          .select('id, sede, data, totale_venduto_ipratico, coperti, coperto_medio')
-          .gte('data', fromPrev).lte('data', to),
+        () => {
+          let q = supabase.from('chiusure_giornaliere')
+            .select('id, sede, data, totale_venduto_ipratico, coperti, coperto_medio')
+            .gte('data', fromPrev).lte('data', to)
+          if (sedeOverview) q = q.eq('sede', sedeOverview)
+          return q
+        },
         'id'
       )
 
@@ -1626,14 +1633,22 @@ export const analytics = {
       for (const d of Object.values(byAnnoMese)) {
         const mn = d.mese_num
         if (!byMeseNum[mn]) byMeseNum[mn] = { mese_num: mn, mese_label: MESI_IT_SHORT[mn-1] }
-        if (d.anno === annoPrec) { byMeseNum[mn].venduto_2025 = Math.round(d.venduto); byMeseNum[mn].coperti_2025 = d.coperti }
-        else if (d.anno === annoCorrente) { byMeseNum[mn].venduto_2026 = Math.round(d.venduto); byMeseNum[mn].coperti_2026 = d.coperti }
+        // FIX anni cablati: le chiavi erano LETTERALI `venduto_2025/2026`.
+        // Selezionando un periodo 2024 i dati finivano comunque sotto quelle
+        // chiavi e la Dashboard etichettava le barre con l'anno sbagliato.
+        // Ora le chiavi sono neutre (prec/corr); i vecchi alias restano per
+        // compatibilità ma valgono per l'anno del PERIODO, non dell'orologio.
+        if (d.anno === annoPrec) { byMeseNum[mn].venduto_prec = Math.round(d.venduto); byMeseNum[mn].coperti_prec = d.coperti }
+        else if (d.anno === annoCorrente) { byMeseNum[mn].venduto_corr = Math.round(d.venduto); byMeseNum[mn].coperti_corr = d.coperti }
       }
 
       const yoy = Object.values(byMeseNum).sort((a,b) => a.mese_num - b.mese_num).map(m => ({
         ...m,
-        delta_venduto_pct: m.venduto_2025 > 0 ? Math.round(((m.venduto_2026||0) - m.venduto_2025) / m.venduto_2025 * 1000) / 10 : null,
-        delta_coperti_pct: m.coperti_2025 > 0 ? Math.round(((m.coperti_2026||0) - m.coperti_2025) / m.coperti_2025 * 1000) / 10 : null,
+        // alias legacy (deprecati): tolti quando nessuna pagina li legge più
+        venduto_2025: m.venduto_prec, venduto_2026: m.venduto_corr,
+        coperti_2025: m.coperti_prec, coperti_2026: m.coperti_corr,
+        delta_venduto_pct: m.venduto_prec > 0 ? Math.round(((m.venduto_corr||0) - m.venduto_prec) / m.venduto_prec * 1000) / 10 : null,
+        delta_coperti_pct: m.coperti_prec > 0 ? Math.round(((m.coperti_corr||0) - m.coperti_prec) / m.coperti_prec * 1000) / 10 : null,
       }))
 
       // kpiBox: periodo selezionato vs stesso periodo anno precedente
@@ -1663,10 +1678,10 @@ export const analytics = {
         }
       }
 
-      return { yoy, kpiBox }
+      return { yoy, kpiBox, anno_corrente: annoCorrente, anno_prec: annoPrec }
     } catch (e) {
       console.error('analytics.overview error:', e)
-      return { yoy: [], kpiBox: {} }
+      return { yoy: [], kpiBox: {}, errore: e?.message || String(e) }
     }
   },
 

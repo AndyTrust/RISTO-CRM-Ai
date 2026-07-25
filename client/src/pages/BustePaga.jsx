@@ -1536,6 +1536,215 @@ function CostoPersonaleTab({ costoMensile, sedeFilter }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// TAB — COSTO ORARIO (vista BI v_costo_orario_dipendente)
+// costo_orario = costo_azienda ÷ ore_contratto, per dipendente/mese.
+// Le righe "STIMA ..." (mesi senza cedolino) hanno ore nulle: si mostrano come
+// avviso, mai dentro le medie orarie.
+// ═══════════════════════════════════════════════════════════════════════════
+function CostoOrarioTab({ anno, meseFilter, sedeFilter }) {
+  const [rows, setRows] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [errore, setErrore] = useState(null)
+
+  useEffect(() => {
+    let annullato = false
+    setLoading(true); setErrore(null)
+    fetchPaged(() => {
+      let q = supabase.from('v_costo_orario_dipendente')
+        .select('anno, mese, dipendente, ruolo, reparto, sede_cedolino, costo_azienda, netto, ore_contratto, costo_orario, ore_mancanti')
+        .eq('anno', anno)
+      if (meseFilter > 0) q = q.eq('mese', meseFilter)
+      return q
+    }, ['mese', 'sede_cedolino', 'dipendente'])
+      .then(r => { if (!annullato) setRows(r) })
+      .catch(e => { if (!annullato) { setErrore(e?.message || String(e)); setRows([]) } })
+      .finally(() => { if (!annullato) setLoading(false) })
+    return () => { annullato = true }
+  }, [anno, meseFilter])
+
+  const analisi = useMemo(() => {
+    if (!rows) return null
+    const filtrate = sedeFilter === 'Tutte' ? rows : rows.filter(r => r.sede_cedolino === sedeFilter)
+    if (!filtrate.length) return null
+    const stime = filtrate.filter(r => String(r.dipendente || '').startsWith('STIMA'))
+    const reali = filtrate.filter(r => !String(r.dipendente || '').startsWith('STIMA'))
+
+    // Per dipendente: somma costo/ore sui mesi selezionati
+    const byDip = {}
+    for (const r of reali) {
+      const k = `${r.sede_cedolino}|${r.dipendente}`
+      if (!byDip[k]) byDip[k] = { key: k, dipendente: r.dipendente, ruolo: r.ruolo, reparto: r.reparto, sede: r.sede_cedolino, costo: 0, netto: 0, ore: 0, mesi: 0, oreMancanti: false }
+      const d = byDip[k]
+      d.costo += Number(r.costo_azienda) || 0
+      d.netto += Number(r.netto) || 0
+      if (r.ore_contratto) d.ore += Number(r.ore_contratto)
+      else d.oreMancanti = true
+      d.mesi += 1
+      if (!d.reparto && r.reparto) d.reparto = r.reparto
+      if (!d.ruolo && r.ruolo) d.ruolo = r.ruolo
+    }
+    const dipendenti = Object.values(byDip).map(d => ({
+      ...d,
+      // null (non 0) quando le ore mancano: un costo orario a 0 sarebbe falso
+      costoOrario: d.ore > 0 ? d.costo / d.ore : null,
+      nettoOrario: d.ore > 0 ? d.netto / d.ore : null,
+    }))
+
+    // Per sede: costo orario medio ponderato (solo righe con ore note)
+    const perSede = {}
+    for (const r of reali) {
+      if (!r.ore_contratto) continue
+      const s = r.sede_cedolino
+      if (!perSede[s]) perSede[s] = { costo: 0, ore: 0, n: new Set() }
+      perSede[s].costo += Number(r.costo_azienda) || 0
+      perSede[s].ore += Number(r.ore_contratto)
+      perSede[s].n.add(r.dipendente)
+    }
+    const sedi = Object.entries(perSede).map(([s, v]) => ({
+      sede: s, costoOrario: v.ore > 0 ? v.costo / v.ore : null, dipendenti: v.n.size, ore: v.ore,
+    }))
+
+    // Per reparto (per il grafico)
+    const byRep = {}
+    for (const r of reali) {
+      if (!r.ore_contratto) continue
+      const rep = r.reparto || 'Senza reparto'
+      const k = `${rep}|${r.sede_cedolino}`
+      if (!byRep[k]) byRep[k] = { reparto: rep, sede: r.sede_cedolino, costo: 0, ore: 0 }
+      byRep[k].costo += Number(r.costo_azienda) || 0
+      byRep[k].ore += Number(r.ore_contratto)
+    }
+    const repChart = {}
+    for (const v of Object.values(byRep)) {
+      if (!repChart[v.reparto]) repChart[v.reparto] = { reparto: v.reparto }
+      repChart[v.reparto][v.sede] = Math.round(v.costo / v.ore * 100) / 100
+    }
+
+    const senzaOre = dipendenti.filter(d => d.oreMancanti).length
+    return { dipendenti, sedi, reparti: Object.values(repChart), stime, senzaOre }
+  }, [rows, sedeFilter])
+
+  const ord = useOrdinamento(analisi?.dipendenti ?? [], 'costoOrario', 'desc')
+  const COLONNE_CSV = [
+    { chiave: 'dipendente', etichetta: 'Dipendente' },
+    { chiave: 'sede', etichetta: 'Sede' },
+    { chiave: 'reparto', etichetta: 'Reparto' },
+    { chiave: 'ruolo', etichetta: 'Ruolo' },
+    { chiave: 'mesi', etichetta: 'Mesi' },
+    { chiave: 'ore', etichetta: 'Ore contratto' },
+    { chiave: 'costo', etichetta: 'Costo azienda', valore: r => Math.round(r.costo) },
+    { chiave: 'costoOrario', etichetta: 'Costo orario', valore: r => r.costoOrario != null ? Math.round(r.costoOrario * 100) / 100 : '' },
+    { chiave: 'nettoOrario', etichetta: 'Netto orario', valore: r => r.nettoOrario != null ? Math.round(r.nettoOrario * 100) / 100 : '' },
+  ]
+  const eurH = v => v == null ? '—' : `€ ${Number(v).toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}/h`
+
+  if (loading) return <div className="h-40 rounded-xl bg-gray-700/50 animate-pulse" />
+  if (errore) return (
+    <div className="bg-red-900/20 border border-red-800 rounded-lg p-4 flex gap-3">
+      <AlertCircle size={20} className="text-red-400 flex-shrink-0"/>
+      <div className="text-red-300 text-sm">Errore lettura v_costo_orario_dipendente: {errore}</div>
+    </div>
+  )
+  if (!analisi) return <p className="text-gray-400 text-center py-12">Nessun dato costo orario per i filtri selezionati.</p>
+
+  const sMA = analisi.sedi.find(s => s.sede === 'MA')
+  const sPN = analisi.sedi.find(s => s.sede === 'PN')
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-blue-900/20 border border-blue-800 rounded-lg p-4 flex gap-2">
+        <Info size={18} className="text-blue-400 flex-shrink-0 mt-0.5"/>
+        <div className="text-sm text-blue-300">
+          <p className="font-medium">Costo orario reale = costo azienda ÷ ore da contratto (vista <code>v_costo_orario_dipendente</code>)</p>
+          <p className="text-xs mt-0.5 opacity-80">
+            È la leva contratti: a parità di produttività oraria fra le sedi, un costo orario più alto significa monte-ore contrattuale sovradimensionato rispetto al venduto.
+          </p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <KpiCard label="Costo orario Mameli" value={sMA ? eurH(sMA.costoOrario) : '—'}
+          sub={sMA ? `${sMA.dipendenti} dipendenti · ${Math.round(sMA.ore).toLocaleString('it-IT')} ore` : 'nessun dato'} icon={DollarSign} color="purple"/>
+        <KpiCard label="Costo orario Predda Niedda" value={sPN ? eurH(sPN.costoOrario) : '—'}
+          sub={sPN ? `${sPN.dipendenti} dipendenti · ${Math.round(sPN.ore).toLocaleString('it-IT')} ore` : 'nessun dato'} icon={DollarSign} color="blue"/>
+        <KpiCard label="Differenza MA − PN" value={sMA?.costoOrario != null && sPN?.costoOrario != null ? eurH(sMA.costoOrario - sPN.costoOrario) : '—'}
+          sub="stessa produttività oraria, contratti diversi" icon={TrendingUp} color="amber"/>
+      </div>
+
+      {analisi.stime.length > 0 && (
+        <div className="bg-amber-900/20 border border-amber-600/40 rounded-lg p-3 text-xs text-amber-300">
+          ⚡ {analisi.stime.length} {analisi.stime.length === 1 ? 'mese è una stima' : 'mesi sono stime'} (cedolini non ancora disponibili): quei costi sono esclusi dal calcolo orario, non hanno ore.
+        </div>
+      )}
+
+      {analisi.reparti.length > 0 && (
+        <div className="bg-gray-900 rounded-lg p-6 border border-gray-800">
+          <h3 className="text-lg font-semibold text-white mb-4">Costo orario per reparto — MA vs PN</h3>
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={analisi.reparti} barGap={4}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#374151"/>
+              <XAxis dataKey="reparto" stroke="#9ca3af" tick={{ fontSize: 12 }}/>
+              <YAxis stroke="#9ca3af" tick={{ fontSize: 12 }} tickFormatter={v => `€${v}`}/>
+              <Tooltip contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #4b5563' }}
+                labelStyle={{ color: '#fff' }} formatter={v => eurH(v)}/>
+              <Legend/>
+              <Bar dataKey="MA" name="Mameli" fill="#8b5cf6" radius={[3,3,0,0]}/>
+              <Bar dataKey="PN" name="Predda Niedda" fill="#3b82f6" radius={[3,3,0,0]}/>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      <div className="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
+        <div className="flex items-center justify-between p-4 border-b border-gray-800 flex-wrap gap-2">
+          <div>
+            <h3 className="text-lg font-semibold text-white">Costo orario per dipendente</h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              {analisi.dipendenti.length} dipendenti · {meseFilter > 0 ? `${MESI_FULL[meseFilter-1]} ${anno}` : `anno ${anno}`}
+              {analisi.senzaOre > 0 && ` · ${analisi.senzaOre} con ore contratto mancanti (costo orario non calcolabile)`}
+            </p>
+          </div>
+          <BottoneCsv righe={ord.righeOrdinate} colonne={COLONNE_CSV} nomeFile={`costo_orario_${anno}_${sedeFilter}`} />
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-800/60 text-gray-400 text-xs">
+              <tr>
+                {[['dipendente', 'Dipendente', 'left'], ['sede', 'Sede', 'left'], ['reparto', 'Reparto', 'left'],
+                  ['mesi', 'Mesi', 'right'], ['ore', 'Ore', 'right'], ['costo', 'Costo az.', 'right'],
+                  ['costoOrario', 'Costo €/h', 'right'], ['nettoOrario', 'Netto €/h', 'right']].map(([col, lbl, al]) => (
+                  <th key={col} {...ord.propsTh(col)} className={`text-${al} px-3 py-2.5 font-semibold cursor-pointer select-none hover:text-white whitespace-nowrap`}>
+                    {lbl}<IconaOrdine colonna={col} colonnaAttiva={ord.colonna} direzione={ord.direzione}/>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {ord.righeOrdinate.map(d => (
+                <tr key={d.key} className="border-t border-gray-800 hover:bg-gray-800/40">
+                  <td className="px-3 py-2 text-white font-medium">{d.dipendente}
+                    {d.ruolo && <span className="text-gray-500 text-xs ml-1.5">{d.ruolo}</span>}
+                  </td>
+                  <td className="px-3 py-2 text-gray-400">{d.sede}</td>
+                  <td className="px-3 py-2 text-gray-400">{d.reparto || <span className="text-amber-500/70 text-xs">senza reparto</span>}</td>
+                  <td className="px-3 py-2 text-right text-gray-300">{d.mesi}</td>
+                  <td className="px-3 py-2 text-right text-gray-300">{d.ore > 0 ? Math.round(d.ore) : '—'}</td>
+                  <td className="px-3 py-2 text-right text-purple-300 font-medium">{fmtEur0(d.costo)}</td>
+                  <td className="px-3 py-2 text-right font-semibold text-white">
+                    {d.costoOrario != null ? eurH(d.costoOrario) : <span className="text-amber-500/80 text-xs" title="Ore contratto mancanti">ore n.d.</span>}
+                  </td>
+                  <td className="px-3 py-2 text-right text-emerald-300">{d.nettoOrario != null ? eurH(d.nettoOrario) : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // TAB — DETTAGLIO CEDOLINI
 // ═══════════════════════════════════════════════════════════════════════════
 function DettaglioCedoliniTab({ cedolini, sedeFilter, meseFilter, onRefresh, employees }) {
@@ -1831,8 +2040,19 @@ export default function BustePaga({ startTab = 'riepilogo' }) {
     { id: 'dipendenti', label: 'Dipendenti' },
     { id: 'analisi',    label: 'BI Analisi' },
     { id: 'costo',      label: 'Trend Costi' },
+    { id: 'orario',     label: '€/h Costo Orario' },
     { id: 'dettaglio',  label: 'Cedolini' },
   ]
+
+  // COERENZA filtro→analisi: il filtro Mese veniva applicato solo a Riepilogo
+  // e Cedolini; Dipendenti, BI Analisi e Trend Costi restavano sull'anno
+  // intero senza dirlo. Ora ricevono i dati già filtrati per mese.
+  const cedoliniPeriodo = useMemo(() =>
+    meseFilter > 0 ? (cedolini || []).filter(c => Number(c.mese) === meseFilter) : (cedolini || [])
+  , [cedolini, meseFilter])
+  const costoMensilePeriodo = useMemo(() =>
+    meseFilter > 0 ? (costoMensile || []).filter(c => Number(c.mese) === meseFilter) : (costoMensile || [])
+  , [costoMensile, meseFilter])
 
   return (
     <>
@@ -1958,9 +2178,10 @@ export default function BustePaga({ startTab = 'riepilogo' }) {
         ) : (
           <>
             {activeTab === 'riepilogo'  && <RiepilogoTab anno={anno} mese={meseFilter} sedeFilter={sedeFilter} riepilogo={riepilogo}/>}
-            {activeTab === 'dipendenti' && <DipendentiTab cedolini={cedolini} sedeFilter={sedeFilter} anno={anno} employees={employees} onRefresh={loadData}/>}
-            {activeTab === 'analisi'    && <AnalisiTab cedolini={cedolini} sedeFilter={sedeFilter} anno={anno}/>}
-            {activeTab === 'costo'      && <CostoPersonaleTab costoMensile={costoMensile} sedeFilter={sedeFilter}/>}
+            {activeTab === 'dipendenti' && <DipendentiTab cedolini={cedoliniPeriodo} sedeFilter={sedeFilter} anno={anno} employees={employees} onRefresh={loadData}/>}
+            {activeTab === 'analisi'    && <AnalisiTab cedolini={cedoliniPeriodo} sedeFilter={sedeFilter} anno={anno}/>}
+            {activeTab === 'costo'      && <CostoPersonaleTab costoMensile={costoMensilePeriodo} sedeFilter={sedeFilter}/>}
+            {activeTab === 'orario'     && <CostoOrarioTab anno={anno} meseFilter={meseFilter} sedeFilter={sedeFilter}/>}
             {activeTab === 'dettaglio'  && <DettaglioCedoliniTab cedolini={cedolini} sedeFilter={sedeFilter} meseFilter={meseFilter} onRefresh={loadData} employees={employees}/>}
           </>
         )}

@@ -1091,11 +1091,17 @@ export default function KPIWaiters() {
         // Le fatture duplicate vanno escluse: qui alimentano il calcolo del margine,
         // e contarle due volte gonfia i costi e schiaccia il margine.
         // `.not(...,'is',true)` copre anche is_duplicato NULL (storico).
+        // FIX: senza il filtro sede il margine di una sede veniva calcolato
+        // sottraendo le fatture di ENTRAMBE le sedi.
         result.fatture = await fetchPaged(
-          () => supabase.from('fatture_importate')
-            .select('id,fornitore,totale,data_fattura,p_iva')
-            .gte('data_fattura', dateFrom).lte('data_fattura', dateTo)
-            .not('is_duplicato', 'is', true),
+          () => {
+            let qf = supabase.from('fatture_importate')
+              .select('id,fornitore,totale,data_fattura,p_iva')
+              .gte('data_fattura', dateFrom).lte('data_fattura', dateTo)
+              .not('is_duplicato', 'is', true)
+            if (sedeFilter) qf = qf.eq('sede', sedeFilter)
+            return qf
+          },
           'id'
         )
 

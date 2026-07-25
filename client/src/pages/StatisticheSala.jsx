@@ -496,8 +496,283 @@ function TabTurni({ location, fromDate, toDate }) {
   )
 }
 
-// Deep link: /statistiche?tab=split-turni|operatori|tavoli|giornaliero|turni
-const TAB_IDS = ['split-turni', 'operatori', 'tavoli', 'giornaliero', 'turni']
+// ── Tab Affluenza Oraria — vista BI v_affluenza_oraria (tavoli per ora) ────
+// Copertura della vista chiesta ai dati (stessa filosofia di useCoperturaTavoli):
+// niente date cablate, cache di modulo perché non cambia durante la sessione.
+let cacheCoperturaAffluenza = null
+
+const ORDINE_DOW = [1, 2, 3, 4, 5, 6, 0] // Lun → Dom
+
+function TabAffluenza({ location, fromDate, toDate }) {
+  const sede = location === 'MA' || location === 'PN' ? location : null
+  const [rows, setRows]       = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError]     = useState(null)
+  const [copertura, setCopertura] = useState(cacheCoperturaAffluenza)
+  const [metrica, setMetrica] = useState('coperti') // heatmap: 'coperti' | 'scontrino'
+
+  useEffect(() => {
+    if (cacheCoperturaAffluenza) return
+    let annullato = false
+    supabase.from('v_affluenza_oraria').select('data')
+      .order('data', { ascending: true }).limit(1)
+      .then(({ data, error: err }) => {
+        if (annullato || err) return
+        const d = data?.[0]?.data
+        if (d) { cacheCoperturaAffluenza = d; setCopertura(d) }
+      })
+    return () => { annullato = true }
+  }, [])
+
+  useEffect(() => {
+    if (!fromDate || !toDate) return
+    let annullato = false
+    setLoading(true); setError(null)
+    // La vista non ha una colonna univoca: la combinazione (data, sede, ora,
+    // fascia) sì, quindi la paginazione resta stabile.
+    fetchPaged(() => {
+      let q = supabase.from('v_affluenza_oraria')
+        .select('sede, data, giorno_settimana, ora, fascia, tavoli, coperti, incasso, durata_media_min, scontrino_medio')
+        .gte('data', fromDate).lte('data', toDate)
+      if (sede) q = q.eq('sede', sede)
+      return q
+    }, ['data', 'sede', 'ora', 'fascia'])
+      .then(r => { if (!annullato) setRows(r) })
+      .catch(e => { if (!annullato) { setError(e.message || String(e)); setRows([]) } })
+      .finally(() => { if (!annullato) setLoading(false) })
+    return () => { annullato = true }
+  }, [sede, fromDate, toDate])
+
+  const coverageWarning = Boolean(fromDate && copertura && fromDate < copertura)
+
+  const agg = useMemo(() => {
+    if (!rows.length) return null
+    // Giorni distinti (per dow e totali) per trasformare le somme in medie.
+    const giorniTot = new Set(), giorniDow = Array(7).fill(null).map(() => new Set())
+    const giorniSede = { MA: new Set(), PN: new Set() }
+    for (const r of rows) {
+      giorniTot.add(r.data)
+      giorniDow[r.giorno_settimana]?.add(r.data)
+      giorniSede[r.sede]?.add(r.data)
+    }
+    const nGiorni = giorniTot.size || 1
+
+    // Heatmap dow × ora
+    const heat = {} // `${dow}-${ora}` → { coperti, incasso, tavoli }
+    const perOra = {} // ora → { coperti, incasso, tavoli, fascia }
+    const perOraSede = {} // ora → { MA: coperti, PN: coperti }
+    const perFascia = { pranzo: { coperti: 0, tavoli: 0, incasso: 0, durataPesata: 0 }, cena: { coperti: 0, tavoli: 0, incasso: 0, durataPesata: 0 } }
+    const oreSet = new Set()
+    for (const r of rows) {
+      const cop = Number(r.coperti) || 0, inc = Number(r.incasso) || 0, tav = Number(r.tavoli) || 0
+      oreSet.add(r.ora)
+      const hk = `${r.giorno_settimana}-${r.ora}`
+      if (!heat[hk]) heat[hk] = { coperti: 0, incasso: 0, tavoli: 0 }
+      heat[hk].coperti += cop; heat[hk].incasso += inc; heat[hk].tavoli += tav
+      if (!perOra[r.ora]) perOra[r.ora] = { ora: r.ora, coperti: 0, incasso: 0, tavoli: 0, fascia: r.fascia }
+      perOra[r.ora].coperti += cop; perOra[r.ora].incasso += inc; perOra[r.ora].tavoli += tav
+      if (!perOraSede[r.ora]) perOraSede[r.ora] = { ora: r.ora, MA: 0, PN: 0 }
+      if (perOraSede[r.ora][r.sede] != null) perOraSede[r.ora][r.sede] += cop
+      const f = perFascia[r.fascia]
+      if (f) { f.coperti += cop; f.tavoli += tav; f.incasso += inc; f.durataPesata += (Number(r.durata_media_min) || 0) * tav }
+    }
+    const ore = [...oreSet].sort((a, b) => a - b)
+
+    const curva = ore.map(o => {
+      const p = perOra[o]
+      return {
+        ora: o, label: `${String(o).padStart(2, '0')}:00`, fascia: p.fascia,
+        copertiMedi: Math.round(p.coperti / nGiorni * 10) / 10,
+        copertiTot: p.coperti,
+        scontrino: p.coperti > 0 ? p.incasso / p.coperti : null,
+      }
+    })
+    const curvaSedi = ore.map(o => {
+      const s = perOraSede[o]
+      return {
+        ora: o, label: `${String(o).padStart(2, '0')}:00`,
+        MA: giorniSede.MA.size > 0 ? Math.round(s.MA / giorniSede.MA.size * 10) / 10 : null,
+        PN: giorniSede.PN.size > 0 ? Math.round(s.PN / giorniSede.PN.size * 10) / 10 : null,
+      }
+    })
+
+    // Celle heatmap: media coperti per apertura di quel giorno-settimana
+    const celle = {}
+    let maxCoperti = 0, maxScontrino = 0
+    for (const dow of ORDINE_DOW) {
+      const nG = giorniDow[dow].size
+      for (const o of ore) {
+        const h = heat[`${dow}-${o}`]
+        if (!h || nG === 0) continue
+        const copMedi = h.coperti / nG
+        const scontr = h.coperti > 0 ? h.incasso / h.coperti : null
+        celle[`${dow}-${o}`] = { copMedi, scontrino: scontr, tavoli: h.tavoli, copertiTot: h.coperti, nGiorni: nG }
+        if (copMedi > maxCoperti) maxCoperti = copMedi
+        if (scontr != null && scontr > maxScontrino) maxScontrino = scontr
+      }
+    }
+
+    const fasce = ['pranzo', 'cena'].map(k => {
+      const f = perFascia[k]
+      return {
+        fascia: k, coperti: f.coperti, tavoli: f.tavoli, incasso: f.incasso,
+        copertiGiorno: Math.round(f.coperti / nGiorni * 10) / 10,
+        scontrino: f.coperti > 0 ? f.incasso / f.coperti : null,
+        durata: f.tavoli > 0 ? Math.round(f.durataPesata / f.tavoli) : null,
+      }
+    })
+    const totCoperti = fasce.reduce((s, f) => s + f.coperti, 0)
+    const totIncasso = fasce.reduce((s, f) => s + f.incasso, 0)
+    const oraPicco = curva.length ? curva.reduce((a, b) => (b.copertiMedi > a.copertiMedi ? b : a)) : null
+
+    return { nGiorni, giorniDow: giorniDow.map(s => s.size), ore, curva, curvaSedi, celle, maxCoperti, maxScontrino, fasce, totCoperti, totIncasso, oraPicco }
+  }, [rows])
+
+  if (error) return (
+    <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-4 text-sm flex items-start gap-2">
+      <AlertTriangle size={18} className="flex-shrink-0 mt-0.5"/><span>Errore nel caricamento di v_affluenza_oraria: <strong>{error}</strong></span>
+    </div>
+  )
+  if (loading) return <p className="text-center text-gray-400 py-10 text-sm animate-pulse">Caricamento affluenza oraria...</p>
+
+  return (
+    <div className="space-y-4">
+      {coverageWarning && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-3 text-xs flex items-start gap-2">
+          <AlertTriangle size={16} className="flex-shrink-0 mt-0.5 text-amber-500"/>
+          <span>L'affluenza per fascia oraria esiste solo dal <strong>{copertura?.split('-').reverse().join('/')}</strong> (prima riga in <code>v_affluenza_oraria</code>). Il periodo selezionato inizia prima: questa analisi copre solo la parte disponibile — non è uno zero, è un dato che non c'è.</span>
+        </div>
+      )}
+
+      {!agg ? (
+        <div className="card"><div className="card-body text-center py-8">
+          <p className="text-gray-500">Nessun dato orario nel periodo selezionato.</p>
+          {copertura && <p className="text-xs text-gray-400 mt-1">La vista copre dal {copertura.split('-').reverse().join('/')}.</p>}
+        </div></div>
+      ) : (<>
+        {/* KPI fascia */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <KPICard icon={Users} label="Coperti nel periodo" value={num(agg.totCoperti)}
+            subtitle={`${agg.nGiorni} giorni con dati orari`} color="bg-indigo-50 text-indigo-600"
+            info="Somma dei coperti con orario noto (v_affluenza_oraria). Può differire leggermente dai coperti di cassa: qui contano solo i tavoli tracciati."/>
+          <KPICard icon={Clock} label="Ora di punta" value={agg.oraPicco ? agg.oraPicco.label : '—'}
+            subtitle={agg.oraPicco ? `${agg.oraPicco.copertiMedi} coperti medi/giorno` : ''} color="bg-violet-50 text-violet-600"
+            info="Ora con la media più alta di coperti per giorno di apertura, nel periodo e sede selezionati."/>
+          {agg.fasce.map(f => (
+            <KPICard key={f.fascia} icon={f.fascia === 'pranzo' ? TrendingUp : ReceiptText}
+              label={`Scontrino ${f.fascia}`}
+              value={f.scontrino != null ? eur(f.scontrino) : '—'}
+              subtitle={`${f.copertiGiorno} coperti/giorno · ${f.durata != null ? f.durata + '′ al tavolo' : 'durata n.d.'}`}
+              color={f.fascia === 'pranzo' ? 'bg-blue-50 text-blue-600' : 'bg-indigo-50 text-indigo-600'}
+              info={`Incasso ÷ coperti della fascia ${f.fascia} (v_affluenza_oraria), con media coperti per giorno di apertura e permanenza media pesata sui tavoli.`}/>
+          ))}
+        </div>
+
+        {/* Heatmap giorno × ora */}
+        <div className="card">
+          <div className="card-header flex flex-wrap items-center justify-between gap-2">
+            <h2 className="font-semibold flex items-center gap-1">Heatmap giorno × ora
+              <Info_ text="Ogni cella = media per giorno di apertura di quel giorno della settimana, nell'ora indicata. Fonte v_affluenza_oraria (orario di apertura del tavolo)."/>
+            </h2>
+            <div className="flex gap-1 text-xs">
+              {[['coperti', 'Coperti medi'], ['scontrino', 'Scontrino medio']].map(([id, lbl]) => (
+                <button key={id} onClick={() => setMetrica(id)}
+                  className={`px-3 py-1.5 rounded-lg border font-medium transition-colors ${
+                    metrica === id ? 'bg-violet-600 border-violet-600 text-white' : 'bg-white border-gray-200 text-gray-600 hover:border-violet-400'
+                  }`}>{lbl}</button>
+              ))}
+            </div>
+          </div>
+          <div className="card-body overflow-x-auto">
+            <table className="text-xs" style={{ borderCollapse: 'separate', borderSpacing: 2 }}>
+              <thead><tr>
+                <th className="text-left pr-2 font-semibold text-gray-500">Giorno</th>
+                {agg.ore.map(o => <th key={o} className="font-medium text-gray-400 px-1 text-center min-w-[42px]">{String(o).padStart(2, '0')}</th>)}
+              </tr></thead>
+              <tbody>
+                {ORDINE_DOW.map(dow => (
+                  <tr key={dow}>
+                    <td className="pr-2 font-semibold text-gray-600 whitespace-nowrap">
+                      {GIORNI_SHORT[dow]} <span className="text-gray-300 font-normal">({agg.giorniDow[dow]}g)</span>
+                    </td>
+                    {agg.ore.map(o => {
+                      const c = agg.celle[`${dow}-${o}`]
+                      if (!c) return <td key={o} className="text-center text-gray-200 bg-gray-50/60 rounded" style={{ minWidth: 42, height: 30 }}>·</td>
+                      const val = metrica === 'coperti' ? c.copMedi : c.scontrino
+                      const max = metrica === 'coperti' ? agg.maxCoperti : agg.maxScontrino
+                      const int = max > 0 && val != null ? Math.min(1, val / max) : 0
+                      const bg = metrica === 'coperti'
+                        ? `rgba(99, 102, 241, ${0.08 + int * 0.85})`
+                        : `rgba(16, 185, 129, ${0.08 + int * 0.85})`
+                      return (
+                        <td key={o} className="text-center rounded font-medium" style={{ minWidth: 42, height: 30, backgroundColor: bg, color: int > 0.55 ? '#fff' : '#374151' }}
+                          title={`${GIORNI[dow]} ${String(o).padStart(2, '0')}:00 · ${Math.round(c.copMedi * 10) / 10} coperti medi (${c.copertiTot} tot su ${c.nGiorni} giorni) · ${c.scontrino != null ? eur(c.scontrino) + ' scontrino' : 'scontrino n.d.'}`}>
+                          {val != null ? (metrica === 'coperti' ? (Math.round(val * 10) / 10) : Math.round(val)) : '—'}
+                        </td>
+                      )
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="text-[11px] text-gray-400 mt-2">
+              {metrica === 'coperti' ? 'Coperti medi per giorno di apertura.' : 'Scontrino medio (€/coperto) della cella.'} Le celle vuote (·) non hanno tavoli in quell'ora: assenza di dato, non zero.
+            </p>
+          </div>
+        </div>
+
+        {/* Curva oraria pranzo/cena + scontrino */}
+        <div className="card">
+          <div className="card-header"><h2 className="font-semibold flex items-center gap-1">Curva oraria: coperti medi e scontrino
+            <Info_ text="Barre = media coperti per giorno di apertura per ora (blu pranzo, indaco cena). Linea = scontrino medio €/coperto per ora."/></h2></div>
+          <div className="card-body">
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={agg.curva} margin={{ top: 20, right: 30, left: 0, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                <YAxis yAxisId="left" />
+                <YAxis yAxisId="right" orientation="right" tickFormatter={v => `€${v}`} />
+                <Tooltip formatter={(v, n) => n === 'Scontrino medio' ? [eur(v), n] : [v, n]} />
+                <Legend />
+                <Bar yAxisId="left" dataKey="copertiMedi" name="Coperti medi/giorno">
+                  {agg.curva.map(b => <Cell key={b.ora} fill={b.fascia === 'pranzo' ? '#3b82f6' : '#6366f1'} />)}
+                </Bar>
+                <Line yAxisId="right" type="monotone" dataKey="scontrino" name="Scontrino medio" stroke="#f59e0b" strokeWidth={2} dot={false} />
+              </BarChart>
+            </ResponsiveContainer>
+            <div className="flex items-center gap-3 mt-1 text-[11px] text-gray-500">
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-blue-500 inline-block" /> Pranzo</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-indigo-500 inline-block" /> Cena</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Confronto sedi (solo vista globale) */}
+        {!sede && (
+          <div className="card">
+            <div className="card-header"><h2 className="font-semibold flex items-center gap-1">Confronto sedi per ora
+              <Info_ text="Coperti medi per giorno di apertura, per ora: Mameli vs Predda Niedda sullo stesso periodo."/></h2></div>
+            <div className="card-body">
+              <ResponsiveContainer width="100%" height={280}>
+                <LineChart data={agg.curvaSedi} margin={{ top: 20, right: 30, left: 0, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="label" tick={{ fontSize: 11 }} /><YAxis />
+                  <Tooltip />
+                  <Legend formatter={v => SEDE_LABEL[v] || v} />
+                  <Line type="monotone" dataKey="MA" stroke={SEDE_COLOR.MA} strokeWidth={2} dot={false} name="MA" />
+                  <Line type="monotone" dataKey="PN" stroke={SEDE_COLOR.PN} strokeWidth={2} dot={false} name="PN" />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
+      </>)}
+    </div>
+  )
+}
+
+// Deep link: /statistiche?tab=split-turni|affluenza|operatori|tavoli|giornaliero|turni
+const TAB_IDS = ['split-turni', 'affluenza', 'operatori', 'tavoli', 'giornaliero', 'turni']
 
 export default function StatisticheSala() {
   const [tab, setTab] = useTabParam(TAB_IDS, 'split-turni')
@@ -522,6 +797,7 @@ export default function StatisticheSala() {
 
   const tabs = [
     { id: 'split-turni',  label: 'Pranzo / Cena' },
+    { id: 'affluenza',    label: '🕐 Affluenza Oraria' },
     { id: 'operatori',    label: 'Operatori Sala' },
     { id: 'tavoli',       label: 'Tavoli & Stanze' },
     { id: 'giornaliero',  label: 'Trend Giornaliero' },
@@ -914,6 +1190,17 @@ export default function StatisticheSala() {
               </div>
             </div>
           </>)}
+        </div>
+      )}
+
+      {/* ── Affluenza Oraria (vista BI v_affluenza_oraria) ────────────────── */}
+      {tab === 'affluenza' && (
+        <div className="space-y-4">
+          <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 text-xs text-blue-700 flex items-start gap-2">
+            <Info size={14} className="mt-0.5 flex-shrink-0"/>
+            <span>Affluenza per <strong>ora di apertura del tavolo</strong> dalla vista <code>v_affluenza_oraria</code> (heatmap giorno × ora, curve pranzo/cena, scontrino per fascia). Periodo {periodoLabel} · {sedeLabel}.</span>
+          </div>
+          <TabAffluenza location={location} fromDate={fromDate} toDate={toDate} />
         </div>
       )}
 

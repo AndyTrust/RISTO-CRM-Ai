@@ -117,6 +117,124 @@ function ChartTooltip({ active, payload, label }) {
   )
 }
 
+// ── Margine e proiezione per sede (vista BI v_forecast_costi_perdite) ─────
+// Il quadro che i KPI di venduto non raccontano: quanto RESTA per sede dopo
+// tutti i costi, mese per mese, e dove si atterra a fine anno.
+// L'anno segue il periodo selezionato (anno di `dates.to`), la sede il toggle.
+function MargineSedeSection({ anno, locFilter }) {
+  const [rows, setRows] = useState(null)
+  const [errore, setErrore] = useState(null)
+
+  useEffect(() => {
+    let annullato = false
+    setErrore(null)
+    // ≤ 24 righe/anno: query singola, ma l'errore va sempre letto.
+    supabase.from('v_forecast_costi_perdite')
+      .select('tipo, sede, anno, mese, fatturato_lordo, costi_totali, margine, completezza')
+      .eq('anno', anno).order('mese', { ascending: true })
+      .then(({ data, error }) => {
+        if (annullato) return
+        if (error) { setErrore(error.message); setRows([]) }
+        else setRows(data || [])
+      })
+    return () => { annullato = true }
+  }, [anno])
+
+  const sedeSel = locFilter === 'MAMELI' ? 'MA' : locFilter === 'PREDDA_NIEDDA' ? 'PN' : null
+  const MESI_S = ['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic']
+
+  const agg = (rows || []).length === 0 ? null : (() => {
+    const filtrate = sedeSel ? rows.filter(r => r.sede === sedeSel) : rows
+    if (!filtrate.length) return null
+    const byMese = {}
+    const tot = { MA: { cons: 0, prev: 0, mesiCons: 0 }, PN: { cons: 0, prev: 0, mesiCons: 0 } }
+    let stimati = 0
+    for (const r of filtrate) {
+      if (!byMese[r.mese]) byMese[r.mese] = { mese: r.mese, label: MESI_S[r.mese - 1] }
+      const m = Number(r.margine) || 0
+      const prev = r.tipo === 'previsione'
+      byMese[r.mese][`${r.sede}${prev ? '_prev' : ''}`] = Math.round(m)
+      if (tot[r.sede]) {
+        if (prev) tot[r.sede].prev += m
+        else { tot[r.sede].cons += m; tot[r.sede].mesiCons += 1 }
+      }
+      if (r.completezza === 'personale_stimato') stimati += 1
+    }
+    return { serie: Object.values(byMese).sort((a, b) => a.mese - b.mese), tot, stimati }
+  })()
+
+  if (errore) return (
+    <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-3 text-xs">
+      Margine per sede non disponibile (v_forecast_costi_perdite): {errore}
+    </div>
+  )
+  if (!agg) return null
+
+  const CardMargine = ({ sede, colore }) => {
+    const t = agg.tot[sede]
+    if (!t || (sedeSel && sedeSel !== sede)) return null
+    const proiezione = t.cons + t.prev
+    return (
+      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+        <div className="flex items-center gap-2 mb-2">
+          <span className="w-2.5 h-2.5 rounded-full" style={{ background: colore }} />
+          <span className="text-sm font-bold text-gray-800">{sede === 'MA' ? 'Mameli' : 'Predda Niedda'}</span>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <p className="text-[11px] text-gray-400">Margine consuntivo ({t.mesiCons} mesi)</p>
+            <p className={`text-lg font-bold ${t.cons >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>{eur(Math.round(t.cons))}</p>
+          </div>
+          <div>
+            <p className="text-[11px] text-gray-400">Proiezione fine {anno}</p>
+            <p className={`text-lg font-bold ${proiezione >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>{eur(Math.round(proiezione))}</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <h2 className="font-bold text-gray-800 text-sm flex items-center gap-1.5">
+          <Wallet size={15} className="text-violet-600" /> Margine per sede {anno} — consuntivo e proiezione
+        </h2>
+        <Link to="/contabilita" className="text-xs text-indigo-600 hover:underline flex items-center gap-1">
+          Conto economico <ArrowRight size={12} />
+        </Link>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <CardMargine sede="MA" colore="#6366f1" />
+        <CardMargine sede="PN" colore="#10b981" />
+      </div>
+      {agg.stimati > 0 && (
+        <p className="text-[11px] text-amber-600">
+          ⚡ {agg.stimati} {agg.stimati === 1 ? 'riga usa' : 'righe usano'} costo personale stimato (cedolini non ancora arrivati): il consuntivo recente può muoversi.
+        </p>
+      )}
+      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+        <ResponsiveContainer width="100%" height={220}>
+          <BarChart data={agg.serie} barGap={2}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+            <XAxis dataKey="label" tick={{ fontSize: 10 }} />
+            <YAxis tickFormatter={v => `€${(v / 1000).toFixed(0)}k`} tick={{ fontSize: 10 }} />
+            <Tooltip formatter={(v, n) => [eur(v), n]} />
+            <Legend wrapperStyle={{ fontSize: 10 }} />
+            {(!sedeSel || sedeSel === 'MA') && <Bar dataKey="MA" name="MA consuntivo" fill="#6366f1" radius={[3,3,0,0]} />}
+            {(!sedeSel || sedeSel === 'MA') && <Bar dataKey="MA_prev" name="MA previsione" fill="#6366f1" fillOpacity={0.35} radius={[3,3,0,0]} />}
+            {(!sedeSel || sedeSel === 'PN') && <Bar dataKey="PN" name="PN consuntivo" fill="#10b981" radius={[3,3,0,0]} />}
+            {(!sedeSel || sedeSel === 'PN') && <Bar dataKey="PN_prev" name="PN previsione" fill="#10b981" fillOpacity={0.35} radius={[3,3,0,0]} />}
+          </BarChart>
+        </ResponsiveContainer>
+        <p className="text-[11px] text-gray-400 mt-1">
+          Margine = fatturato lordo − costi totali (personale, acquisti, fissi; struttura ripartita 50/50). Barre piene = consuntivo, trasparenti = previsione (v_forecast_costi_perdite).
+        </p>
+      </div>
+    </div>
+  )
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────
 export default function Dashboard() {
   const [period, setPeriod] = useState('month')
@@ -130,32 +248,30 @@ export default function Dashboard() {
   const [daily, setDaily] = useState([])
   const [monthly, setMonthly] = useState([])
   const [yoy, setYoy] = useState([])
+  const [yoyAnni, setYoyAnni] = useState(null) // { corr, prec } dal periodo selezionato
   const [topCoperti, setTopCoperti] = useState([])
   // Customer Experience
   const [cxStats, setCxStats] = useState({ npsScore: null, avgNps: null, nSurveys: 0, tornera: 0, avgVoto: null, nReviews: 0, nNeg: 0 })
 
-  const load = useCallback(async (d, segnalaAnnullato) => {
+  const load = useCallback(async (d, segnalaAnnullato, loc = 'ALL') => {
     const vivo = () => !segnalaAnnullato?.()
     setLoading(true)
     try {
       const prev = prevPeriod(d.from, d.to)
+      const sedeSel = loc === 'MAMELI' ? 'MA' : loc === 'PREDDA_NIEDDA' ? 'PN' : null
 
-      // Determina se mostrare il mensile per anno intero o per il range selezionato
-      const fromYear = new Date(d.from).getFullYear()
-      const toYear   = new Date(d.to).getFullYear()
-      const sameYear = fromYear === toYear
-      // Mensile: anno intero se il range è < 1 mese o > 1 anno, altrimenti usa il range
-      const dayRange = Math.round((new Date(d.to) - new Date(d.from)) / (1000*60*60*24))
-      const mensileParams = dayRange > 31 && sameYear
-        ? { from: d.from, to: d.to }
-        : { year: fromYear }
+      // COERENZA filtro→analisi: il mensile segue SEMPRE il periodo scelto.
+      // Prima, con range ≤31 giorni o a cavallo d'anno, mostrava l'anno intero:
+      // KPI su 7 giorni e grafico su 12 mesi nella stessa pagina.
+      const mensileParams = { from: d.from, to: d.to }
 
       const [curr, p, dailyData, mensileData, yoyData, kpiTeam] = await Promise.all([
         chiusureApi.stats({ from: d.from, to: d.to }).catch(() => []),
         chiusureApi.stats({ from: prev.from, to: prev.to }).catch(() => []),
         chiusureApi.getAll({ from: d.from, to: d.to, limit: 90 }).catch(() => []),
         chiusureApi.mensile(mensileParams).catch(() => []),
-        analyticsApi.overview({ from: d.from, to: d.to }).catch(() => null),
+        // FIX: la sede selezionata ora arriva anche al confronto YoY
+        analyticsApi.overview({ from: d.from, to: d.to, location: loc !== 'ALL' ? loc : undefined }).catch(() => null),
         kpiApi.quantum({ from: d.from, to: d.to }).catch(() => []),
       ])
 
@@ -196,8 +312,12 @@ export default function Dashboard() {
       })
       setMonthly(Object.values(byMese).slice(-8))
 
-      // YoY — analytics.overview() ritorna { yoy, kpiBox }
+      // YoY — analytics.overview() ritorna { yoy, kpiBox, anno_corrente, anno_prec }
       if (yoyData?.yoy) setYoy(yoyData.yoy)
+      // Gli anni del confronto vengono dal PERIODO selezionato, non dall'orologio
+      setYoyAnni(yoyData?.anno_corrente
+        ? { corr: yoyData.anno_corrente, prec: yoyData.anno_prec }
+        : null)
 
       // Top per coperti
       const kqList = Array.isArray(kpiTeam) ? kpiTeam : []
@@ -209,14 +329,24 @@ export default function Dashboard() {
         // di 1000 righe del server. Queste righe vengono aggregate in NPS e
         // voto medio, quindi su un periodo lungo l'NPS era calcolato su un
         // sottoinsieme arbitrario senza alcun errore visibile.
+        // FIX: NPS e recensioni ora seguono anche il filtro sede — prima
+        // cambiare sede non muoveva questi numeri.
         const [survRows, revRows] = await Promise.all([
-          fetchPaged(() => supabase.from('sondaggi_strutturati')
-            .select('id, nps, tornera, data_prenotazione')
-            .gte('data_prenotazione', d.from).lte('data_prenotazione', d.to), 'id'),
+          fetchPaged(() => {
+            let q = supabase.from('sondaggi_strutturati')
+              .select('id, nps, tornera, data_prenotazione')
+              .gte('data_prenotazione', d.from).lte('data_prenotazione', d.to)
+            if (sedeSel) q = q.eq('sede', sedeSel)
+            return q
+          }, 'id'),
           // recensioni_pienissimo non ha `id`: la chiave univoca è id_recensione.
-          fetchPaged(() => supabase.from('recensioni_pienissimo')
-            .select('id_recensione, voto, data_recensione')
-            .gte('data_recensione', d.from).lte('data_recensione', d.to), 'id_recensione'),
+          fetchPaged(() => {
+            let q = supabase.from('recensioni_pienissimo')
+              .select('id_recensione, voto, data_recensione')
+              .gte('data_recensione', d.from).lte('data_recensione', d.to)
+            if (sedeSel) q = q.eq('sede', sedeSel)
+            return q
+          }, 'id_recensione'),
         ])
         const npsVals = (survRows || []).map(r => r.nps).filter(v => v != null)
         const promoters = npsVals.filter(v => v >= 9).length
@@ -242,10 +372,12 @@ export default function Dashboard() {
   useEffect(() => {
     // Guardia di unmount: senza, cambiare rotta durante il caricamento produce
     // setState su un componente già smontato.
+    // Il filtro sede è nelle dipendenze: NPS/recensioni/YoY sono letti dal
+    // server già filtrati, quindi al cambio sede va rifatto il fetch.
     let annullato = false
-    load(dates, () => annullato)
+    load(dates, () => annullato, locFilter)
     return () => { annullato = true }
-  }, [dates, load])
+  }, [dates, load, locFilter])
 
   const handleApply = (pid, d) => {
     setPeriod(pid)
@@ -554,7 +686,7 @@ export default function Dashboard() {
         {/* YoY confronto */}
         <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="font-bold text-gray-800 text-sm">Confronto Anno su Anno ({new Date().getFullYear() - 1} vs {new Date().getFullYear()})</h2>
+            <h2 className="font-bold text-gray-800 text-sm">Confronto Anno su Anno ({yoyAnni ? `${yoyAnni.prec} vs ${yoyAnni.corr}` : 'periodo selezionato vs anno precedente'})</h2>
             <Link to="/analytics" className="text-xs text-indigo-600 hover:underline flex items-center gap-1">
               BI <ArrowRight size={12} />
             </Link>
@@ -567,8 +699,11 @@ export default function Dashboard() {
                 <YAxis tickFormatter={v => `€${(v/1000).toFixed(0)}k`} tick={{ fontSize: 10 }} />
                 <Tooltip content={<ChartTooltip />} />
                 <Legend wrapperStyle={{ fontSize: 10 }} />
-                <Bar dataKey={`venduto_${new Date().getFullYear() - 1}`} name={String(new Date().getFullYear() - 1)} fill="#cbd5e1" radius={[3,3,0,0]} />
-                <Bar dataKey={`venduto_${new Date().getFullYear()}`} name={String(new Date().getFullYear())} fill="#6366f1" radius={[3,3,0,0]} />
+                {/* Chiavi NEUTRE dell'API (venduto_prec/corr): con le chiavi
+                    cablate venduto_2025/2026 un periodo 2024 mostrava barre
+                    di anni diversi da quelli in legenda. */}
+                <Bar dataKey="venduto_prec" name={yoyAnni ? String(yoyAnni.prec) : 'Anno prec.'} fill="#cbd5e1" radius={[3,3,0,0]} />
+                <Bar dataKey="venduto_corr" name={yoyAnni ? String(yoyAnni.corr) : 'Anno periodo'} fill="#6366f1" radius={[3,3,0,0]} />
               </BarChart>
             </ResponsiveContainer>
           ) : (
@@ -578,6 +713,9 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+
+      {/* ── Margine per sede + proiezione fine anno (v_forecast_costi_perdite) ── */}
+      <MargineSedeSection anno={Number((dates?.to || '').slice(0, 4)) || new Date().getFullYear()} locFilter={locFilter} />
 
       {/* ── Top operatori per coperti ── */}
       {topCoperti.length > 0 && (

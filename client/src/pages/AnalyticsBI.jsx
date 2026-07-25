@@ -17,14 +17,16 @@ import PageAssistant from '../components/PageAssistant'
 import PageStatsWidget from '../components/PageStatsWidget'
 
 // ── Helpers periodo ──────────────────────────────────────────────────────────
-// Range mesi (1-12) coperto dal periodo selezionato, solo per l'anno corrente
+// Range mesi (1-12) coperto dal periodo selezionato.
+// FIX: era ancorato a new Date().getFullYear() — un periodo interamente in un
+// anno passato restituiva {from:0,to:0} e svuotava BE e YoY pur avendo dati.
+// L'anno di riferimento è quello del periodo stesso (anno di `to`), coerente
+// con analytics.overview che confronta l'anno di `to` col precedente.
 function monthsInRange(dates) {
-  const year = new Date().getFullYear()
   if (!dates?.from || !dates?.to) return { from: 1, to: 12 }
   const [fy, fm] = dates.from.split('-').map(Number)
   const [ty, tm] = dates.to.split('-').map(Number)
-  if (ty < year || fy > year) return { from: 0, to: 0 } // periodo fuori dall'anno corrente
-  return { from: fy < year ? 1 : fm, to: ty > year ? 12 : tm }
+  return { from: fy < ty ? 1 : fm, to: tm }
 }
 
 function periodLabel(period, dates) {
@@ -376,12 +378,15 @@ function OverviewSection({ overview, loading, meseRange, periodoAttivo }) {
             <YAxis tickFormatter={v => tab === 'venduto' ? `€${(Number(v ?? 0)/1000).toFixed(0)}k` : Number(v ?? 0).toLocaleString()} tick={{ fontSize: 11 }} />
             <Tooltip content={<CustomTooltip prefix={tab === 'venduto' ? '€' : ''} />} />
             <Legend wrapperStyle={{ fontSize: 11 }} />
+            {/* Chiavi NEUTRE dell'API (prec/corr): quelle cablate venduto_2025/
+                2026 avrebbero mostrato barre vuote dal 2027 e dati di anni
+                sbagliati sui periodi storici. */}
             {tab === 'venduto' ? <>
-              <Bar dataKey="venduto_2025" name={String(annoC - 1)} fill="#cbd5e1" radius={[3,3,0,0]} />
-              <Bar dataKey="venduto_2026" name={String(annoC)} fill={C.MA} radius={[3,3,0,0]} />
+              <Bar dataKey="venduto_prec" name={String(annoP)} fill="#cbd5e1" radius={[3,3,0,0]} />
+              <Bar dataKey="venduto_corr" name={String(annoC)} fill={C.MA} radius={[3,3,0,0]} />
             </> : <>
-              <Bar dataKey="coperti_2025" name={`Coperti ${annoC - 1}`} fill="#cbd5e1" radius={[3,3,0,0]} />
-              <Bar dataKey="coperti_2026" name={`Coperti ${annoC}`} fill={C.PN} radius={[3,3,0,0]} />
+              <Bar dataKey="coperti_prec" name={`Coperti ${annoP}`} fill="#cbd5e1" radius={[3,3,0,0]} />
+              <Bar dataKey="coperti_corr" name={`Coperti ${annoC}`} fill={C.PN} radius={[3,3,0,0]} />
             </>}
           </BarChart>
         </ResponsiveContainer>

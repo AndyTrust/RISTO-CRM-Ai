@@ -102,6 +102,7 @@ export default function CamerieriBi() {
   const [mese, setMese] = useState(now.getMonth() + 1)
   const [data, setData] = useState([])
   const [trendData, setTrendData] = useState([])
+  const [opTrend, setOpTrend] = useState([])   // v_operatori_trend_mensile del mese
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [expandedOp, setExpandedOp] = useState(null)
@@ -165,6 +166,19 @@ export default function CamerieriBi() {
         g[r.sede] = (g[r.sede] || 0) + (r.tot_pezzi || 0)
       })
       setTrendData([...grouped.values()].sort((a, b) => a.mese.localeCompare(b.mese)).slice(-6))
+
+      // Trend individuale dalla vista BI v_operatori_trend_mensile:
+      // venduto del mese, quota sul team, mese precedente e media mobile 3 mesi
+      // già calcolati a DB — qui si legge e basta (errore sempre controllato).
+      const meseKey = `${anno}-${String(mese).padStart(2, '0')}-01`
+      let qo = supabase.from('v_operatori_trend_mensile')
+        .select('sede, mese, operatore, pezzi, venduto, quota_pct, venduto_media_3m, venduto_mese_prec')
+        .eq('mese', meseKey)
+      if (sede !== 'ALL') qo = qo.eq('sede', sede)
+      const { data: opTrendRows, error: errOpTrend } = await qo
+      if (errOpTrend) throw errOpTrend
+      if (annullato()) return
+      setOpTrend(opTrendRows || [])
     } catch (e) {
       if (!annullato()) setError(e.message || String(e))
     } finally {
@@ -177,7 +191,11 @@ export default function CamerieriBi() {
     const operatoriAttivi = data.length
     const mediaPezzi = Math.round(data.reduce((s,d)=>s+(d.tot_pezzi||0),0)/data.length)
     const totFatturato = data.reduce((s,d)=>s+(d.fatturato_stimato_operatore||0),0)
-    const mediaPctTarget = data.reduce((s,d)=>s+(d.pct_target||0),0)/data.length
+    // Media SOLO sugli operatori che hanno un target: contare chi non ce l'ha
+    // come 0% schiacciava la media e "senza target" diventava "0%".
+    const conTarget = data.filter(d => d.pct_target != null)
+    const mediaPctTarget = conTarget.length > 0
+      ? conTarget.reduce((s,d)=>s+d.pct_target,0)/conTarget.length : null
     return { operatoriAttivi, mediaPezzi, totFatturato, mediaPctTarget }
   }, [data])
 
@@ -304,7 +322,8 @@ export default function CamerieriBi() {
           <KpiCard icon={Award} label="Fatturato stimato team" color="purple"
             value={(kpis.totFatturato||0).toLocaleString('it-IT',{style:'currency',currency:'EUR'})} sub="fatturato stimato" />
           <KpiCard icon={Target} label="% Target medio team" color="yellow"
-            value={`${(kpis.mediaPctTarget||0).toFixed(0)}%`} sub="raggiungimento quantum" />
+            value={kpis.mediaPctTarget != null ? `${kpis.mediaPctTarget.toFixed(0)}%` : '—'}
+            sub={kpis.mediaPctTarget != null ? 'raggiungimento quantum' : 'nessun operatore con target'} />
         </div>
       )}
 
@@ -406,6 +425,61 @@ export default function CamerieriBi() {
               <Area type="monotone" dataKey="PN" name="Predda Niedda" stroke="#10b981" fill="url(#colorPN)" strokeWidth={2}/>
             </AreaChart>
           </ResponsiveContainer>
+        )}
+      </div>
+
+      {/* TREND INDIVIDUALE — vista BI v_operatori_trend_mensile */}
+      <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
+        <h2 className="text-base font-semibold text-gray-800 mb-1 flex items-center gap-2">
+          <TrendingUp size={16} className="text-purple-500"/> Trend individuale — venduto, quota e variazione
+        </h2>
+        <p className="text-xs text-gray-400 mb-4">
+          Vista <code>v_operatori_trend_mensile</code>: venduto € del mese, quota sul team, variazione vs mese precedente e media mobile 3 mesi. Segue i filtri sede/anno/mese.
+        </p>
+        {opTrend.length === 0 ? (
+          <p className="text-sm text-gray-400 text-center py-6">Nessun dato per questo mese nella vista trend operatori.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-100 text-left text-gray-600">
+                  <th className="pb-2 pr-4 font-semibold">Operatore</th>
+                  {sede === 'ALL' && <th className="pb-2 pr-4 font-semibold">Sede</th>}
+                  <th className="pb-2 pr-4 font-semibold text-right">Pezzi</th>
+                  <th className="pb-2 pr-4 font-semibold text-right">Venduto</th>
+                  <th className="pb-2 pr-4 font-semibold text-right">Quota team</th>
+                  <th className="pb-2 pr-4 font-semibold text-right">vs mese prec.</th>
+                  <th className="pb-2 pr-4 font-semibold text-right">Media 3 mesi</th>
+                  <th className="pb-2 font-semibold text-right">vs media 3m</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...opTrend].sort((a, b) => (Number(b.venduto) || 0) - (Number(a.venduto) || 0)).map(r => {
+                  const venduto = Number(r.venduto) || 0
+                  const prec = r.venduto_mese_prec != null ? Number(r.venduto_mese_prec) : null
+                  const m3 = r.venduto_media_3m != null ? Number(r.venduto_media_3m) : null
+                  // null quando manca la base: "0%" affermerebbe "invariato"
+                  const varPrec = prec != null && prec > 0 ? (venduto - prec) / prec * 100 : null
+                  const varM3 = m3 != null && m3 > 0 ? (venduto - m3) / m3 * 100 : null
+                  const Freccia = ({ v }) => v == null
+                    ? <span className="text-gray-300">—</span>
+                    : <span className={`font-semibold ${v >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>{v >= 0 ? '▲' : '▼'} {Math.abs(v).toFixed(0)}%</span>
+                  return (
+                    <tr key={`${r.sede}|${r.operatore}`} className="border-b border-gray-50 hover:bg-gray-50/60">
+                      <td className="py-2 pr-4 font-medium text-gray-800">{r.operatore}</td>
+                      {sede === 'ALL' && <td className="py-2 pr-4 text-gray-400">{r.sede}</td>}
+                      <td className="py-2 pr-4 text-right">{(Number(r.pezzi) || 0).toLocaleString('it-IT')}</td>
+                      <td className="py-2 pr-4 text-right font-semibold">€ {venduto.toLocaleString('it-IT', { maximumFractionDigits: 0 })}</td>
+                      <td className="py-2 pr-4 text-right">{r.quota_pct != null ? `${Number(r.quota_pct).toFixed(1)}%` : '—'}</td>
+                      <td className="py-2 pr-4 text-right"><Freccia v={varPrec} /></td>
+                      <td className="py-2 pr-4 text-right text-gray-500">{m3 != null ? `€ ${m3.toLocaleString('it-IT', { maximumFractionDigits: 0 })}` : '—'}</td>
+                      <td className="py-2 text-right"><Freccia v={varM3} /></td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
 
