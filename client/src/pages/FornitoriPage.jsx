@@ -544,11 +544,25 @@ function FornitoreDetail({ fornitore, onClose, onUpdated, dateFrom, dateTo }) {
           {tab === 'fatture' && (
             <div className="space-y-3">
               <div className="flex gap-2 flex-wrap">
+                {/* Il conteggio accanto a ogni stato evita il filtro "fantasma":
+                    PARZIALE è previsto dallo schema ma oggi nessuna fattura lo usa
+                    (a DB esistono solo SALDATA e APERTA), e senza il numero il
+                    risultato vuoto sembra un guasto invece che uno stato inutilizzato. */}
                 <div className="flex rounded-xl overflow-hidden border border-gray-200 text-xs font-medium">
-                  {['TUTTI','APERTA','PARZIALE','SALDATA'].map(s => (
-                    <button key={s} onClick={() => setFilterStato(s)}
-                      className={`px-3 py-1.5 ${filterStato===s ? 'bg-violet-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>{s}</button>
-                  ))}
+                  {['TUTTI','APERTA','PARZIALE','SALDATA'].map(s => {
+                    const n = s === 'TUTTI' ? fatture.length : fatture.filter(f => f.stato_pagamento === s).length
+                    return (
+                      <button key={s} onClick={() => setFilterStato(s)} disabled={n === 0 && s !== 'TUTTI'}
+                        title={n === 0 && s !== 'TUTTI' ? `Nessuna fattura in stato ${s}` : undefined}
+                        className={`px-3 py-1.5 ${
+                          filterStato === s ? 'bg-violet-600 text-white'
+                          : n === 0 && s !== 'TUTTI' ? 'bg-gray-50 text-gray-300 cursor-not-allowed'
+                          : 'bg-white text-gray-600 hover:bg-gray-50'
+                        }`}>
+                        {s} <span className="opacity-60">{n}</span>
+                      </button>
+                    )
+                  })}
                 </div>
                 <div className="relative flex-1 min-w-[140px]">
                   <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400"/>
@@ -1139,14 +1153,37 @@ function AllocaSediSection({ dateFrom, dateTo }) {
                   setSelected(s)
                 }}/>
               <div className="flex-1 min-w-0">
-                <p className="font-medium text-gray-800 truncate">{r.fornitore_nome}</p>
+                <p className="font-medium text-gray-800 truncate flex items-center gap-1.5">
+                  {r.fornitore_nome}
+                  {/* Nota di credito: in v_fatture_arricchite il totale è già NEGATIVO.
+                      Senza etichetta un importo con il meno sembra un errore di import. */}
+                  {r.is_nota_credito && (
+                    <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 border border-orange-200 flex-shrink-0">
+                      NC
+                    </span>
+                  )}
+                </p>
                 <p className="text-xs text-gray-400">{r.numero_fattura} · {r.data_fattura} · {r.categoria_tipo || '—'}</p>
               </div>
               <div className="text-right text-xs text-gray-500 flex-shrink-0 w-48">
                 <div>MA {eur(r.importo_ma)} · PN {eur(r.importo_pn)}</div>
-                <div className="text-[10px]">{r.sede_ma_pct}% / {r.sede_pn_pct}% {r.allocazione_manuale ? '· manuale' : '· auto'}</div>
+                {/* sede_presunta = la fattura NON ha una ripartizione salvata e la
+                    vista la spalma 50/50 per convenzione (9.960 fatture storiche
+                    2019-2024). Va detto: prima si leggeva "% / % · auto", che
+                    faceva passare una convenzione per un dato reale. */}
+                {r.sede_presunta ? (
+                  <div className="text-[10px] text-amber-600" title="Nessuna ripartizione salvata: la vista assegna 50/50 per convenzione. Non è un dato rilevato.">
+                    50% / 50% · presunta
+                  </div>
+                ) : (
+                  <div className="text-[10px]">
+                    {r.sede_ma_pct}% / {r.sede_pn_pct}% {r.allocazione_manuale ? '· manuale' : '· auto'}
+                  </div>
+                )}
               </div>
-              <div className="text-right font-semibold text-gray-800 w-24 flex-shrink-0">{eur(r.totale)}</div>
+              <div className={`text-right font-semibold w-24 flex-shrink-0 ${r.is_nota_credito ? 'text-orange-600' : 'text-gray-800'}`}>
+                {eur(r.totale)}
+              </div>
             </div>
           ))}
           {filtered.length > 500 && (

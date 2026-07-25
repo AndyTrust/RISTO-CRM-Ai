@@ -181,12 +181,19 @@ export async function buildCrmContext(options = {}) {
 
         // ── ANALISI PRO-RATA: rapporto costo/fatturato sullo STESSO PERIODO ──
         // Carico fatturato mensile per gli stessi mesi
-        const { data: chTutti } = await supabase
+        // L'anno di partenza era cablato a '2026-01-01': dal 2027 l'analisi
+        // pro-rata avrebbe continuato a caricare anche gli anni passati,
+        // falsando il rapporto costo/fatturato. Si usa l'anno corrente.
+        // .range() invece di .limit(): il cap PostgREST è 1000 righe e queste
+        // vengono aggregate per sede+mese, quindi un troncamento silenzioso
+        // farebbe sparire mesi interi dal denominatore.
+        const { data: chTutti, error: errCh } = await supabase
           .from('chiusure_giornaliere')
           .select('sede, data, totale_venduto_ipratico, coperti')
-          .gte('data', '2026-01-01')
+          .gte('data', `${new Date().getFullYear()}-01-01`)
           .order('data', { ascending: false })
-          .limit(2000)
+          .range(0, 4999)
+        if (errCh) throw errCh
         if (chTutti?.length) {
           // Aggrega fatturato per sede+mese + conta giorni con fatturato
           const fatMese = {}

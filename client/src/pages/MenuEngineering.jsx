@@ -496,7 +496,7 @@ Righe totali: ${rows.length}`
                     <XAxis
                       type="number"
                       tick={{ fontSize: 10 }}
-                      tickFormatter={v => `${v.toFixed(0)}%`}
+                      tickFormatter={v => `${Number(v ?? 0).toFixed(0)}%`}
                       domain={[0, 'dataMax + 5']}
                     />
                     <YAxis

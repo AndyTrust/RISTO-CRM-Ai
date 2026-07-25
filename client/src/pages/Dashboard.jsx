@@ -202,16 +202,22 @@ export default function Dashboard() {
 
       // ── Customer Experience: NPS + Recensioni nel periodo ──
       try {
-        const [{ data: survRows }, { data: revRows }] = await Promise.all([
+        // `.range()` e non `.limit()`: il cap PostgREST è 1000 righe a
+        // prescindere dal limite richiesto, e queste righe vengono aggregate
+        // in NPS e voto medio. Con ~1.200 sondaggi a DB il `.limit(2000)`
+        // calcolava già l'NPS su un sottoinsieme, senza alcun errore visibile.
+        const [{ data: survRows, error: errSurv }, { data: revRows, error: errRev }] = await Promise.all([
           supabase.from('sondaggi_strutturati')
             .select('nps, tornera, data_prenotazione')
             .gte('data_prenotazione', d.from).lte('data_prenotazione', d.to)
-            .limit(2000),
+            .range(0, 19999),
           supabase.from('recensioni_pienissimo')
             .select('voto, data_recensione')
             .gte('data_recensione', d.from).lte('data_recensione', d.to)
-            .limit(2000),
+            .range(0, 19999),
         ])
+        if (errSurv) throw errSurv
+        if (errRev) throw errRev
         const npsVals = (survRows || []).map(r => r.nps).filter(v => v != null)
         const promoters = npsVals.filter(v => v >= 9).length
         const detractors = npsVals.filter(v => v <= 6).length

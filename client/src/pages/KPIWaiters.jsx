@@ -249,7 +249,7 @@ function DetailDrawer({ tipo, data, loading, onClose, be, targetFatt, fatturatoT
                       <h3 className="text-sm font-semibold text-gray-700 mb-3">Quantum per operatore (€/coperto)</h3>
                       <ResponsiveContainer width="100%" height={Math.min(quantumOp.length * 32 + 20, 280)}>
                         <BarChart data={quantumOp} layout="vertical" margin={{top:0,right:60,left:100,bottom:0}}>
-                          <XAxis type="number" fontSize={10} tickFormatter={v => `€${v.toFixed(0)}`}/>
+                          <XAxis type="number" fontSize={10} tickFormatter={v => `€${Number(v ?? 0).toFixed(0)}`}/>
                           <YAxis dataKey="operatore" type="category" width={95} fontSize={10}/>
                           <Tooltip formatter={v => [`€${Number(v).toFixed(2)}`, 'Quantum']}/>
                           <ReferenceLine x={quantumMedio} stroke="#94a3b8" strokeDasharray="4 4" label={{value:'media', fontSize:9, fill:'#94a3b8'}}/>
@@ -956,10 +956,18 @@ export default function KPIWaiters() {
 
     if (tipo === 'margine') {
       // Fix: nomi colonna reali su fatture_importate (fornitore / totale / p_iva)
+      // Le fatture duplicate vanno escluse: qui alimentano il calcolo del margine,
+      // e contarle due volte gonfia i costi e schiaccia il margine.
+      // `.not(...,'is',true)` copre anche is_duplicato NULL (storico).
       let qf = supabase.from('fatture_importate')
         .select('fornitore,totale,data_fattura,p_iva')
         .gte('data_fattura', dateFrom).lte('data_fattura', dateTo)
-      const { data: fatture } = await qf
+        .not('is_duplicato', 'is', true)
+      // L'errore va letto: il client Supabase non lancia mai, quindi senza questo
+      // controllo un guasto RLS/rete diventerebbe "nessuna fattura" e il margine
+      // risulterebbe ottimo senza motivo.
+      const { data: fatture, error: errFatture } = await qf
+      if (errFatture) throw errFatture
       result.fatture = fatture || []
 
       // Fix: su buste_paga le colonne reali sono employee_name e totale_competenze (non operatore/lorda)
@@ -1112,7 +1120,9 @@ export default function KPIWaiters() {
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium text-gray-600">Anno:</span>
           <select className="input text-xs py-1" value={anno} onChange={e => setAnno(parseInt(e.target.value))}>
-            {Array.from({length:new Date().getFullYear()-2022},(_,i)=>2024+i).map(y => <option key={y}>{y}</option>)}
+            {/* Da 2024 all'anno corrente incluso. Prima la lunghezza era
+                `anno-2022`, che aggiungeva un anno futuro ancora senza dati. */}
+            {Array.from({length:new Date().getFullYear()-2023},(_,i)=>2024+i).map(y => <option key={y}>{y}</option>)}
           </select>
         </div>
         <div className="flex items-center gap-2">

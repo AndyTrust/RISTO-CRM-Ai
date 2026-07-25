@@ -373,7 +373,7 @@ function OverviewSection({ overview, loading, meseRange, periodoAttivo }) {
           <BarChart data={yoy} barGap={2} barCategoryGap="25%">
             <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
             <XAxis dataKey="mese_label" tick={{ fontSize: 11 }} />
-            <YAxis tickFormatter={v => tab === 'venduto' ? `€${(v/1000).toFixed(0)}k` : v.toLocaleString()} tick={{ fontSize: 11 }} />
+            <YAxis tickFormatter={v => tab === 'venduto' ? `€${(Number(v ?? 0)/1000).toFixed(0)}k` : Number(v ?? 0).toLocaleString()} tick={{ fontSize: 11 }} />
             <Tooltip content={<CustomTooltip prefix={tab === 'venduto' ? '€' : ''} />} />
             <Legend wrapperStyle={{ fontSize: 11 }} />
             {tab === 'venduto' ? <>

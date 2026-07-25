@@ -419,7 +419,9 @@ export default function KpiTeamPage() {
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium text-gray-600">Anno:</span>
           <select className="input text-xs py-1" value={anno} onChange={e => setAnno(parseInt(e.target.value))}>
-            {Array.from({length:new Date().getFullYear()-2022},(_,i)=>2024+i).map(y => <option key={y} value={y}>{y}</option>)}
+            {/* Da 2024 all'anno corrente incluso: `anno-2022` includeva anche
+                l'anno successivo, che non ha ancora dati. */}
+            {Array.from({length:new Date().getFullYear()-2023},(_,i)=>2024+i).map(y => <option key={y} value={y}>{y}</option>)}
           </select>
         </div>
         <div className="flex items-center gap-2">

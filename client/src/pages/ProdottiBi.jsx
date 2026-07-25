@@ -404,7 +404,7 @@ export default function ProdottiBi() {
               <XAxis type="number" tickFormatter={v=>`€${(v/1000).toFixed(1)}k`} fontSize={11} />
               <YAxis dataKey="prodotto" type="category" width={105} fontSize={11}
                 tickFormatter={v=>v?.length>15?v.slice(0,14)+'…':v} />
-              <Tooltip formatter={v=>v.toLocaleString('it-IT',{style:'currency',currency:'EUR'})} />
+              <Tooltip formatter={v=>Number(v ?? 0).toLocaleString('it-IT',{style:'currency',currency:'EUR'})} />
               <Bar dataKey="importo_venduto" name="Fatturato" radius={[0,4,4,0]}>
                 {top15.map((entry, i)=><Cell key={i} fill={catColorMap[entry.categoria]||'#6366f1'} />)}
                 <LabelList dataKey="importo_venduto" position="right" fontSize={10}

@@ -329,7 +329,7 @@ export default function ContabilitaBi() {
             <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false}/>
             <XAxis dataKey="name" fontSize={11}/>
             <YAxis fontSize={11} tickFormatter={v=>`€${(v/1000).toFixed(0)}k`}/>
-            <Tooltip formatter={v=>v.toLocaleString('it-IT',{style:'currency',currency:'EUR'})}/>
+            <Tooltip formatter={v=>Number(v ?? 0).toLocaleString('it-IT',{style:'currency',currency:'EUR'})}/>
             <Bar dataKey="value" name="Valore" radius={[4,4,0,0]}>
               {projectionData.map((entry,i)=><Cell key={i} fill={entry.fill}/>)}
             </Bar>

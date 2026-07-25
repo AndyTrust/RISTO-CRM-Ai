@@ -250,6 +250,10 @@ export default function BilanciPage() {
   const [loading, setLoading] = useState(true)
   const [errore, setErrore] = useState(null)
   const [bilancioId, setBilancioId] = useState(null)
+  // Il DB può contenere i bilanci di più società (oltre a 140 Grammi). Mescolarli
+  // produrrebbe totali privi di significato, quindi la pagina ne mostra UNA
+  // per volta. Chiave: partita_iva, che è l'identificativo stabile.
+  const [pivaSel, setPivaSel] = useState(null)
 
   useEffect(() => {
     // Guardia di unmount: senza, un cambio di rotta durante il fetch produce
@@ -265,6 +269,7 @@ export default function BilanciPage() {
         // Default: l'esercizio più recente. Nessun anno cablato.
         const ultimo = [...res.testate].sort((a, b) => (a.anno ?? 0) - (b.anno ?? 0)).pop()
         setBilancioId(ultimo?.id ?? null)
+        setPivaSel(ultimo?.partita_iva ?? null)
       })
       .catch(e => { if (!annullato) setErrore(e?.message || String(e)) })
       .finally(() => { if (!annullato) setLoading(false) })
@@ -272,10 +277,45 @@ export default function BilanciPage() {
     return () => { annullato = true }
   }, [])
 
-  const testate = useMemo(
-    () => [...(dati?.testate || [])].sort((a, b) => (b.anno ?? 0) - (a.anno ?? 0)),
-    [dati],
+  // Società presenti a DB, in ordine di esercizio più recente.
+  const societa = useMemo(() => {
+    const m = new Map()
+    for (const b of dati?.testate || []) {
+      if (!b.partita_iva) continue
+      const prec = m.get(b.partita_iva)
+      if (!prec || (b.anno ?? 0) > (prec.anno ?? 0)) {
+        m.set(b.partita_iva, { partita_iva: b.partita_iva, societa: b.societa, anno: b.anno })
+      }
+    }
+    return [...m.values()].sort((a, b) => (b.anno ?? 0) - (a.anno ?? 0))
+  }, [dati])
+
+  // P.IVA effettiva: se quella selezionata non esiste (più) si ricade sulla prima
+  // disponibile, così la pagina non resta vuota dopo un ricaricamento dei dati.
+  const pivaAttiva = useMemo(
+    () => (societa.some(s => s.partita_iva === pivaSel) ? pivaSel : societa[0]?.partita_iva ?? null),
+    [societa, pivaSel],
   )
+  const societaAttiva = useMemo(
+    () => societa.find(s => s.partita_iva === pivaAttiva) || null,
+    [societa, pivaAttiva],
+  )
+
+  // Da qui in giù TUTTO è filtrato sulla società attiva: testate, voci, indici e
+  // riconciliazione. Senza questo filtro due società con lo stesso esercizio
+  // comparirebbero come righe gemelle indistinguibili.
+  const perSocieta = useMemo(
+    () => rows => (pivaAttiva ? (rows || []).filter(r => !r.partita_iva || r.partita_iva === pivaAttiva) : (rows || [])),
+    [pivaAttiva],
+  )
+
+  const testate = useMemo(
+    () => perSocieta(dati?.testate).slice().sort((a, b) => (b.anno ?? 0) - (a.anno ?? 0)),
+    [dati, perSocieta],
+  )
+  const kpiSocieta = useMemo(() => perSocieta(dati?.kpi), [dati, perSocieta])
+  const riconciliazioneSocieta = useMemo(() => perSocieta(dati?.riconciliazione), [dati, perSocieta])
+
   const bilancio = useMemo(
     () => testate.find(b => b.id === bilancioId) || testate[0] || null,
     [testate, bilancioId],
@@ -289,14 +329,42 @@ export default function BilanciPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-          <Icona className="text-indigo-600" size={26}/>
-          Bilanci
-        </h1>
-        <p className="text-gray-500 text-sm mt-1">
-          {dati?.testate?.[0]?.societa || 'Bilanci civilistici depositati'} — confronto con il gestionale
-        </p>
+      <div className="mb-6 flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+            <Icona className="text-indigo-600" size={26}/>
+            Bilanci
+          </h1>
+          <p className="text-gray-500 text-sm mt-1">
+            {societaAttiva?.societa || 'Bilanci civilistici depositati'} — confronto con il gestionale
+            {societaAttiva?.partita_iva && (
+              <span className="text-gray-400"> · P.IVA {societaAttiva.partita_iva}</span>
+            )}
+          </p>
+        </div>
+
+        {/* Compare solo con più società a DB: con una sola sarebbe rumore. */}
+        {societa.length > 1 && (
+          <div className="flex items-center gap-2">
+            <label htmlFor="bilanci-societa" className="text-xs font-medium text-gray-600">Società</label>
+            <select
+              id="bilanci-societa"
+              className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm bg-white"
+              value={pivaAttiva ?? ''}
+              onChange={e => {
+                setPivaSel(e.target.value)
+                // L'esercizio selezionato appartiene alla società precedente:
+                // azzerarlo fa ricadere la scelta sul più recente della nuova.
+                setBilancioId(null)
+              }}>
+              {societa.map(s => (
+                <option key={s.partita_iva} value={s.partita_iva}>
+                  {s.societa || s.partita_iva}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       {/* Navigazione sottosezioni: link veri, ognuno con URL proprio */}
@@ -335,12 +403,12 @@ export default function BilanciPage() {
           <StatoSchema stato={dati?.stato} nVoci={dati?.voci?.length || 0}/>
 
           {attiva === 'panoramica' && (
-            <Panoramica testate={testate} kpi={dati?.kpi || []}/>
+            <Panoramica testate={testate} kpi={kpiSocieta} serieStorica={dati?.serieStorica || []}/>
           )}
           {attiva === 'conto-economico' && (
             <ContoEconomico
               voci={vociBilancio} bilancio={bilancio} testate={testate}
-              kpi={dati?.kpi || []} onCambiaEsercizio={setBilancioId}/>
+              kpi={kpiSocieta} onCambiaEsercizio={setBilancioId}/>
           )}
           {attiva === 'stato-patrimoniale' && (
             <StatoPatrimoniale
@@ -348,10 +416,10 @@ export default function BilanciPage() {
               onCambiaEsercizio={setBilancioId}/>
           )}
           {attiva === 'riconciliazione' && (
-            <Riconciliazione righe={dati?.riconciliazione || []}/>
+            <Riconciliazione righe={riconciliazioneSocieta}/>
           )}
           {attiva === 'indici' && (
-            <Indici kpi={dati?.kpi || []}/>
+            <Indici kpi={kpiSocieta}/>
           )}
         </>
       )}
@@ -370,7 +438,109 @@ export default function BilanciPage() {
 }
 
 // ── Sezione: Panoramica ────────────────────────────────────────────────────
-function Panoramica({ testate, kpi }) {
+/**
+ * Serie storica di GRUPPO: mette a confronto tutte le società, non solo quella
+ * selezionata. È l'unica vista della pagina che deve restare cross-società,
+ * perché il passaggio del locale di Mameli da Good Food a Sviluppo Ristorazione
+ * Italia (fra 2023 e 2024) si legge solo affiancando le due curve.
+ */
+function SerieStoricaGruppo({ righe }) {
+  const societa = useMemo(
+    () => [...new Set((righe || []).map(r => r.societa).filter(Boolean))],
+    [righe],
+  )
+
+  // Un punto per anno, una coppia di serie per società: Recharts vuole le serie
+  // come chiavi dello stesso oggetto, non come righe separate.
+  const dati = useMemo(() => {
+    const perAnno = new Map()
+    for (const r of righe || []) {
+      if (r.anno == null) continue
+      if (!perAnno.has(r.anno)) perAnno.set(r.anno, { anno: String(r.anno) })
+      const p = perAnno.get(r.anno)
+      p[`Ricavi · ${r.societa}`] = n(r.ricavi)
+      p[`Risultato · ${r.societa}`] = n(r.risultato)
+    }
+    return [...perAnno.values()].sort((a, b) => Number(a.anno) - Number(b.anno))
+  }, [righe])
+
+  // Sintesi per società: quanti esercizi, quanti in perdita, patrimonio finale.
+  const sintesi = useMemo(() => societa.map(s => {
+    const rs = (righe || []).filter(r => r.societa === s).sort((a, b) => (a.anno ?? 0) - (b.anno ?? 0))
+    const inPerdita = rs.filter(r => n(r.risultato) != null && n(r.risultato) < 0).length
+    const ultimo = rs[rs.length - 1]
+    return {
+      societa: s,
+      dal: rs[0]?.anno, al: ultimo?.anno,
+      esercizi: rs.length,
+      inPerdita,
+      patrimonio: n(ultimo?.patrimonio_netto),
+      cumulato: rs.reduce((acc, r) => acc + (n(r.risultato) ?? 0), 0),
+    }
+  }), [societa, righe])
+
+  if (!righe?.length || societa.length < 2) return null
+
+  const COLORI = ['#6366f1', '#f97316', '#10b981', '#ec4899']
+
+  return (
+    <Card title="Serie storica di gruppo — ricavi e risultato per società" icon={TrendingUp}>
+      <p className="text-sm text-gray-500 mb-4">
+        Le società sono affiancate di proposito: il locale di Mameli è passato da Good Food a
+        Sviluppo Ristorazione Italia fra il 2023 e il 2024, e il salto dei ricavi SRITALIA nel 2024
+        (+102%) è esattamente quel trasferimento, non crescita organica.
+      </p>
+
+      <ResponsiveContainer width="100%" height={300}>
+        <LineChart data={dati} margin={{ top: 5, right: 20, left: 0, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0"/>
+          <XAxis dataKey="anno" fontSize={11}/>
+          <YAxis fontSize={11} tickFormatter={v => `€${(Number(v ?? 0) / 1000).toFixed(0)}k`}/>
+          <Tooltip formatter={v => eur2(v)}/>
+          <Legend wrapperStyle={{ fontSize: 11 }}/>
+          <ReferenceLine y={0} stroke="#9ca3af" strokeDasharray="4 4"/>
+          {societa.map((s, i) => (
+            <Line key={`r-${s}`} type="monotone" dataKey={`Ricavi · ${s}`}
+              stroke={COLORI[i % COLORI.length]} strokeWidth={2} dot={{ r: 3 }} connectNulls/>
+          ))}
+          {societa.map((s, i) => (
+            <Line key={`u-${s}`} type="monotone" dataKey={`Risultato · ${s}`}
+              stroke={COLORI[i % COLORI.length]} strokeWidth={2} strokeDasharray="5 3"
+              dot={{ r: 3 }} connectNulls/>
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+      <p className="text-xs text-gray-400 mt-1 mb-5">
+        Linea continua = ricavi, tratteggiata = risultato d'esercizio.
+      </p>
+
+      <div className="grid sm:grid-cols-2 gap-3">
+        {sintesi.map(s => (
+          <div key={s.societa} className="rounded-xl border border-gray-200 p-4">
+            <p className="font-semibold text-gray-800 text-sm">{s.societa}</p>
+            <p className="text-xs text-gray-400 mb-2">esercizi {s.dal}–{s.al}</p>
+            <div className="grid grid-cols-2 gap-y-1 text-xs">
+              <span className="text-gray-500">Esercizi in perdita</span>
+              <span className={`text-right font-semibold ${s.inPerdita === s.esercizi ? 'text-red-600' : 'text-gray-700'}`}>
+                {s.inPerdita} su {s.esercizi}
+              </span>
+              <span className="text-gray-500">Risultato cumulato</span>
+              <span className={`text-right font-semibold ${s.cumulato < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                {eur(s.cumulato)}
+              </span>
+              <span className="text-gray-500">Patrimonio netto finale</span>
+              <span className={`text-right font-semibold ${s.patrimonio != null && s.patrimonio < 0 ? 'text-red-600' : 'text-gray-700'}`}>
+                {eur(s.patrimonio)}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </Card>
+  )
+}
+
+function Panoramica({ testate, kpi, serieStorica }) {
   const kpiOrdinati = useMemo(() => [...kpi].sort((a, b) => (a.anno ?? 0) - (b.anno ?? 0)), [kpi])
   const ultimo = kpiOrdinati[kpiOrdinati.length - 1]
   const prec = kpiOrdinati[kpiOrdinati.length - 2]
@@ -401,6 +571,9 @@ function Panoramica({ testate, kpi }) {
           value={pct(ultimo?.prime_cost_pct)}
           sub="food + labour sul fatturato"/>
       </div>
+
+      {/* Cross-società di proposito: NON riceve i dati filtrati per società. */}
+      <SerieStoricaGruppo righe={serieStorica}/>
 
       <Card title="Bilanci depositati" icon={BookOpen}>
         <div className="overflow-x-auto">
@@ -553,6 +726,120 @@ function StatoPatrimoniale({ voci, bilancio, testate, onCambiaEsercizio }) {
 }
 
 // ── Sezione: Riconciliazione bilancio ↔ gestionale ─────────────────────────
+//
+// La vista v_bilancio_vs_gestionale classifica ogni scostamento. La pagina deve
+// mostrare la CAUSA, non solo la differenza: un -9,4% metodologico e un +15,1%
+// da errore di calcolo si leggono in modo opposto, ma a colpo d'occhio si
+// somigliano. Da qui le corsie A/B/C e la nota estesa per riga.
+const CLASSI = {
+  A: {
+    sigla: 'A', titolo: 'Errore di calcolo del CRM',
+    breve: 'Da correggere: il gestionale sbaglia il numero.',
+    badge: 'bg-red-100 text-red-700 border-red-200',
+    punto: 'bg-red-500',
+  },
+  B: {
+    sigla: 'B', titolo: 'Differenza metodologica',
+    breve: 'Legittima: IVA, rimanenze, competenza o perimetro diversi.',
+    badge: 'bg-blue-100 text-blue-700 border-blue-200',
+    punto: 'bg-blue-500',
+  },
+  C: {
+    sigla: 'C', titolo: 'Dato non disponibile',
+    breve: 'Il CRM non traccia questa voce: nessun confronto possibile.',
+    badge: 'bg-gray-100 text-gray-600 border-gray-200',
+    punto: 'bg-gray-400',
+  },
+}
+
+function BadgeClasse({ classe }) {
+  const c = CLASSI[classe]
+  if (!c) return null
+  return (
+    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${c.badge}`} title={`${c.titolo} — ${c.breve}`}>
+      {c.sigla}
+    </span>
+  )
+}
+
+function RigaRiconciliazione({ r }) {
+  const [aperta, setAperta] = useState(false)
+  const p = n(r.scostamento_pct)
+  const assente = n(r.importo_gestionale) == null
+  const classe = r.classificazione || (assente ? 'C' : 'B')
+  // Solo la classe A è un problema del CRM: evidenziamo quella, non l'ampiezza
+  // dello scarto. Prima una differenza metodologica del -17,9% si tingeva di
+  // rosso come un errore vero.
+  const critica = classe === 'A' && p != null && Math.abs(p) > 5
+  const copertura = n(r.copertura_righe_pct)
+
+  return (
+    <>
+      <tr
+        className={`border-b border-gray-50 hover:bg-gray-50 cursor-pointer ${critica ? 'bg-red-50/40' : ''}`}
+        onClick={() => setAperta(a => !a)}
+      >
+        <td className="py-2 pr-3 align-top">
+          <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 font-medium whitespace-nowrap">
+            {r.blocco}
+          </span>
+        </td>
+        <td className="py-2 pr-3 text-gray-700 align-top">
+          <span className="flex items-start gap-1.5">
+            <BadgeClasse classe={classe}/>
+            <span>
+              {r.etichetta}
+              <span className="block text-xs text-gray-500 mt-0.5">{r.causa || r.fonte_gestionale}</span>
+              {copertura != null && (
+                <span className="block text-[11px] text-amber-600 mt-0.5">
+                  Dettaglio riga disponibile sul {pct(copertura)} delle fatture
+                  {n(r.fatture_senza_dettaglio) != null && ` · ${eur(r.fatture_senza_dettaglio)} senza righe`}
+                </span>
+              )}
+            </span>
+          </span>
+        </td>
+        <td className="py-2 pr-3 text-right text-gray-700 whitespace-nowrap align-top">{eur(r.importo_bilancio)}</td>
+        <td className="py-2 pr-3 text-right text-gray-700 whitespace-nowrap align-top">
+          {assente ? <span className="text-gray-300">n.d.</span> : eur(r.importo_gestionale)}
+        </td>
+        <td className="py-2 pr-3 text-right whitespace-nowrap align-top">
+          {n(r.scostamento) == null ? <span className="text-gray-300">—</span> : (
+            <span className={`font-semibold ${critica ? 'text-red-600' : 'text-gray-700'}`}>
+              {n(r.scostamento) >= 0 ? '+' : ''}{eur(r.scostamento)}
+            </span>
+          )}
+        </td>
+        <td className="py-2 pr-3 text-right align-top">
+          {p == null ? <span className="text-gray-300">—</span> : (
+            <span className={`text-xs px-2 py-0.5 rounded-full font-semibold whitespace-nowrap ${
+              classe === 'A'
+                ? (Math.abs(p) > 5 ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700')
+                : 'bg-blue-50 text-blue-700'
+            }`}>
+              {p >= 0 ? '+' : ''}{p.toFixed(1)}%
+            </span>
+          )}
+        </td>
+      </tr>
+      {aperta && (
+        <tr className="border-b border-gray-100 bg-gray-50/60">
+          <td/>
+          <td colSpan={5} className="py-3 pr-4 text-xs text-gray-600 leading-relaxed">
+            <p className="font-semibold text-gray-700 mb-1">
+              {CLASSI[classe]?.titolo} — perché i due numeri divergono
+            </p>
+            <p className="mb-2">{r.nota_metodo}</p>
+            <p className="text-[11px] text-gray-400">
+              Fonte lato CRM: <code className="bg-gray-200/70 px-1 rounded">{r.fonte_gestionale}</code>
+            </p>
+          </td>
+        </tr>
+      )}
+    </>
+  )
+}
+
 function Riconciliazione({ righe }) {
   const ordinate = useMemo(
     () => [...righe].sort((a, b) => (b.anno ?? 0) - (a.anno ?? 0) || (a.ordine ?? 0) - (b.ordine ?? 0)),
@@ -594,16 +881,60 @@ function Riconciliazione({ righe }) {
     <>
       <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6 flex items-start gap-3">
         <Info size={18} className="text-blue-500 mt-0.5 flex-shrink-0"/>
-        <div className="text-sm text-blue-800">
+        <div className="text-sm text-blue-800 min-w-0">
           <p className="font-semibold mb-1">Come leggere gli scostamenti</p>
-          <p className="opacity-90">
+          <p className="opacity-90 mb-3">
             Il bilancio segue la <strong>competenza economica</strong>, il CRM la <strong>cassa</strong>:
-            uno scarto è fisiologico. Contano gli scostamenti ampi e le voci dove il gestionale
-            supera il civilistico. Ogni riga indica la fonte esatta usata lato CRM; dove il dato
-            non è ricostruibile la cella resta vuota anziché mostrare uno zero fuorviante.
+            uno scarto è fisiologico. Quello che conta non è quanto è grande la differenza, ma
+            <strong> da cosa dipende</strong>. Ogni riga è classificata; <strong>clicca una riga</strong> per
+            leggere la spiegazione completa.
+          </p>
+          <div className="grid sm:grid-cols-3 gap-2">
+            {['A', 'B', 'C'].map(k => (
+              <div key={k} className="flex items-start gap-2 bg-white/70 rounded-lg px-2.5 py-2">
+                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${CLASSI[k].badge} flex-shrink-0`}>
+                  {k}
+                </span>
+                <span className="text-xs leading-snug">
+                  <span className="font-semibold block text-gray-800">{CLASSI[k].titolo}</span>
+                  <span className="text-gray-500">{CLASSI[k].breve}</span>
+                </span>
+              </div>
+            ))}
+          </div>
+          <p className="opacity-80 text-xs mt-3">
+            Solo le voci <strong>A</strong> sono numeri da correggere. Un <strong>B</strong> ampio non è un
+            errore: significa che le due fonti misurano cose diverse. Dove il CRM non ha il dato la
+            cella resta vuota anziché mostrare uno zero fuorviante.
           </p>
         </div>
       </div>
+
+      {/* Se la società selezionata non è quella tracciata dal CRM il confronto
+          non è "mancante": è privo di senso. Dirlo esplicitamente evita che le
+          celle vuote vengano lette come un buco nei dati o come uno scarto del 100%. */}
+      {righe.length > 0 && righe.every(r => r.gestionale_applicabile === false) ? (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6 flex items-start gap-3">
+          <AlertTriangle size={18} className="text-amber-500 mt-0.5 flex-shrink-0"/>
+          <div className="text-sm text-amber-800">
+            <p className="font-semibold mb-1">Confronto non applicabile a questa società</p>
+            <p className="opacity-90">
+              Il gestionale del CRM (chiusure di cassa, fatture fornitore, buste paga) registra
+              esclusivamente <strong>Sviluppo Ristorazione Italia S.r.l.</strong>, la società che
+              opera oggi Mameli e Predda Niedda. Per{' '}
+              <strong>{[...new Set(righe.map(r => r.societa).filter(Boolean))].join(', ')}</strong>{' '}
+              esistono solo i bilanci depositati: qui sotto trovi i valori civilistici, ma la
+              colonna "Gestionale CRM" resta vuota perché non c'è nulla con cui confrontarli.
+            </p>
+          </div>
+        </div>
+      ) : righe.some(r => r.societa) && (
+        <p className="text-xs text-gray-400 -mt-3 mb-5">
+          Società: <strong className="text-gray-600">{[...new Set(righe.map(r => r.societa).filter(Boolean))].join(' · ')}</strong>.
+          Il lato gestionale (chiusure, fatture, buste paga) descrive la sola società operativa
+          140 Grammi: per gli altri soggetti il confronto resta vuoto.
+        </p>
+      )}
 
       {chart.length > 0 && (
         <Card title="Civilistico vs gestionale — voci confrontabili" icon={GitCompareArrows}>
@@ -623,9 +954,26 @@ function Riconciliazione({ righe }) {
 
       {perAnno.map(([anno, rows]) => (
         <Card key={anno} title={`Riconciliazione ${anno}`} icon={GitCompareArrows}
-          right={<span className="text-xs text-gray-400">
-            {rows.filter(r => n(r.importo_gestionale) != null).length} di {rows.length} voci confrontabili
-          </span>}>
+          right={(() => {
+            // Conta le voci per classe: dice subito quanto lavoro di correzione
+            // resta (A) e quanta parte dello scarto è invece spiegata (B/C).
+            const perClasse = c => rows.filter(r => (r.classificazione || 'C') === c).length
+            const nA = perClasse('A')
+            return (
+              <span className="text-xs text-gray-400 flex items-center gap-2">
+                <span>{rows.filter(r => n(r.importo_gestionale) != null).length} di {rows.length} voci confrontabili</span>
+                <span className="flex items-center gap-1.5">
+                  {['A', 'B', 'C'].map(c => (
+                    <span key={c} className="inline-flex items-center gap-0.5" title={CLASSI[c].titolo}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${CLASSI[c].punto}`}/>
+                      {perClasse(c)}
+                    </span>
+                  ))}
+                </span>
+                {nA === 0 && <CheckCircle size={13} className="text-green-500"/>}
+              </span>
+            )
+          })()}>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -639,49 +987,8 @@ function Riconciliazione({ righe }) {
                 </tr>
               </thead>
               <tbody>
-                {rows.map(r => {
-                  const p = n(r.scostamento_pct)
-                  const assente = n(r.importo_gestionale) == null
-                  return (
-                    // Chiave stabile: anno + voce_key identificano univocamente la riga.
-                    <tr key={`${r.anno}|${r.voce_key}`}
-                      className={`border-b border-gray-50 hover:bg-gray-50 ${p != null && Math.abs(p) > 15 ? 'bg-red-50/40' : ''}`}>
-                      <td className="py-2 pr-4">
-                        <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 font-medium whitespace-nowrap">
-                          {r.blocco}
-                        </span>
-                      </td>
-                      <td className="py-2 pr-4 text-gray-700">
-                        {r.etichetta}
-                        <span className="block text-xs text-gray-400 mt-0.5">
-                          {assente ? <span className="inline-flex items-center gap-1"><MinusCircle size={11}/>{r.fonte_gestionale}</span> : r.fonte_gestionale}
-                        </span>
-                      </td>
-                      <td className="py-2 pr-4 text-right text-gray-700 whitespace-nowrap">{eur(r.importo_bilancio)}</td>
-                      <td className="py-2 pr-4 text-right text-gray-700 whitespace-nowrap">
-                        {assente ? <span className="text-gray-300">n.d.</span> : eur(r.importo_gestionale)}
-                      </td>
-                      <td className="py-2 pr-4 text-right whitespace-nowrap">
-                        {n(r.scostamento) == null ? <span className="text-gray-300">—</span> : (
-                          <span className={`font-semibold ${p != null && Math.abs(p) > 15 ? 'text-red-600' : 'text-gray-700'}`}>
-                            {n(r.scostamento) >= 0 ? '+' : ''}{eur(r.scostamento)}
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-2 pr-4 text-right">
-                        {p == null ? <span className="text-gray-300">—</span> : (
-                          <span className={`text-xs px-2 py-0.5 rounded-full font-semibold whitespace-nowrap ${
-                            Math.abs(p) > 15 ? 'bg-red-100 text-red-700'
-                              : Math.abs(p) > 5 ? 'bg-yellow-100 text-yellow-700'
-                              : 'bg-green-100 text-green-700'
-                          }`}>
-                            {p >= 0 ? '+' : ''}{p.toFixed(1)}%
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  )
-                })}
+                {/* Chiave stabile: anno + voce_key identificano univocamente la riga. */}
+                {rows.map(r => <RigaRiconciliazione key={`${r.anno}|${r.voce_key}`} r={r}/>)}
               </tbody>
             </table>
           </div>
@@ -689,8 +996,10 @@ function Riconciliazione({ righe }) {
       ))}
 
       <p className="text-xs text-gray-400 -mt-2 mb-6">
-        Soglie: verde entro ±5%, giallo entro ±15%, rosso oltre. Segno positivo = il gestionale
-        registra più del bilancio.
+        Segno positivo = il gestionale registra più del bilancio. Il rosso segnala solo le voci di
+        classe <strong>A</strong> oltre il ±5%: sono le uniche in cui è il CRM a sbagliare il numero.
+        Le voci <strong>B</strong> restano neutre a qualsiasi ampiezza, perché lo scarto è la
+        conseguenza attesa di due metodi di misura diversi.
       </p>
     </>
   )

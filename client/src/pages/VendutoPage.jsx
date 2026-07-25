@@ -1342,7 +1342,7 @@ export default function VendutoPage() {
                     <BarChart data={operatoriEnhanced} layout="vertical" margin={{ left: 4, right: 4 }}>
                       <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f3f4f6" />
                       <XAxis type="number" tick={{ fontSize: 10 }}
-                        tickFormatter={v => fatturatoOp.length > 0 ? `€${(v/1000).toFixed(0)}k` : v.toLocaleString()} />
+                        tickFormatter={v => fatturatoOp.length > 0 ? `€${(Number(v ?? 0)/1000).toFixed(0)}k` : Number(v ?? 0).toLocaleString()} />
                       <YAxis type="category" dataKey="operatore" tick={{ fontSize: 11 }} width={100} />
                       <Tooltip formatter={(v) => fatturatoOp.length > 0 ? [`€${v.toLocaleString('it-IT')}`, 'Fatturato'] : [v.toLocaleString('it-IT'), 'Pezzi']} />
                       <Bar dataKey={fatturatoOp.length > 0 ? 'fatturato' : 'coperti'} radius={[0,3,3,0]}
@@ -1401,9 +1401,9 @@ export default function VendutoPage() {
                   <BarChart data={categorie.filter(c => c.categoria && c.categoria !== '(senza categoria)').slice(0,12)}
                     layout="vertical" margin={{ left: 8, right: 32, top: 4, bottom: 4 }}>
                     <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-                    <XAxis type="number" tick={{ fontSize: 10 }} tickFormatter={v => v.toLocaleString('it-IT')} />
+                    <XAxis type="number" tick={{ fontSize: 10 }} tickFormatter={v => Number(v ?? 0).toLocaleString('it-IT')} />
                     <YAxis type="category" dataKey="categoria" width={110} tick={{ fontSize: 10 }} />
-                    <Tooltip formatter={v => [`${v.toLocaleString('it-IT')} pz`, 'Pezzi']} />
+                    <Tooltip formatter={v => [`${Number(v ?? 0).toLocaleString('it-IT')} pz`, 'Pezzi']} />
                     <Bar dataKey="tot_quantita" radius={[0, 4, 4, 0]}>
                       {categorie.slice(0,12).map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
                     </Bar>
@@ -1465,7 +1465,7 @@ export default function VendutoPage() {
                   <BarChart data={prodotti.slice(0,15)} layout="vertical"
                     margin={{ left: 8, right: 60, top: 4, bottom: 4 }}>
                     <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-                    <XAxis type="number" tick={{ fontSize: 10 }} tickFormatter={v => v.toLocaleString('it-IT')} />
+                    <XAxis type="number" tick={{ fontSize: 10 }} tickFormatter={v => Number(v ?? 0).toLocaleString('it-IT')} />
                     <YAxis type="category" dataKey="prodotto" width={180} tick={{ fontSize: 10 }}
                       tickFormatter={v => v.length > 22 ? v.slice(0,22) + '…' : v} />
                     <Tooltip formatter={(v, n) => [v.toLocaleString('it-IT') + ' pz', 'Pezzi']}

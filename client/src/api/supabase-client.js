@@ -57,6 +57,34 @@ async function sbFetchAll(table, select = '*', page = 1000) {
   return out
 }
 
+/**
+ * Come sbFetchAll, ma su una query GIÀ filtrata invece che su una tabella nuda.
+ *
+ * Serve ogni volta che il risultato viene AGGREGATO lato client (somme, medie,
+ * raggruppamenti per articolo): `.limit(2000)` non alza il cap PostgREST, che
+ * resta 1000 righe, quindi la query riesce, non segnala nulla e il totale esce
+ * semplicemente sbagliato per difetto. Solo `.range()` pagina davvero.
+ *
+ * @param {() => any} build  funzione che costruisce la query da zero a ogni giro
+ *                           (un query builder Supabase non è riusabile dopo await)
+ * @param {string} orderCol  colonna di ordinamento stabile: senza, Postgres non
+ *                           garantisce la stessa sequenza tra pagine successive
+ * @param {number} max       tetto di sicurezza sulle righe totali
+ */
+async function sbFetchPaged(build, orderCol, { page = 1000, max = 100000 } = {}) {
+  const out = []
+  for (let i = 0; i < max; i += page) {
+    let q = build()
+    if (orderCol) q = q.order(orderCol, { ascending: true })
+    const { data, error } = await q.range(i, i + page - 1)
+    if (error) throw error
+    const batch = data ?? []
+    out.push(...batch)
+    if (batch.length < page) break
+  }
+  return out
+}
+
 /** Escape dei metacaratteri LIKE (% e _) per evitare match involontari in ilike(). */
 function escapeLike(s) {
   return String(s ?? '').replace(/[\\%_]/g, m => `\\${m}`)
@@ -859,15 +887,21 @@ export const fornitori = {
 
   // Righe prodotti/servizi di un fornitore (aggregati per codice_articolo+descrizione)
   getRighe: async (p = {}) => {
-    let q = supabase.from('fatture_righe').select(
-      'codice_articolo, tipo_codice, descrizione, nome_normalizzato, quantita, unita_misura, prezzo_unitario, importo_riga, aliquota_iva, data_fattura, numero_fattura, sede, categoria, fornitore'
-    )
-    if (p.p_iva) q = q.eq('p_iva', p.p_iva.replace(/^IT/, ''))
-    if (p.from)   q = q.gte('data_fattura', p.from)
-    if (p.to)     q = q.lte('data_fattura', p.to)
-    if (p.search) q = q.ilike('descrizione', `%${p.search}%`)
-    q = q.order('data_fattura', { ascending: false }).limit(parseInt(p.limit) || 2000)
-    const rows = await sbFetch(q)
+    // I totali per articolo (tot_qty, tot_importo, n_occorrenze) sono somme su
+    // TUTTE le righe del periodo: qui prima si usava .limit(2000), che non alza
+    // il cap PostgREST di 1000 e quindi troncava in silenzio l'aggregazione.
+    // fatture_righe ha oltre 114.000 righe: serve la paginazione con .range().
+    const build = () => {
+      let q = supabase.from('fatture_righe').select(
+        'id, codice_articolo, tipo_codice, descrizione, nome_normalizzato, quantita, unita_misura, prezzo_unitario, importo_riga, aliquota_iva, data_fattura, numero_fattura, sede, categoria, fornitore'
+      )
+      if (p.p_iva) q = q.eq('p_iva', p.p_iva.replace(/^IT/, ''))
+      if (p.from)   q = q.gte('data_fattura', p.from)
+      if (p.to)     q = q.lte('data_fattura', p.to)
+      if (p.search) q = q.ilike('descrizione', `%${escapeLike(p.search)}%`)
+      return q
+    }
+    const rows = await sbFetchPaged(build, 'id')
     // Aggrega per codice_articolo (se presente) o descrizione normalizzata
     const byKey = {}
     for (const r of rows) {
@@ -921,6 +955,11 @@ export const fornitori = {
         // .limit() NON aggira il cap PostgREST di 1000 righe: serve .range().
         // Senza, con periodo "anno corrente" (2189 fatture) si perdevano i mesi recenti.
         .order('data_fattura').range(0, 49999)
+        // Le fatture marcate duplicate vanno escluse, altrimenti la spesa è
+        // gonfiata: sul 2025 i duplicati valgono ~768k su 2.045k lordi.
+        // `.not(...,'is',true)` copre anche is_duplicato NULL, che è il caso
+        // della maggior parte dello storico.
+        .not('is_duplicato', 'is', true)
       if (p.from) qFat = qFat.gte('data_fattura', p.from)
       if (p.to)   qFat = qFat.lte('data_fattura', p.to)
       if (p.sede) qFat = qFat.eq('sede', p.sede)
@@ -1026,8 +1065,12 @@ export const fornitori = {
     if (p.categoria_tipo && p.categoria_tipo !== 'TUTTI') q = q.eq('categoria_tipo', p.categoria_tipo)
     if (p.sede === 'MA') q = q.gt('importo_ma', 0)
     if (p.sede === 'PN') q = q.gt('importo_pn', 0)
-    if (p.solo_pagate === true)  q = q.eq('stato_pagamento', 'pagata')
-    if (p.solo_pagate === false) q = q.neq('stato_pagamento', 'pagata')
+    // A DB lo stato è maiuscolo ('SALDATA', 'APERTA', 'ANNULLATA', 'STORNATA'),
+    // come già assume la vista v_fatture_con_stato. Il filtro cercava 'pagata'
+    // minuscolo, quindi "solo pagate" non restituiva mai nulla e "non pagate"
+    // restituiva tutto.
+    if (p.solo_pagate === true)  q = q.eq('stato_pagamento', 'SALDATA')
+    if (p.solo_pagate === false) q = q.neq('stato_pagamento', 'SALDATA')
     if (p.solo_manuali)  q = q.eq('allocazione_manuale', true)
     q = q.limit(parseInt(p.limit) || 500)
     return sbFetch(q)
@@ -3266,13 +3309,21 @@ export const costiFissiApi = {
   },
   // Lista arricchita con categoria e mese_str (da v_costi_fissi_arricchiti)
   listArricchita: async ({ sede, anno, mese, categoria_tipo, ricorrente } = {}) => {
-    let q = supabase.from('v_costi_fissi_arricchiti').select('*')
-    if (sede) q = q.eq('sede', locationToSede(sede) || sede)
-    if (anno) q = q.eq('anno', parseInt(anno))
-    if (mese) q = q.eq('mese', parseInt(mese))
-    if (categoria_tipo) q = q.eq('categoria_tipo', categoria_tipo)
-    if (ricorrente !== undefined) q = q.eq('ricorrente', ricorrente)
-    return sbFetch(q.limit(2000))
+    // CostiFissiPage costruisce da qui il pivot annuale (somme per descrizione
+    // e per mese): `.limit(2000)` non alza il cap PostgREST di 1000 righe, e a
+    // quel punto il totale costi fissi uscirebbe sottostimato senza errori.
+    // Oggi la vista ha ~156 righe, ma cresce di ~12 righe per costo ricorrente
+    // per anno: la paginazione evita che il limite venga superato in silenzio.
+    const build = () => {
+      let q = supabase.from('v_costi_fissi_arricchiti').select('*')
+      if (sede) q = q.eq('sede', locationToSede(sede) || sede)
+      if (anno) q = q.eq('anno', parseInt(anno))
+      if (mese) q = q.eq('mese', parseInt(mese))
+      if (categoria_tipo) q = q.eq('categoria_tipo', categoria_tipo)
+      if (ricorrente !== undefined) q = q.eq('ricorrente', ricorrente)
+      return q
+    }
+    return sbFetchPaged(build, 'id')
   },
 
   // Riepilogo per sede × mese (da v_costi_fissi_mensile)
@@ -3904,6 +3955,13 @@ const BILANCI_TABELLE = {
   voci: 'bilancio_voci',
   kpi: 'v_bilancio_kpi',
   riconciliazione: 'v_bilancio_vs_gestionale',
+  // Serie storica pluriennale e MULTI-SOCIETÀ: serve a leggere insieme
+  // Sviluppo Ristorazione Italia e Good Food (che gestiva Mameli fino al
+  // passaggio 2023/2024), quindi NON va filtrata per società come il resto.
+  serieStorica: 'v_bilancio_serie_storica',
+  // Controlli di quadratura del bilancio caricato (attivo=passivo, CE, ecc.):
+  // dicono se i PDF sono stati letti correttamente.
+  quadrature: 'v_bilancio_quadrature',
 }
 
 /** true se l'errore significa "questa tabella/vista non esiste (ancora)". */
@@ -3954,11 +4012,13 @@ export const bilanciApi = {
    * resterebbero vuote.
    */
   caricaTutto: async () => {
-    const [testate, voci, kpi, riconciliazione] = await Promise.all([
+    const [testate, voci, kpi, riconciliazione, serieStorica, quadrature] = await Promise.all([
       leggiRelazioneBilanci(BILANCI_TABELLE.testate, 'anno'),
       leggiRelazioneBilanci(BILANCI_TABELLE.voci, 'id'),
       leggiRelazioneBilanci(BILANCI_TABELLE.kpi, 'anno'),
       leggiRelazioneBilanci(BILANCI_TABELLE.riconciliazione, 'anno'),
+      leggiRelazioneBilanci(BILANCI_TABELLE.serieStorica, 'anno'),
+      leggiRelazioneBilanci(BILANCI_TABELLE.quadrature, 'anno'),
     ])
 
     const perId = new Map(testate.rows.map(b => [b.id, b]))
@@ -3973,11 +4033,15 @@ export const bilanciApi = {
         voci: voci.assente ? null : BILANCI_TABELLE.voci,
         kpi: kpi.assente ? null : BILANCI_TABELLE.kpi,
         riconciliazione: riconciliazione.assente ? null : BILANCI_TABELLE.riconciliazione,
+        serieStorica: serieStorica.assente ? null : BILANCI_TABELLE.serieStorica,
+        quadrature: quadrature.assente ? null : BILANCI_TABELLE.quadrature,
       },
       testate: testate.rows,
       voci: vociArricchite,
       kpi: kpi.rows,
       riconciliazione: riconciliazione.rows,
+      serieStorica: serieStorica.rows,
+      quadrature: quadrature.rows,
     }
   },
 

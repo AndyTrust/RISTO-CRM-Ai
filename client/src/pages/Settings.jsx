@@ -194,7 +194,12 @@ export default function Settings() {
                 {dbStats.map(s => (
                   <div key={s.table} className={`rounded-lg p-2 border text-xs ${s.count > 0 ? 'bg-white border-gray-200' : 'bg-gray-50 border-gray-100'}`}>
                     <p className="font-mono text-gray-400 truncate text-[10px]">{s.table}</p>
-                    <p className={`font-bold mt-0.5 ${s.count > 0 ? 'text-gray-800' : 'text-gray-300'}`}>{s.count.toLocaleString('it-IT')}</p>
+                    {/* Se il conteggio fallisce (RLS, rete) `count` è null: prima
+                        `.toLocaleString()` su null faceva crashare l'intera pagina
+                        Impostazioni. Ora si distingue "0 righe" da "non leggibile". */}
+                    <p className={`font-bold mt-0.5 ${s.count > 0 ? 'text-gray-800' : 'text-gray-300'}`}>
+                      {s.count == null ? '—' : Number(s.count).toLocaleString('it-IT')}
+                    </p>
                   </div>
                 ))}
               </div>

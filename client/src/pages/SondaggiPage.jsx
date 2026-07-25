@@ -53,16 +53,26 @@ export default function SondaggiPage() {
   const loadData = useCallback(async () => {
     setLoading(true); setErr(null)
     try {
-      let q = supabase.from('sondaggi_strutturati')
-        .select('*')
-        .gte('data_prenotazione', from)
-        .lte('data_prenotazione', to)
-        .order('data_prenotazione', { ascending: false })
-        .limit(5000)
-      if (sede !== 'Tutte') q = q.eq('sede', sede)
-      const { data: rows, error } = await q
-      if (error) throw error
-      setData(rows || [])
+      // Le righe alimentano NPS e medie: un troncamento le falsa. `.limit(5000)`
+      // NON alza il cap PostgREST di 1000 righe (la tabella ne ha già ~1.200),
+      // quindi su periodi lunghi l'NPS era calcolato su un sottoinsieme.
+      // Solo `.range()` pagina davvero.
+      const PAGINA = 1000
+      const rows = []
+      for (let i = 0; i < 20000; i += PAGINA) {
+        let q = supabase.from('sondaggi_strutturati')
+          .select('*')
+          .gte('data_prenotazione', from)
+          .lte('data_prenotazione', to)
+          .order('data_prenotazione', { ascending: false })
+          .range(i, i + PAGINA - 1)
+        if (sede !== 'Tutte') q = q.eq('sede', sede)
+        const { data: batch, error } = await q
+        if (error) throw error
+        rows.push(...(batch || []))
+        if ((batch || []).length < PAGINA) break
+      }
+      setData(rows)
     } catch (e) {
       setErr(e.message || String(e))
     } finally {

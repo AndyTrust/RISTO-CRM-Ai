@@ -19,6 +19,22 @@ import { Settings as SettingsIcon } from 'lucide-react'
 // CONSTANTS & UTILS
 // ═══════════════════════════════════════════════════════════════════════════
 const COSTO_AZ_FALLBACK = 1.79  // netto → costo azienda, usato solo se costo_azienda mancante (vecchio 1.9653 sovrastimava 10-35%)
+
+// Moltiplicatore lorda → costo azienda.
+//
+// FONTE: bilancio provvisorio 2025 (SVILUPPO RISTORAZIONE ITALIA S RL), voce di
+// conto economico 67.01 "Costi personale dipendente":
+//   retribuzioni lorde (67.01.01)  737.300,62
+//   + INPS 174.493,38 + TFR 52.313,64 + altri enti 5.267,85 + INAIL 7.137,19
+//   = totale 67.01                 976.512,68
+//   976.512,68 / 737.300,62 = 1,32444 → 1,3244  (32,44% di oneri c/azienda)
+//
+// È il carico contributivo REALE (esoneri tipo Decontribuzione Sud già dentro),
+// non la somma delle aliquote nominali CCNL Turismo (38,57% → 1,3857) usata
+// prima: quella sovrastimava il costo del personale 2025 di ~44.000 €.
+// Lo stesso valore è in BUSTE_PAGA/aggiorna_buste_paga.py (CCNL_MOLTIPLICATORE_AZ):
+// se cambia qui deve cambiare anche lì, altrimenti il ricalcolo diverge dal DB.
+const CCNL_MOLT_LORDA = 1.3244
 const EUR  = new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', maximumFractionDigits: 2 })
 const EUR0 = new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 })
 const NUM  = new Intl.NumberFormat('it-IT', { maximumFractionDigits: 0 })
@@ -105,7 +121,7 @@ function SchedaDipendente({ emp, onClose, employeeRecord, reparti }) {
 
   // Calcolo costo CCNL corretto (da lorda)
   const costoCalcolato = stats.totLorda > 0
-    ? stats.totLorda * 1.3857
+    ? stats.totLorda * CCNL_MOLT_LORDA
     : stats.totNetto * COSTO_AZ_FALLBACK
   const deltaCosto = stats.totCosto - costoCalcolato
 
@@ -217,7 +233,7 @@ function SchedaDipendente({ emp, onClose, employeeRecord, reparti }) {
                   const lorda = parseFloat(c.totale_competenze) || 0
                   const costo = parseFloat(c.costo_azienda) || (netto * COSTO_AZ_FALLBACK)
                   // Evidenzia se costo non è CCNL-corretto
-                  const costoAtteso = lorda > 0 ? lorda * 1.3857 : 0
+                  const costoAtteso = lorda > 0 ? lorda * CCNL_MOLT_LORDA : 0
                   const costoDeltaAlert = costoAtteso > 0 && Math.abs(costo - costoAtteso) > 50
                   return (
                     <tr key={i} className="border-b border-gray-800 hover:bg-gray-800/30">
@@ -358,15 +374,20 @@ function SchedaDipendente({ emp, onClose, employeeRecord, reparti }) {
         {/* CCNL breakdown */}
         <div className="px-6 py-4">
           <div className="bg-gray-800/50 rounded-lg p-4">
-            <h4 className="text-xs font-semibold text-gray-300 mb-2 flex items-center gap-1.5"><Info size={12}/> Calcolo costo aziendale — CCNL Turismo Pubblici Esercizi</h4>
+            <h4 className="text-xs font-semibold text-gray-300 mb-2 flex items-center gap-1.5"><Info size={12}/> Calcolo costo aziendale — tarato sul bilancio 2025</h4>
             <div className="grid grid-cols-3 gap-x-4 gap-y-0.5 text-xs text-gray-400">
-              <span>INPS IVS: 23.81%</span><span>Disoccupazione: 1.31%</span><span>Maternità: 0.46%</span>
-              <span>CUAF: 0.68%</span><span>FIS c/az: 0.80%</span><span>INAIL: 3.50%</span>
-              <span>EST Sanità: 0.50%</span><span>EPAR bilat.: 0.10%</span><span>TFR: 7.41%</span>
+              <span>Retrib. lorde: 737.300,62</span><span>Contributi INPS: 174.493,38</span><span>Quote TFR: 52.313,64</span>
+              <span>Altri enti prev.: 5.267,85</span><span>Premi INAIL: 7.137,19</span><span className="text-gray-300">Totale: 976.512,68</span>
             </div>
+            <p className="mt-1.5 text-[11px] text-gray-500">
+              Fonte: conto economico voce 67.01 del bilancio provvisorio 2025. Il rapporto
+              976.512,68 / 737.300,62 dà il moltiplicatore reale, che incorpora gli esoneri
+              contributivi effettivamente applicati (es. Decontribuzione Sud). Le aliquote
+              nominali CCNL Turismo (38,57%) sovrastimavano il costo di ~4,6 punti.
+            </p>
             <div className="mt-2 flex flex-wrap gap-4 text-xs">
-              <span className="text-gray-300">Totale c/azienda: <span className="text-white font-semibold">38.57% su lorda</span></span>
-              <span className="text-gray-300">Formula: <span className="text-white font-semibold">costo = lorda × 1.3857</span></span>
+              <span className="text-gray-300">Totale c/azienda: <span className="text-white font-semibold">32.44% su lorda</span></span>
+              <span className="text-gray-300">Formula: <span className="text-white font-semibold">costo = lorda × {CCNL_MOLT_LORDA}</span></span>
               {stats.totLorda > 0 && (
                 <span className="text-gray-300">Costo CCNL atteso: <span className="text-emerald-400 font-semibold">{fmtEur(costoCalcolato)}</span>
                   {Math.abs(deltaCosto) > 50 && <span className="text-amber-400 ml-1">(Δ {fmtEur(deltaCosto)} vs DB)</span>}
@@ -572,7 +593,7 @@ function RiepilogoTab({ anno, mese, sedeFilter, riepilogo }) {
     <div className="space-y-6">
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <KpiCard label="Totale Netto" value={fmtEur0(kpis.totNetto)} sub={periodoLabel} icon={DollarSign} color="green"/>
-        <KpiCard label="Costo Aziendale" value={fmtEur0(kpis.totCosto)} sub="CCNL Turismo (lorda × 1.3857)" icon={TrendingUp} color="purple"/>
+        <KpiCard label="Costo Aziendale" value={fmtEur0(kpis.totCosto)} sub={`lorda × ${CCNL_MOLT_LORDA} (tarato su bilancio 2025)`} icon={TrendingUp} color="purple"/>
         <KpiCard label="N. Dipendenti" value={fmtNum(kpis.nDip)} sub={periodoLabel} icon={Users} color="blue"/>
         <KpiCard label="Media Dipendente" value={fmtEur0(kpis.media)} sub="Netto medio mensile" icon={User2} color="amber"/>
       </div>
@@ -1206,7 +1227,7 @@ function CostoPersonaleTab({ costoMensile, sedeFilter }) {
         <AlertCircle size={18} className="text-blue-400 flex-shrink-0 mt-0.5"/>
         <div className="text-sm text-blue-300">
           <p className="font-medium">Costo Aziendale — CCNL Turismo Pubblici Esercizi</p>
-          <p className="text-xs mt-0.5 opacity-80">Formula: costo = lorda × 1.3857 (38.57% contributi c/az). Fallback: netto × 1.79 quando lorda non disponibile.</p>
+          <p className="text-xs mt-0.5 opacity-80">Formula: costo = lorda × {CCNL_MOLT_LORDA} (32,44% di oneri c/azienda, ricavato dalla voce 67.01 del bilancio 2025: 976.512,68 / 737.300,62). Fallback: netto × 1.79 quando lorda non disponibile.</p>
         </div>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
