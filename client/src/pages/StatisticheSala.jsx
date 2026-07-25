@@ -550,9 +550,13 @@ function TabAffluenza({ location, fromDate, toDate }) {
     // Giorni distinti (per dow e totali) per trasformare le somme in medie.
     const giorniTot = new Set(), giorniDow = Array(7).fill(null).map(() => new Set())
     const giorniSede = { MA: new Set(), PN: new Set() }
+    // La vista usa ISO (1=lunedì … 7=domenica), gli array qui sono in stile
+    // JavaScript (0=domenica … 6=sabato). Senza questa conversione la domenica
+    // finisce all'indice 7 e sparisce sia dalla heatmap sia dai conteggi.
+    const dowJs = (isoDow) => Number(isoDow) % 7
     for (const r of rows) {
       giorniTot.add(r.data)
-      giorniDow[r.giorno_settimana]?.add(r.data)
+      giorniDow[dowJs(r.giorno_settimana)]?.add(r.data)
       giorniSede[r.sede]?.add(r.data)
     }
     const nGiorni = giorniTot.size || 1
@@ -566,7 +570,7 @@ function TabAffluenza({ location, fromDate, toDate }) {
     for (const r of rows) {
       const cop = Number(r.coperti) || 0, inc = Number(r.incasso) || 0, tav = Number(r.tavoli) || 0
       oreSet.add(r.ora)
-      const hk = `${r.giorno_settimana}-${r.ora}`
+      const hk = `${dowJs(r.giorno_settimana)}-${r.ora}`
       if (!heat[hk]) heat[hk] = { coperti: 0, incasso: 0, tavoli: 0 }
       heat[hk].coperti += cop; heat[hk].incasso += inc; heat[hk].tavoli += tav
       if (!perOra[r.ora]) perOra[r.ora] = { ora: r.ora, coperti: 0, incasso: 0, tavoli: 0, fascia: r.fascia }
@@ -650,6 +654,18 @@ function TabAffluenza({ location, fromDate, toDate }) {
           {copertura && <p className="text-xs text-gray-400 mt-1">La vista copre dal {copertura.split('-').reverse().join('/')}.</p>}
         </div></div>
       ) : (<>
+        {/* Verificato sui dati: i coperti di questa vista coincidono con le
+            chiusure di cassa (100,6% MA · 98,4% PN), l'incasso si ferma
+            all'86-87%. La differenza è asporto e delivery, che non occupano un
+            tavolo e quindi non generano una riga in statistiche_tavoli. Va
+            detto, altrimenti l'incasso per fascia sembra semplicemente sbagliato. */}
+        <div className="bg-sky-50 border border-sky-100 rounded-lg p-3 text-xs text-sky-800">
+          ℹ️ Questa analisi si basa sui <strong>tavoli serviti in sala</strong>. I coperti
+          coincidono con le chiusure di cassa, mentre l'incasso ne copre circa l'<strong>86-87%</strong>:
+          la parte restante è <strong>asporto e delivery</strong>, che non occupa un tavolo e non
+          ha quindi un orario di servizio.
+        </div>
+
         {/* KPI fascia */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <KPICard icon={Users} label="Coperti nel periodo" value={num(agg.totCoperti)}
@@ -1429,6 +1445,21 @@ export default function StatisticheSala() {
           <div className="bg-violet-50 border border-violet-100 rounded-lg p-3 text-xs text-violet-700">
             👥 <strong>Turni Consigliati</strong> — organico suggerito per fascia oraria sulla media storica dei coperti per giorno (chiusure_giornaliere) e lo split pranzo/cena reale (chiusure_turni). Parametri modificabili in tempo reale.
           </div>
+          {/* La scomposizione per turno esiste solo dal 01/03/2026: prima il
+              registratore salvava una riga unica "mezzanotte" con l'incasso
+              dell'intera giornata. Senza questo avviso un periodo antecedente
+              mostrerebbe turni vuoti facendo pensare a un errore. */}
+          {fromDate < '2026-03-01' && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800">
+              ⚠️ <strong>Copertura dati turni</strong> — lo split pranzo/cena è disponibile solo
+              <strong> dal 1° marzo 2026</strong>. Per le date precedenti la cassa registrava una
+              sola riga giornaliera (etichettata &laquo;mezzanotte&raquo;) con l'incasso dell'intera
+              giornata e nessun coperto per turno: quei giorni non entrano in questo calcolo.
+              {toDate < '2026-03-01'
+                ? ' Il periodo selezionato è interamente precedente: non ci sono turni da analizzare.'
+                : ' I suggerimenti qui sotto usano quindi solo la parte di periodo dal 1° marzo 2026 in poi.'}
+            </div>
+          )}
           <TabTurni location={location} fromDate={fromDate} toDate={toDate} />
         </div>
       )}
