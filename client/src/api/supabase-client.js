@@ -3890,13 +3890,107 @@ export const verificaApi = {
   },
 }
 
+// ─── BILANCI — bilanci civilistici depositati ─────────────────────────────
+//
+// Popolate da un job esterno che legge i PDF in Bilanci/. Schema reale:
+//   bilanci                  testata per esercizio (anno, tipo, totali, risultato)
+//   bilancio_voci            dettaglio gerarchico; NON ha `anno`, solo bilancio_id
+//   v_bilancio_kpi           indici già calcolati (food/labour/prime cost, EBITDA)
+//   v_bilancio_vs_gestionale riconciliazione civilistico ↔ CRM per voce
+//
+// Tutto l'accesso passa da qui: se un nome cambia si aggiorna solo questa mappa.
+const BILANCI_TABELLE = {
+  testate: 'bilanci',
+  voci: 'bilancio_voci',
+  kpi: 'v_bilancio_kpi',
+  riconciliazione: 'v_bilancio_vs_gestionale',
+}
+
+/** true se l'errore significa "questa tabella/vista non esiste (ancora)". */
+function isRelazioneMancante(error) {
+  if (!error) return false
+  if (error.code === '42P01' || error.code === 'PGRST205' || error.code === 'PGRST106') return true
+  return /does not exist|could not find the table|schema cache/i.test(error.message || '')
+}
+
+/** Scarica tutte le righe superando il cap PostgREST di 1000. */
+async function fetchTutteLeRighe(build, orderCol, page = 1000) {
+  const out = []
+  for (let i = 0; ; i += page) {
+    let q = build()
+    if (orderCol) q = q.order(orderCol, { ascending: true })
+    const { data, error } = await q.range(i, i + page - 1)
+    if (error) throw error
+    const batch = data ?? []
+    out.push(...batch)
+    if (batch.length < page) break
+  }
+  return out
+}
+
+/**
+ * Legge una relazione dei bilanci distinguendo "non esiste ancora" da un
+ * errore vero: la prima è uno stato legittimo (job non ancora eseguito), il
+ * secondo va mostrato invece di essere confuso con "nessun dato".
+ * @returns {Promise<{assente: boolean, rows: any[]}>}
+ */
+async function leggiRelazioneBilanci(table, orderCol) {
+  try {
+    const rows = await fetchTutteLeRighe(() => supabase.from(table).select('*'), orderCol)
+    return { assente: false, rows }
+  } catch (e) {
+    if (isRelazioneMancante(e)) return { assente: true, rows: [] }
+    throw new Error(`${table}: ${e.message || e}`)
+  }
+}
+
+export const bilanciApi = {
+  /**
+   * Carica in un solo giro tutto ciò che serve alla sezione Bilanci.
+   *
+   * Le voci vengono arricchite con anno e tipo del bilancio di appartenenza:
+   * `bilancio_voci` espone solo `bilancio_id`, quindi senza questa join lato
+   * client ogni riga risulterebbe senza esercizio e le tabelle per anno
+   * resterebbero vuote.
+   */
+  caricaTutto: async () => {
+    const [testate, voci, kpi, riconciliazione] = await Promise.all([
+      leggiRelazioneBilanci(BILANCI_TABELLE.testate, 'anno'),
+      leggiRelazioneBilanci(BILANCI_TABELLE.voci, 'id'),
+      leggiRelazioneBilanci(BILANCI_TABELLE.kpi, 'anno'),
+      leggiRelazioneBilanci(BILANCI_TABELLE.riconciliazione, 'anno'),
+    ])
+
+    const perId = new Map(testate.rows.map(b => [b.id, b]))
+    const vociArricchite = voci.rows.map(v => {
+      const b = perId.get(v.bilancio_id)
+      return { ...v, anno: b?.anno ?? null, tipo_bilancio: b?.tipo ?? null }
+    })
+
+    return {
+      stato: {
+        testate: testate.assente ? null : BILANCI_TABELLE.testate,
+        voci: voci.assente ? null : BILANCI_TABELLE.voci,
+        kpi: kpi.assente ? null : BILANCI_TABELLE.kpi,
+        riconciliazione: riconciliazione.assente ? null : BILANCI_TABELLE.riconciliazione,
+      },
+      testate: testate.rows,
+      voci: vociArricchite,
+      kpi: kpi.rows,
+      riconciliazione: riconciliazione.rows,
+    }
+  },
+
+
+}
+
 export default {
   modules, employees, chiusure, kpi, venduto,
   fornitori, pagamentiFatture, prodottiCatalogo, listinoApi, ricetteApi, chat, data, analytics, bustePaga, statistiche, turni,
   roles, admin, crmConfig, sediApi, operatorMapping, repartiApi,
   fattureCategorieApi, costiFissiApi, standardNazionaliApi, kpiTargetsApi, kpiPerformanceApi,
   beMensileApi, operatoreMeseApi, obiettiviProdottoApi, bonusApi,
-  fattureBi,
+  fattureBi, bilanciApi,
   calcBonusTeam, calcBonusIndividuale,
   verificaApi,
 }

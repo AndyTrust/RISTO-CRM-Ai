@@ -27,6 +27,7 @@ export {
   ricetteApi,
   repartiApi,
   fattureBi,
+  bilanciApi,
   fattureCategorieApi,
   costiFissiApi,
   standardNazionaliApi,

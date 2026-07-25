@@ -1,22 +1,20 @@
 import React from 'react'
-import { useLocation } from 'react-router-dom'
 import BustePaga from './BustePaga'
 
 /**
  * PersonalePage — wrapper unificato per Dipendenti + Buste Paga.
  *
  * Entrambe le route /buste-paga e /dipendenti atterrano qui.
- * Il parametro ?tab=stato nella URL apre direttamente la tab "Stato Dipendenti"
- * (che mostra i dipendenti ricavati ESCLUSIVAMENTE dalla tabella buste_paga).
  *
- * Attivi = presenti nell'ultimo mese di busta paga caricato nel DB.
+ * La tab attiva è gestita da BustePaga tramite il parametro `?tab=` (hook
+ * useTabParam), quindi ogni sezione ha un URL proprio e condivisibile:
+ *   /buste-paga?tab=riepilogo | dipendenti | analisi | costo | dettaglio
+ *
+ * Nota storica: qui viveva una mappa alias che traduceva `?tab=dipendenti`
+ * in `stato`, un id di tab che in BustePaga non è mai esistito. Il risultato
+ * era che /dipendenti apriva la pagina con l'area contenuti vuota. Gli alias
+ * sono ora in BustePaga e puntano a id reali.
  */
 export default function PersonalePage({ defaultTab = 'riepilogo' }) {
-  const location = useLocation()
-  const urlTab = new URLSearchParams(location.search).get('tab')
-  // Mappa alias URL → id tab interno di BustePaga
-  const TAB_MAP = { dipendenti: 'stato', stato: 'stato' }
-  const startTab = TAB_MAP[urlTab] || defaultTab
-
-  return <BustePaga startTab={startTab} />
+  return <BustePaga startTab={defaultTab} />
 }

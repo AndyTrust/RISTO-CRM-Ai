@@ -8,7 +8,8 @@
  *       v_bonus_operatore, v_bonus_team, venduto_camerieri
  */
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { useSearchParams, Link } from 'react-router-dom'
+import { Link } from 'react-router-dom'
+import { useTabParam } from '../hooks/useTabParam'
 import {
   TrendingUp, Target, Users, BarChart3, Table2,
   ChevronDown, ChevronUp, ArrowRight, RefreshCw,
@@ -30,6 +31,7 @@ const TABS = [
   { id: 'tavoli',    label: 'Tavoli',     icon: Table2 },
   { id: 'incentivi', label: 'Incentivi',  icon: Gift },
 ]
+const TAB_IDS = TABS.map(t => t.id)
 
 // ── Utils ──────────────────────────────────────────────────────────────────
 const fmt    = (n, d = 0) => n == null || isNaN(n) ? '—' : Number(n).toLocaleString('it-IT', { minimumFractionDigits: d, maximumFractionDigits: d })
@@ -1170,20 +1172,19 @@ function TabIncentivi({ sede, anno, mese }) {
 
 // ── Main Page ──────────────────────────────────────────────────────────────
 export default function PerformancePage() {
-  const [searchParams, setSearchParams] = useSearchParams()
   const now     = new Date()
   const [sede,  setSede]  = useState('MA')
   const [anno,  setAnno]  = useState(now.getFullYear())
   const [mese,  setMese]  = useState(now.getMonth() + 1)
-  const [tab,   setTab]   = useState(searchParams.get('tab') || 'venduto')
+  // La tab vive nell'URL sotto il parametro `sub`, NON `tab`.
+  //
+  // PerformancePage è renderizzata dentro KpiHub (/kpi?tab=performance) e il
+  // genitore possiede già `tab`. Scrivendo qui `?tab=obiettivi` si sovrascriveva
+  // il parametro dell'hub: KpiHub non trovava più una tab valida e l'intera
+  // pagina restava bianca al primo click su una tab interna.
+  const [tab, handleTabChange] = useTabParam(TAB_IDS, 'venduto', 'sub')
   const [overview, setOverview] = useState(null)
   const [loading,  setLoading]  = useState(true)
-
-  // Sync tab to URL
-  const handleTabChange = useCallback(t => {
-    setTab(t)
-    setSearchParams({ tab: t }, { replace: true })
-  }, [setSearchParams])
 
   // Load overview data
   useEffect(() => {

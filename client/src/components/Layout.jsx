@@ -5,7 +5,8 @@ import {
   LayoutDashboard, Users, Target, TrendingUp, Receipt, Bot,
   Building2, Settings, ChevronLeft, ChevronRight, RefreshCw,
   BarChart2, Lock, Wallet, UtensilsCrossed, CalendarDays,
-  ChevronDown, Tag, MapPin, Archive, Brain, Cloud, Database, Award, BarChart3, Activity, Coins, Star, MessageSquare
+  ChevronDown, Tag, MapPin, Archive, Brain, Cloud, Database, Award, BarChart3, Activity, Coins, Star, MessageSquare,
+  GitMerge, BookOpen, Scale, Landmark, GitCompareArrows, Percent
 } from 'lucide-react'
 import { data as dataApi } from '../api/client'
 
@@ -67,6 +68,18 @@ const NAV_GROUPS = [
       { id: 'kpi_config',     path: '/kpi-config',     icon: Target,    label: 'Target & BE',       desc: 'Break-even, target, bonus', alwaysEnabled: true },
     ]
   },
+  // 5-bis) BILANCI — numeri civilistici depositati e confronto col gestionale
+  {
+    label: 'Bilanci',
+    defaultOpen: false,
+    items: [
+      { id: 'bilanci',        path: '/bilanci',                     icon: BookOpen,          label: 'Panoramica',         desc: 'Bilanci depositati per anno', alwaysEnabled: true, exact: true },
+      { id: 'bilanci_ce',     path: '/bilanci/conto-economico',     icon: Scale,             label: 'Conto Economico',    desc: 'Riclassificato + confronto YoY', alwaysEnabled: true },
+      { id: 'bilanci_sp',     path: '/bilanci/stato-patrimoniale',  icon: Landmark,          label: 'Stato Patrimoniale', desc: 'Attivo, passivo, patrimonio netto', alwaysEnabled: true },
+      { id: 'bilanci_ric',    path: '/bilanci/riconciliazione',     icon: GitCompareArrows,  label: 'Bilancio vs CRM',    desc: 'Scostamento civilistico ↔ gestionale', alwaysEnabled: true },
+      { id: 'bilanci_indici', path: '/bilanci/indici',              icon: Percent,           label: 'Indici',             desc: 'Margine, personale, food cost', alwaysEnabled: true },
+    ]
+  },
   // 6) BI AVANZATA
   {
     label: 'BI Avanzata',
@@ -83,6 +96,10 @@ const NAV_GROUPS = [
     isAdmin: true,
     items: [
       { id: 'admin_dipendenti', path: '/admin/dipendenti', icon: Users,     label: 'Dipendenti (avanzato)', desc: 'Bulk, merge, transfer',           alwaysEnabled: true },
+      // Queste due tab di AdminPanel esistevano già come route (/admin/unioni,
+      // /admin/kpi) ma non erano raggiungibili da nessuna voce di menu.
+      { id: 'admin_unioni',     path: '/admin/unioni',      icon: GitMerge,  label: 'Unioni & Doppioni',     desc: 'Merge dipendenti, link venduto',  alwaysEnabled: true },
+      { id: 'admin_kpi',        path: '/admin/kpi',         icon: Target,    label: 'KPI Config',            desc: 'Target mensili per operatore',    alwaysEnabled: true },
       { id: 'admin_ruoli',      path: '/admin/ruoli',       icon: Tag,       label: 'Ruoli & Reparti',       desc: 'Aggiungi e gestisci ruoli',       alwaysEnabled: true },
       { id: 'admin_sedi',       path: '/admin/sedi',        icon: MapPin,    label: 'Sedi',                  desc: 'Location e multi-sede',           alwaysEnabled: true },
       { id: 'admin_database',   path: '/admin/database',    icon: Database,  label: 'Database',              desc: 'Vista dati grezzi Supabase',      alwaysEnabled: true },
@@ -149,9 +166,16 @@ function NavGroup({ group, collapsed, isEnabled }) {
               <NavLink
                 key={item.id}
                 to={item.path}
+                // `exact` serve alle voci che sono anche prefisso di altre voci
+                // (es. /bilanci vs /bilanci/indici): senza `end` react-router
+                // evidenzierebbe sia la panoramica sia la sottopagina, facendo
+                // sembrare due voci attive contemporaneamente.
+                end={item.exact}
                 title={collapsed ? `${item.label} — ${item.desc}` : undefined}
                 className={({ isActive }) => {
-                  const active = isActive || location.pathname.startsWith(item.path + '/')
+                  const active = item.exact
+                    ? isActive
+                    : isActive || location.pathname.startsWith(item.path + '/')
                   return (
                     `flex items-center gap-2.5 mx-2 px-2.5 rounded-lg transition-all duration-100 mb-0.5 ` +
                     `${collapsed ? 'py-2 justify-center' : 'py-2'} ` +

@@ -9,6 +9,7 @@ import PeriodFilter from '../components/PeriodFilter'
 import PageAssistant from '../components/PageAssistant'
 import supabase from '../supabase'
 import PageStatsWidget from '../components/PageStatsWidget'
+import { useTabParam } from '../hooks/useTabParam'
 
 // statistiche_tavoli copre SOLO da questa data (verificato su Supabase).
 const TAVOLI_COVERAGE_START = '2026-03-01'
@@ -483,8 +484,11 @@ function TabTurni({ location, fromDate, toDate }) {
   )
 }
 
+// Deep link: /statistiche?tab=split-turni|operatori|tavoli|giornaliero|turni
+const TAB_IDS = ['split-turni', 'operatori', 'tavoli', 'giornaliero', 'turni']
+
 export default function StatisticheSala() {
-  const [tab, setTab] = useState('split-turni')
+  const [tab, setTab] = useTabParam(TAB_IDS, 'split-turni')
   const [location, setLocation] = useState('')   // '' = tutte, 'MA', 'PN'
   const [period, setPeriod] = useState('month')
   const [dates, setDates] = useState(periodToDates('month'))

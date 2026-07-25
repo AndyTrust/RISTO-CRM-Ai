@@ -1,4 +1,4 @@
-import { useSearchParams } from 'react-router-dom'
+import { useTabParam } from '../hooks/useTabParam'
 import { Target, Award, Users, BarChart3 } from 'lucide-react'
 import PageAssistant from '../components/PageAssistant'
 import KPIWaiters from './KPIWaiters'
@@ -13,9 +13,13 @@ const TABS = [
   { id: 'performance', label: 'Performance', icon: BarChart3, desc: 'Venduto, obiettivi, team, tavoli' },
 ]
 
+const TAB_IDS = TABS.map(t => t.id)
+// Alias storici: /camerieri-bi e /kpi-team rimandano qui, e vecchi link possono
+// ancora contenere questi nomi.
+const ALIASES = { 'camerieri-bi': 'bi', 'kpi-team': 'team', operatori: 'camerieri' }
+
 export default function KpiHub() {
-  const [params, setParams] = useSearchParams()
-  const tab = params.get('tab') || 'camerieri'
+  const [tab, setTab] = useTabParam(TAB_IDS, 'camerieri', 'tab', ALIASES)
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -29,7 +33,7 @@ export default function KpiHub() {
         </div>
         <div className="flex gap-1 overflow-x-auto">
           {TABS.map(t => (
-            <button key={t.id} onClick={() => setParams({ tab: t.id })}
+            <button key={t.id} onClick={() => setTab(t.id)}
               className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 whitespace-nowrap transition-colors ${
                 tab === t.id
                   ? 'border-blue-600 text-blue-700 bg-blue-50'

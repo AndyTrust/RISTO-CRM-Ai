@@ -10,6 +10,7 @@ import {
 import { periodToDates } from '../components/DateRangePicker'
 import PeriodFilter from '../components/PeriodFilter'
 import PageAssistant from '../components/PageAssistant'
+import { useTabParam } from '../hooks/useTabParam'
 import { TrendingUp, Users, ShoppingBag, BarChart2, Calendar, ArrowUpRight } from 'lucide-react'
 import PageStatsWidget from '../components/PageStatsWidget'
 import CalendarioSmart from './venduto/CalendarioSmart'
@@ -1026,6 +1027,11 @@ function MatriceCategorie({ sede, from, to }) {
 
 // Fix: rimossi i componenti morti PrevisioneSettimana e CalendarioHeatmap
 // (mai renderizzati, sostituiti da CalendarioSmart).
+
+// Id delle tab, allineati all'array `tabs` costruito dentro il componente.
+// Vivono qui fuori perché servono all'hook di deep link prima del render.
+const VENDUTO_TAB_IDS = ['obiettivi', 'operatori', 'matrice', 'categorie', 'prodotti', 'upsell', 'calendario']
+
 export default function VendutoPage() {
   const [location, setLocation] = useState('all')
   const [operatori, setOperatori] = useState([])
@@ -1037,7 +1043,8 @@ export default function VendutoPage() {
   const [previsioni, setPrevisioni] = useState([])
   const [prevReload, setPrevReload] = useState(0)
   const [selOp, setSelOp] = useState(null)
-  const [tab, setTab] = useState('obiettivi')
+  // Deep link: /venduto?tab=obiettivi|operatori|matrice|categorie|prodotti|upsell|calendario
+  const [tab, setTab] = useTabParam(VENDUTO_TAB_IDS, 'obiettivi')
   const [period, setPeriod] = useState('month')
   const [dates, setDates] = useState(periodToDates('month'))
   const [loading, setLoading] = useState(true)

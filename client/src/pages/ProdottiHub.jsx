@@ -1,4 +1,4 @@
-import { useSearchParams } from 'react-router-dom'
+import { useTabParam } from '../hooks/useTabParam'
 import { Tag, UtensilsCrossed, Coins } from 'lucide-react'
 import ProdottiBi from './ProdottiBi'
 import MenuEngineering from './MenuEngineering'
@@ -10,9 +10,12 @@ const TABS = [
   { id: 'foodcost', label: 'Food Cost', icon: Coins, desc: 'Modifica il food cost di ogni prodotto' },
 ]
 
+const TAB_IDS = TABS.map(t => t.id)
+// Alias storico: /menu-engineering rimanda qui con ?tab=menu
+const ALIASES = { 'menu-engineering': 'menu', 'food-cost': 'foodcost', prodotti: 'bi' }
+
 export default function ProdottiHub() {
-  const [params, setParams] = useSearchParams()
-  const tab = params.get('tab') || 'bi'
+  const [tab, setTab] = useTabParam(TAB_IDS, 'bi', 'tab', ALIASES)
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -26,7 +29,7 @@ export default function ProdottiHub() {
         </div>
         <div className="flex gap-1">
           {TABS.map(t => (
-            <button key={t.id} onClick={() => setParams({ tab: t.id })}
+            <button key={t.id} onClick={() => setTab(t.id)}
               className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 whitespace-nowrap transition-colors ${
                 tab === t.id
                   ? 'border-blue-600 text-blue-700 bg-blue-50'

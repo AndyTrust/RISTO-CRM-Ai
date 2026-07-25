@@ -1,4 +1,5 @@
 import useSedi from '../hooks/useSedi'
+import { useTabParam } from '../hooks/useTabParam'
 import React, { useState, useCallback, useEffect, useMemo } from 'react'
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -1361,12 +1362,19 @@ function DettaglioCedoliniTab({ cedolini, sedeFilter, meseFilter, onRefresh, emp
 // ═══════════════════════════════════════════════════════════════════════════
 // MAIN PAGE
 // ═══════════════════════════════════════════════════════════════════════════
+// Id delle tab (devono restare allineati alla costante TABS dentro il componente)
+const TAB_IDS = ['riepilogo', 'dipendenti', 'analisi', 'costo', 'dettaglio']
+// Alias per i link storici. `stato` era la vecchia rotta /dipendenti: puntava a
+// una tab che in questa pagina non è MAI esistita, quindi /dipendenti apriva
+// Buste Paga con l'area contenuti completamente vuota.
+const TAB_ALIASES = { stato: 'dipendenti', anagrafica: 'dipendenti', cedolini: 'dettaglio', costi: 'costo' }
+
 export default function BustePaga({ startTab = 'riepilogo' }) {
   const { sedi }                      = useSedi()
   const [anno,        setAnno]        = useState(new Date().getFullYear())
   const [meseFilter,  setMeseFilter]  = useState(0)
   const [sedeFilter,  setSedeFilter]  = useState('Tutte')
-  const [activeTab,   setActiveTab]   = useState(startTab)
+  const [activeTab,   setActiveTab]   = useTabParam(TAB_IDS, startTab, 'tab', TAB_ALIASES)
 
   useEffect(() => {
     const t = setTimeout(() => window.dispatchEvent(new Event('resize')), 50)

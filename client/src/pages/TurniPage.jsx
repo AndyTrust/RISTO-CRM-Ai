@@ -9,6 +9,7 @@ import { bustePaga as bustePagaApi, venduto as vendutoApi } from '../api/client'
 import supabase from '../supabase'
 import useClaudeAI from '../hooks/useClaudeAI'
 import PageStatsWidget from '../components/PageStatsWidget'
+import { useTabParam } from '../hooks/useTabParam'
 
 // ─── COSTANTI ─────────────────────────────────────────────────────────────────
 
@@ -2187,8 +2188,11 @@ const TABS = [
   {id:'ai',        label:'🤖 AI Planner', badge:'bozza'},
 ]
 
+const TAB_IDS = TABS.map(t => t.id)
+
 export default function TurniPage() {
-  const [activeTab, setActiveTab]       = useState('settimana')
+  // Deep link: /turni?tab=settimana|riepilogo|gestione|reparti|regole|ai
+  const [activeTab, setActiveTab]       = useTabParam(TAB_IDS, 'settimana')
   const [selectedSede, setSelectedSede] = useState('MA')
   const [selectedWeek, setSelectedWeek] = useState(getMondayOf())
   const now = new Date()

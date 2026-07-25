@@ -9,6 +9,7 @@ import PeriodFilter from '../components/PeriodFilter'
 import { Printer, TrendingUp, TrendingDown, Minus } from 'lucide-react'
 import PageAssistant from '../components/PageAssistant'
 import PageStatsWidget from '../components/PageStatsWidget'
+import { useTabParam } from '../hooks/useTabParam'
 
 function eur(n) { return n != null ? `€ ${Number(n).toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—' }
 function fmt(n) { return n != null ? Number(n).toLocaleString('it-IT') : '—' }
@@ -33,8 +34,11 @@ const CUR_YEAR  = new Date().getFullYear()
 const PREV_YEAR = CUR_YEAR - 1
 const PREV2_YEAR = CUR_YEAR - 2
 
+// Deep link: /chiusure?tab=andamento|confronto|mensile|tabella
+const TAB_IDS = ['andamento', 'confronto', 'mensile', 'tabella']
+
 export default function ChiusurePage() {
-  const [tab, setTab] = useState('andamento')
+  const [tab, setTab] = useTabParam(TAB_IDS, 'andamento')
   const [location, setLocation] = useState('all')
   const [mensile, setMensile] = useState([])
   const [recenti, setRecenti] = useState([])

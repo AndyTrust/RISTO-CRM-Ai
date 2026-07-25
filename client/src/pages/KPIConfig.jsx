@@ -10,6 +10,7 @@ import {
   employees as employeesApi,
   sediApi,
 } from '../api/supabase-client'
+import { useTabParam } from '../hooks/useTabParam'
 import useClaudeAI from '../hooks/useClaudeAI'
 
 // Periodo di calcolo del quantum (base) per i target individuali
@@ -53,8 +54,11 @@ const NMESI_OPTS = [
   { value: 6, label: 'Media 6 mesi' },
 ]
 
+const TAB_IDS = TABS.map(t => t.id)
+
 export default function KPIConfig() {
-  const [tab, setTab]       = useState('costi')
+  // Deep link: /kpi-config?tab=costi|team|individuali|prodotti|performance|standard
+  const [tab, setTab]       = useTabParam(TAB_IDS, 'costi')
   const today               = new Date()
   const [sede, setSede]     = useState('MA')
   const [anno, setAnno]     = useState(today.getFullYear())

@@ -69,6 +69,7 @@ import StatoDati from './pages/StatoDati'
 import AnalisiReparti from './pages/AnalisiReparti'
 import SondaggiPage from './pages/SondaggiPage'
 import RecensioniPage from './pages/RecensioniPage'
+import BilanciPage from './pages/BilanciPage'
 import { modules as modulesApi, crmConfig } from './api/client'
 
 export const ModulesContext = React.createContext({})
@@ -153,7 +154,10 @@ export default function App() {
           <Route path="/chat" element={isEnabled('chat_claude') ? <ChatClaude /> : <DisabledModule name="Chat Claude AI" />} />
           <Route path="/fornitori" element={isEnabled('fornitori') ? <FornitoriPage /> : <DisabledModule name="Fornitori" />} />
           <Route path="/analytics" element={isEnabled('analytics_bi') ? <AnalyticsBI /> : <DisabledModule name="Analytics & BI" />} />
-          <Route path="/buste-paga" element={isEnabled('buste_paga') ? <PersonalePage defaultTab="buste-paga" /> : <DisabledModule name="Buste Paga" />} />
+          {/* defaultTab deve essere un id di tab REALE di BustePaga (riepilogo,
+              dipendenti, analisi, costo, dettaglio). Qui c'era "buste-paga",
+              che non è una tab: la pagina si apriva con l'area contenuti vuota. */}
+          <Route path="/buste-paga" element={isEnabled('buste_paga') ? <PersonalePage defaultTab="riepilogo" /> : <DisabledModule name="Buste Paga" />} />
           <Route path="/statistiche" element={isEnabled('statistiche') ? <StatisticheSala /> : <DisabledModule name="Statistiche Sala" />} />
           <Route path="/turni" element={isEnabled('turni') ? <TurniPage /> : <DisabledModule name="Turni" />} />
           <Route path="/stato-dati" element={<StatoDati />} />
@@ -171,6 +175,9 @@ export default function App() {
           <Route path="/turni-bi" element={<TurniAnalysisBi />} />
           <Route path="/contabilita-bi" element={<ContabilitaBi />} />
           <Route path="/coperti-bi" element={<CopertiBi />} />
+          {/* BILANCI — ogni sottosezione ha una sotto-route propria e linkabile */}
+          <Route path="/bilanci" element={<BilanciPage />} />
+          <Route path="/bilanci/:sezione" element={<BilanciPage />} />
           <Route path="/admin" element={<Navigate to="/admin/dipendenti" replace />} />
           <Route path="/admin/:tab" element={<AdminPanel />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
