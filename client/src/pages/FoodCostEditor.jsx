@@ -4,9 +4,10 @@
  * permette di modificare il costo unitario e salva in listino_prodotti.
  * Il food cost % si aggiorna in tempo reale (costo / prezzo medio).
  */
-import React, { useEffect, useMemo, useState, useCallback } from 'react'
+import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import { Coins, Search, Save, Loader, CheckCircle2, AlertTriangle, RefreshCw, Receipt, X, Wand2, ChefHat } from 'lucide-react'
 import { listinoApi, ricetteApi } from '../api/client'
+import { BottoneCsv, NotaCopertura } from '../lib/tabella'
 import RecipeCard from './RecipeCard'
 
 // Categorie "rivendita" (prodotto acquistato e rivenduto, senza ricetta)
@@ -66,27 +67,43 @@ export default function FoodCostEditor() {
   const [suggLoading, setSuggLoading] = useState(false)
   const [autoBusy, setAutoBusy] = useState(false)
   const [ricMap, setRicMap] = useState({})       // prodotto_key → { n_ingredienti, costo_food }
+  const [ricErr, setRicErr] = useState(null)     // ricette non caricate ⇒ "senza ricetta" è inattendibile
+  const [suggErr, setSuggErr] = useState(null)
   const [recipeProduct, setRecipeProduct] = useState(null)
 
+  const richiestaRef = useRef(0)
+
   const load = useCallback(async () => {
-    setLoading(true); setError(null); setSavedMsg(null)
+    const mia = ++richiestaRef.current
+    setLoading(true); setError(null); setSavedMsg(null); setRicErr(null)
     try {
+      // `ricetteApi.sommario()` legge v_ricette_costo senza paginazione (API non
+      // modificabile da qui): oltre 1000 prodotti con ricetta i successivi
+      // risulterebbero "senza ricetta". Il caso viene dichiarato in pagina.
+      // Il vecchio `.catch(() => ({}))` faceva sparire anche gli errori veri:
+      // ogni prodotto sembrava privo di ricetta e il food cost "definito" spariva.
       const [data, ric] = await Promise.all([
         listinoApi.prodottiConFoodCost({ sede }),
-        ricetteApi.sommario().catch(() => ({})),
+        ricetteApi.sommario().catch(e => { if (mia === richiestaRef.current) setRicErr(e?.message || String(e)); return null }),
       ])
+      if (mia !== richiestaRef.current) return
       setRows(data)
       setRicMap(ric || {})
       setEdits({})
     } catch (e) {
+      if (mia !== richiestaRef.current) return
       setError(e?.message || 'Errore di caricamento')
       setRows([])
     } finally {
-      setLoading(false)
+      if (mia === richiestaRef.current) setLoading(false)
     }
   }, [sede])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    load()
+    // Invalida la richiesta in volo: nessun setState dopo lo smontaggio.
+    return () => { richiestaRef.current++ }
+  }, [load])
 
   const keyOf = (r) => r.prodotto.toUpperCase()
 
@@ -128,9 +145,11 @@ export default function FoodCostEditor() {
 
   // ── Suggerimenti prezzo da fatture ────────────────────────────────────────
   const caricaSugg = useCallback(async (q) => {
-    setSuggLoading(true)
+    setSuggLoading(true); setSuggErr(null)
     try { setSugg(await listinoApi.suggerimentiCosto({ query: q })) }
-    catch { setSugg([]) }
+    // Un errore di rete/RLS finiva a mostrare "Nessuna riga fattura trovata",
+    // cioè un guasto travestito da risultato vuoto.
+    catch (e) { setSugg([]); setSuggErr(e?.message || String(e)) }
     finally { setSuggLoading(false) }
   }, [])
 
@@ -191,7 +210,10 @@ export default function FoodCostEditor() {
   const salvaTutto = async () => {
     if (!changedKeys.length) return
     setSaving(true); setError(null); setSavedMsg(null)
-    let ok = 0, fail = 0
+    let ok = 0
+    // Prima l'errore veniva solo contato ("N errori") senza mai dire QUALI
+    // prodotti e PERCHÉ: impossibile capire cosa ripetere.
+    const falliti = []
     for (const k of changedKeys) {
       const r = rows.find(x => keyOf(x) === k)
       const costo = parseFloat(String(edits[k]).replace(',', '.'))
@@ -201,10 +223,11 @@ export default function FoodCostEditor() {
           costo_acquisto: costo, prezzo_vendita: r.prezzo_medio || null,
         })
         ok++
-      } catch (e) { fail++; }
+      } catch (e) { falliti.push(`${r?.prodotto || k}: ${e?.message || e}`) }
     }
     setSaving(false)
-    setSavedMsg(`Salvati ${ok} prodotti${fail ? ` · ${fail} errori` : ''}`)
+    setSavedMsg(`Salvati ${ok} prodotti su ${changedKeys.length}`)
+    setError(falliti.length ? `${falliti.length} NON salvati — ${falliti.slice(0, 3).join(' · ')}${falliti.length > 3 ? ' …' : ''}` : null)
     await load()
   }
 
@@ -254,9 +277,33 @@ export default function FoodCostEditor() {
           {autoBusy ? <Loader size={15} className="animate-spin" /> : <Wand2 size={15} />}
           Auto-compila rivendita
         </button>
+        <BottoneCsv righe={filtered} nomeFile="food_cost_prodotti" colonne={[
+          { chiave: 'prodotto', etichetta: 'Prodotto' },
+          { chiave: 'categoria', etichetta: 'Categoria' },
+          { chiave: 'quantita', etichetta: 'Pezzi' },
+          { chiave: 'prezzo_medio', etichetta: 'Prezzo medio €' },
+          { chiave: 'costo_acquisto', etichetta: 'Costo € (food cost)' },
+          { chiave: 'fc', etichetta: 'Food cost %', valore: r => liveFc(r) },
+          { chiave: 'ricetta', etichetta: 'Ha ricetta', valore: r => (haRicetta(r) ? 'sì' : 'no') },
+        ]} />
         {savedMsg && <span className="text-sm text-green-700 flex items-center gap-1"><CheckCircle2 size={14} /> {savedMsg}</span>}
         {error && <span className="text-sm text-red-700 flex items-center gap-1"><AlertTriangle size={14} /> {error}</span>}
       </div>
+
+      {ricErr && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3 text-xs text-amber-800 flex items-start gap-2">
+          <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+          <span>
+            Ricette non caricate ({ricErr}): la colonna <strong>Ricetta</strong> mostra "senza ricetta" per tutti i
+            prodotti, ma è l'effetto dell'errore, non un dato. Non re-inserire ricette esistenti.
+          </span>
+        </div>
+      )}
+
+      {!loading && (
+        <NotaCopertura righe={rows.length} fonte="v_menu_engineering + listino_prodotti"
+          extra={`${nMancanti} senza food cost · sede ${sede}`} />
+      )}
 
       {loading ? (
         <div className="flex items-center justify-center py-20 text-gray-400"><Loader size={20} className="animate-spin mr-2" /> Caricamento…</div>
@@ -335,12 +382,16 @@ export default function FoodCostEditor() {
                           </div>
                           {suggLoading ? (
                             <div className="text-sm text-gray-400 flex items-center gap-2 py-2"><Loader size={14} className="animate-spin" /> Ricerca…</div>
+                          ) : suggErr ? (
+                            <div className="text-sm text-red-700 py-2 flex items-center gap-1">
+                              <AlertTriangle size={14} /> Ricerca fallita: {suggErr} — non è "nessun risultato", riprova.
+                            </div>
                           ) : sugg.length === 0 ? (
                             <div className="text-sm text-gray-400 py-2">Nessuna riga fattura trovata. Affina la ricerca qui sopra.</div>
                           ) : (
                             <div className="space-y-1">
-                              {sugg.map((s, i) => (
-                                <div key={i} className="flex items-center gap-3 text-sm bg-white border border-gray-100 rounded-lg px-3 py-1.5">
+                              {sugg.map((s) => (
+                                <div key={`${s.descrizione}|${s.unita_misura || ''}`} className="flex items-center gap-3 text-sm bg-white border border-gray-100 rounded-lg px-3 py-1.5">
                                   <span className="flex-1 text-gray-700">{s.descrizione}</span>
                                   <span className="text-gray-500 text-xs">{s.unita_misura || ''} · {s.fatture_count || 0} fatt. · {s.ultima_fattura || '—'}</span>
                                   <span className="text-gray-700 font-medium whitespace-nowrap">{eur(s.prezzo_medio)}<span className="text-gray-400 text-xs"> (min {eur(s.prezzo_min)})</span></span>
@@ -374,7 +425,12 @@ export default function FoodCostEditor() {
           prodotto={recipeProduct.nome}
           prezzoVendita={recipeProduct.prezzo}
           onClose={() => setRecipeProduct(null)}
-          onSaved={async () => { try { setRicMap(await ricetteApi.sommario()) } catch { /* noop */ } }}
+          onSaved={async () => {
+            // Il ricarico del sommario può fallire: se non lo si dice, la riga
+            // torna a mostrare "ricetta" come se il salvataggio non fosse servito.
+            try { setRicMap(await ricetteApi.sommario()); setRicErr(null) }
+            catch (e) { setRicErr(e?.message || String(e)) }
+          }}
         />
       )}
     </div>

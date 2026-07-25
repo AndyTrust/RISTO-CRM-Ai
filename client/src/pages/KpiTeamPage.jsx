@@ -10,6 +10,8 @@ import {
   kpiTargetsApi, sediApi,
 } from '../api/client'
 import PageStatsWidget from '../components/PageStatsWidget'
+import useAnniDisponibili from '../hooks/useAnniDisponibili'
+import { useOrdinamento, IconaOrdine, BottoneCsv } from '../lib/tabella'
 
 // ── Utils ──────────────────────────────────────────────────────────────
 const fmt = (n, d = 2) => (n == null || isNaN(n)) ? '—' : Number(n).toLocaleString('it-IT', { minimumFractionDigits: d, maximumFractionDigits: d })
@@ -151,13 +153,20 @@ export default function KpiTeamPage() {
   const [pctCucina, setPctCucina] = useState(40)
   const [pctSala, setPctSala] = useState(60)
 
-  // Load sedi
+  // Load sedi — con guardia di unmount ed errore visibile: il `.catch(() => {})`
+  // precedente trasformava un blocco RLS in "nessuna sede", senza dirlo.
   useEffect(() => {
-    sediApi.getAll().then(r => setSedi(r.filter(s => s.active !== false))).catch(() => {})
+    let annullato = false
+    sediApi.getAll()
+      .then(r => { if (!annullato) setSedi((r || []).filter(s => s.active !== false)) })
+      .catch(e => { if (!annullato) setErrore(`Sedi non caricate: ${e?.message || e}`) })
+    return () => { annullato = true }
   }, [])
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  // `attivo()` blocca gli aggiornamenti di stato che arrivano dopo lo smontaggio
+  // o dopo che l'utente ha già cambiato sede/anno/mese.
+  const load = useCallback(async (attivo = () => true) => {
+    setLoading(true); setErrore(null)
     try {
       const [b, op, ob, bt, bo, kt] = await Promise.all([
         beMensileApi.mese({ sede, anno, mese }),
@@ -167,13 +176,24 @@ export default function KpiTeamPage() {
         bonusApi.operatori({ sede, anno, mese }),
         kpiTargetsApi.getTeam({ sede, anno, mese }),
       ])
+      if (!attivo()) return
       setBe(b); setOperatori(op || []); setObiettivi(ob || [])
       setBonusTeam(bt || []); setBonusOp(bo || []); setKpiTeam(kt)
-    } catch (e) { show('err', `Errore: ${e.message}`) }
-    finally { setLoading(false) }
+    } catch (e) {
+      if (!attivo()) return
+      // Il toast sparisce dopo 3,5 s: l'errore resta anche in un banner, altrimenti
+      // una pagina a zero sembra "mese senza dati" invece che "lettura fallita".
+      show('err', `Errore: ${e.message}`)
+      setErrore(e?.message || String(e))
+    }
+    finally { if (attivo()) setLoading(false) }
   }, [sede, anno, mese, show])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    let annullato = false
+    load(() => !annullato)
+    return () => { annullato = true }
+  }, [load])
 
   const handleCalcola = async () => {
     setLoading(true)

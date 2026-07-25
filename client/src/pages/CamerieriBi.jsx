@@ -1,11 +1,14 @@
-import { useState, useEffect, useMemo } from 'react'
+import React, { useState, useEffect, useMemo, useRef } from 'react'
 import supabase from '../supabase'
 import PageAssistant from '../components/PageAssistant'
+import { fetchPagedInfo } from '../api/paged'
+import { useAnniDisponibili } from '../hooks/useAnniDisponibili'
+import { fmtEur, fmtNum, fmtPct, useOrdinamento, IconaOrdine, BottoneCsv, NotaCopertura } from '../lib/tabella'
 import {
   BarChart, Bar, AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, Cell, ResponsiveContainer, ReferenceLine, LabelList
 } from 'recharts'
-import { Users, TrendingUp, Target, Award, ChevronUp, ChevronDown, Filter } from 'lucide-react'
+import { Users, TrendingUp, Target, Award, Filter } from 'lucide-react'
 
 const SEDE_OPTIONS = [
   { value: 'MA', label: 'Mameli (CA)' },
@@ -20,6 +23,27 @@ const MONTHS = [
   { value: 7, label: 'Luglio' }, { value: 8, label: 'Agosto' },
   { value: 9, label: 'Settembre' }, { value: 10, label: 'Ottobre' },
   { value: 11, label: 'Novembre' }, { value: 12, label: 'Dicembre' },
+]
+
+const COLONNE_OPERATORI = [
+  { key: 'operatore', label: 'Operatore' },
+  { key: 'tot_pezzi', label: 'Pezzi' },
+  { key: 'pct_pezzi_team', label: '% Team' },
+  { key: 'fatturato_stimato_operatore', label: 'Fatturato Stimato' },
+  { key: 'quantum_target', label: 'Quantum' },
+  { key: 'pct_target', label: '% Target' },
+  { key: 'stato_kpi', label: 'Stato' },
+  { key: 'tot_importo_aggiunte', label: 'Aggiunte €' },
+]
+
+const COLONNE_CSV_OPERATORI = COLONNE_OPERATORI.map(c => ({ chiave: c.key, etichetta: c.label }))
+
+const COLONNE_CSV_PRODOTTI = [
+  { chiave: 'categoria', etichetta: 'Categoria' },
+  { chiave: 'prodotto', etichetta: 'Prodotto' },
+  { chiave: 'quantita', etichetta: 'Pezzi' },
+  { chiave: 'totale', etichetta: 'Totale €' },
+  { chiave: 'prezzo_unitario', etichetta: 'Prezzo unitario' },
 ]
 
 function KpiCard({ icon: Icon, label, value, sub, color = 'indigo' }) {
@@ -62,8 +86,8 @@ const CustomBarTooltip = ({ active, payload, label }) => {
   return (
     <div className="bg-white border border-gray-200 rounded-lg shadow-lg p-3 text-sm">
       <div className="font-semibold text-gray-800 mb-1">{label}</div>
-      {payload.map((p, i) => (
-        <div key={i} className="text-gray-600">
+      {payload.map((p) => (
+        <div key={p.dataKey ?? p.name} className="text-gray-600">
           {p.name}: <span className="font-medium" style={{ color: p.color }}>{typeof p.value === 'number' ? p.value.toLocaleString('it-IT') : p.value}</span>
         </div>
       ))}
@@ -80,16 +104,29 @@ export default function CamerieriBi() {
   const [trendData, setTrendData] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
-  const [sortCol, setSortCol] = useState('tot_pezzi')
-  const [sortDir, setSortDir] = useState('desc')
   const [expandedOp, setExpandedOp] = useState(null)
   const [drillData, setDrillData] = useState([])
   const [drillLoading, setDrillLoading] = useState(false)
+  const [drillTroncato, setDrillTroncato] = useState(false)
+  const [drillError, setDrillError] = useState(null)
   const [expandedCat, setExpandedCat] = useState(null)
 
-  useEffect(() => { fetchData() }, [sede, anno, mese])
+  // Anni realmente presenti a DB: il selettore cablato "2024→oggi" nascondeva
+  // lo storico più vecchio senza che dalla UI si potesse sospettarlo.
+  const { anni: anniDisponibili } = useAnniDisponibili('venduto_camerieri', 'data_inizio')
 
-  async function fetchData() {
+  // Le risposte lente non devono sovrascrivere una richiesta più recente:
+  // senza token, cambiando operatore in fretta il pannello mostrava i prodotti
+  // di quello precedente.
+  const drillToken = useRef(0)
+
+  useEffect(() => {
+    let annullato = false
+    caricaDati(() => annullato)
+    return () => { annullato = true }
+  }, [sede, anno, mese])
+
+  async function caricaDati(annullato = () => false) {
     setLoading(true)
     setError(null)
     try {
@@ -97,30 +134,41 @@ export default function CamerieriBi() {
       if (sede !== 'ALL') q = q.eq('sede', sede)
       const { data: rows, error: err } = await q.order('tot_pezzi', { ascending: false })
       if (err) throw err
+      if (annullato()) return
       setData(rows || [])
 
-      // trend ultimi 6 mesi
-      const meseStart = mese - 5
-      const annoStart = meseStart <= 0 ? anno - 1 : anno
-      const meseStartAdj = meseStart <= 0 ? meseStart + 12 : meseStart
+      // Trend ultimi 6 mesi (mese corrente incluso).
+      // La vecchia .or() confrontava SOLO `mese`, quindi a cavallo d'anno
+      // — es. marzo 2026, finestra da ottobre 2025 — prendeva i mesi >= 10 di
+      // entrambi gli anni e perdeva gen/feb/mar 2026. Qui la finestra è un
+      // intervallo su (anno, mese), spezzato nei due rami solo quando serve.
+      const inizio = new Date(anno, mese - 6, 1)
+      const annoDa = inizio.getFullYear()
+      const meseDa = inizio.getMonth() + 1
+      const finestra = annoDa === anno
+        ? `and(anno.eq.${anno},mese.gte.${meseDa},mese.lte.${mese})`
+        : `and(anno.eq.${annoDa},mese.gte.${meseDa}),and(anno.eq.${anno},mese.lte.${mese})`
+
       let qt = supabase.from('v_kpi_operatori_mese').select('sede,anno,mese,tot_pezzi,fatturato_stimato_operatore,operatore')
       if (sede !== 'ALL') qt = qt.eq('sede', sede)
-      const { data: trendRows } = await qt
-        .or(`and(anno.eq.${anno},mese.gte.${meseStartAdj}),and(anno.eq.${annoStart},mese.gte.${meseStartAdj})`)
-        .order('anno').order('mese')
-      if (trendRows) {
-        const grouped = {}
-        trendRows.forEach(r => {
-          const k = `${r.anno}-${String(r.mese).padStart(2,'0')}`
-          if (!grouped[k]) grouped[k] = { mese: k, MA: 0, PN: 0 }
-          grouped[k][r.sede] = (grouped[k][r.sede] || 0) + (r.tot_pezzi || 0)
-        })
-        setTrendData(Object.values(grouped).slice(-6))
-      }
+      const { data: trendRows, error: errTrend } = await qt.or(finestra)
+      // Senza leggere `error` un blocco RLS o una vista mancante diventerebbe
+      // "nessun dato trend disponibile", cioè un grafico vuoto senza spiegazione.
+      if (errTrend) throw errTrend
+      if (annullato()) return
+
+      const grouped = new Map()
+      ;(trendRows || []).forEach(r => {
+        const k = `${r.anno}-${String(r.mese).padStart(2, '0')}`
+        if (!grouped.has(k)) grouped.set(k, { mese: k, MA: 0, PN: 0 })
+        const g = grouped.get(k)
+        g[r.sede] = (g[r.sede] || 0) + (r.tot_pezzi || 0)
+      })
+      setTrendData([...grouped.values()].sort((a, b) => a.mese.localeCompare(b.mese)).slice(-6))
     } catch (e) {
-      setError(e.message)
+      if (!annullato()) setError(e.message || String(e))
     } finally {
-      setLoading(false)
+      if (!annullato()) setLoading(false)
     }
   }
 
@@ -133,34 +181,52 @@ export default function CamerieriBi() {
     return { operatoriAttivi, mediaPezzi, totFatturato, mediaPctTarget }
   }, [data])
 
-  const sortedData = useMemo(() => [...data].sort((a,b) => {
-    const av = a[sortCol]??0; const bv = b[sortCol]??0
-    return sortDir === 'asc' ? av-bv : bv-av
-  }), [data, sortCol, sortDir])
+  // useOrdinamento è bidirezionale e tiene i valori mancanti sempre in coda:
+  // il vecchio `a[sortCol] ?? 0` faceva risultare "in cima" gli operatori senza
+  // il dato, che è un'informazione falsa, non neutra.
+  const { righeOrdinate: sortedData, colonna: sortCol, direzione: sortDir, ordinaPer } =
+    useOrdinamento(data, 'tot_pezzi', 'desc')
 
   async function fetchDrillDown(operatore) {
     if (expandedOp === operatore) { setExpandedOp(null); setDrillData([]); return }
+    const token = ++drillToken.current
     setExpandedOp(operatore)
     setExpandedCat(null)
     setDrillLoading(true)
-    const dateFrom = `${anno}-${String(mese).padStart(2,'0')}-01`
-    // Fix: ultimo giorno reale del mese (il "-31" fisso generava date invalide → errore Postgres 22008)
-    const dateTo = `${anno}-${String(mese).padStart(2,'0')}-${String(new Date(anno, mese, 0).getDate()).padStart(2,'0')}`
-    const sedeFilter = sede !== 'ALL' ? sede : null
-    let q = supabase.from('venduto_camerieri')
-      .select('categoria,prodotto,quantita,totale,prezzo_unitario')
-      .eq('operatore', operatore)
-      .gte('data_inizio', dateFrom)
-      .lte('data_fine', dateTo)
-    if (sedeFilter) q = q.eq('sede', sedeFilter)
-    const { data: rows } = await q
-    setDrillData(rows || [])
-    setDrillLoading(false)
-  }
+    setDrillError(null)
+    setDrillData([])
 
-  function handleSort(col) {
-    if (sortCol===col) setSortDir(d=>d==='asc'?'desc':'asc')
-    else { setSortCol(col); setSortDir('desc') }
+    const dateFrom = `${anno}-${String(mese).padStart(2, '0')}-01`
+    // Ultimo giorno REALE del mese: il "-31" fisso generava date inesistenti in
+    // feb/apr/giu/set/nov → errore Postgres 22008.
+    const dateTo = `${anno}-${String(mese).padStart(2, '0')}-${String(new Date(anno, mese, 0).getDate()).padStart(2, '0')}`
+    const sedeFilter = sede !== 'ALL' ? sede : null
+
+    try {
+      // venduto_camerieri ha ~19.400 righe e PostgREST ne restituisce al massimo
+      // 1000 per richiesta: senza paginare, i totali per categoria del pannello
+      // erano una somma parziale presentata come totale.
+      const { righe, troncato } = await fetchPagedInfo(() => {
+        let q = supabase.from('venduto_camerieri')
+          .select('id,categoria,prodotto,quantita,totale,prezzo_unitario')
+          .eq('operatore', operatore)
+          .gte('data_inizio', dateFrom)
+          .lte('data_fine', dateTo)
+        if (sedeFilter) q = q.eq('sede', sedeFilter)
+        return q
+      }, 'id')
+      if (drillToken.current !== token) return
+      setDrillData(righe)
+      setDrillTroncato(troncato)
+    } catch (e) {
+      if (drillToken.current !== token) return
+      // `if (!data)` trattava un guasto RLS come "nessun prodotto venduto":
+      // due situazioni opposte che a schermo diventavano identiche.
+      setDrillError(e.message || String(e))
+      setDrillData([])
+    } finally {
+      if (drillToken.current === token) setDrillLoading(false)
+    }
   }
 
   const drillCategorie = useMemo(() => {
@@ -210,7 +276,7 @@ export default function CamerieriBi() {
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">Anno</label>
           <select className="border border-gray-300 rounded-lg px-3 py-2 text-sm" value={anno} onChange={e=>setAnno(Number(e.target.value))}>
-            {Array.from({length:new Date().getFullYear()-2023},(_,i)=>2024+i).map(y=><option key={y} value={y}>{y}</option>)}
+            {anniDisponibili.map(y=><option key={y} value={y}>{y}</option>)}
           </select>
         </div>
         <div>
@@ -219,7 +285,7 @@ export default function CamerieriBi() {
             {MONTHS.map(m=><option key={m.value} value={m.value}>{m.label}</option>)}
           </select>
         </div>
-        <button onClick={fetchData} className="bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-purple-700 flex items-center gap-1">
+        <button onClick={()=>caricaDati()} className="bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-purple-700 flex items-center gap-1">
           <Filter size={14}/> Aggiorna
         </button>
       </div>
@@ -263,8 +329,11 @@ export default function CamerieriBi() {
                   tickFormatter={v=>v?.length>10?v.slice(0,9)+'…':v}/>
                 <Tooltip content={<CustomBarTooltip/>}/>
                 <Bar dataKey="tot_pezzi" name="Pezzi" radius={[0,4,4,0]}>
-                  {sortedData.map((entry,i)=>(
-                    <Cell key={i} fill={statusColor(entry.stato_kpi)}/>
+                  {/* key sull'operatore: con key={i} il colore restava agganciato
+                      alla posizione, quindi riordinando la tabella le barre
+                      cambiavano stato_kpi senza che il dato fosse cambiato. */}
+                  {sortedData.map(entry=>(
+                    <Cell key={entry.operatore} fill={statusColor(entry.stato_kpi)}/>
                   ))}
                   <LabelList dataKey="tot_pezzi" position="right" fontSize={11}/>
                 </Bar>
@@ -295,8 +364,8 @@ export default function CamerieriBi() {
                 <ReferenceLine x={90} stroke="#f59e0b" strokeDasharray="4 4" strokeWidth={1.5}
                   label={{value:'Quorum 90%',position:'insideTopRight',fontSize:10,fill:'#f59e0b'}}/>
                 <Bar dataKey="pct_target" name="% Target" radius={[0,4,4,0]}>
-                  {sortedData.map((entry,i)=>(
-                    <Cell key={i} fill={statusColor(entry.stato_kpi)}/>
+                  {sortedData.map(entry=>(
+                    <Cell key={entry.operatore} fill={statusColor(entry.stato_kpi)}/>
                   ))}
                   <LabelList dataKey="pct_target" position="right" fontSize={11} formatter={v=>`${v?.toFixed(0)}%`}/>
                 </Bar>
@@ -342,34 +411,41 @@ export default function CamerieriBi() {
 
       {/* TABELLA DETTAGLIO */}
       <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
-        <h2 className="text-base font-semibold text-gray-800 mb-4 flex items-center gap-2">
-          <Users size={16} className="text-purple-500"/> Dettaglio Operatori
-        </h2>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-base font-semibold text-gray-800 flex items-center gap-2">
+            <Users size={16} className="text-purple-500"/> Dettaglio Operatori
+          </h2>
+          <BottoneCsv
+            righe={sortedData}
+            colonne={COLONNE_CSV_OPERATORI}
+            nomeFile={`operatori_${sede}_${anno}-${String(mese).padStart(2,'0')}`}
+          />
+        </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-gray-100 text-left">
                 <th className="pb-2 pr-2 w-8"></th>
-                {[
-                  {key:'operatore',label:'Operatore'},{key:'tot_pezzi',label:'Pezzi'},
-                  {key:'pct_pezzi_team',label:'% Team'},{key:'fatturato_stimato_operatore',label:'Fatturato Stimato'},
-                  {key:'quantum_target',label:'Quantum'},{key:'pct_target',label:'% Target'},
-                  {key:'stato_kpi',label:'Stato'},{key:'tot_importo_aggiunte',label:'Aggiunte €'},
-                ].map(col=>(
-                  <th key={col.key} onClick={()=>handleSort(col.key)}
+                {COLONNE_OPERATORI.map(col=>(
+                  <th key={col.key} onClick={()=>ordinaPer(col.key)}
                     className="pb-2 pr-4 font-semibold text-gray-600 cursor-pointer hover:text-purple-600 select-none whitespace-nowrap">
                     <span className="flex items-center gap-1">
                       {col.label}
-                      {sortCol===col.key&&(sortDir==='asc'?<ChevronUp size={12}/>:<ChevronDown size={12}/>)}
+                      <IconaOrdine colonna={col.key} colonnaAttiva={sortCol} direzione={sortDir}/>
                     </span>
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {sortedData.map((row,i)=>(
-                <>
-                  <tr key={i} className="border-b border-gray-50 hover:bg-gray-50">
+              {/* La key va sull'ELEMENTO dell'array, cioè il Fragment: prima stava
+                  sul <tr> interno mentre il Fragment restava senza key, quindi
+                  React non riconciliava e riordinando la tabella le righe si
+                  mescolavano con lo stato di espansione. Chiave di dominio
+                  (operatore), non l'indice, perché le righe sono ordinabili. */}
+              {sortedData.map(row=>(
+                <React.Fragment key={row.operatore}>
+                  <tr className="border-b border-gray-50 hover:bg-gray-50">
                     <td className="py-2 pr-2">
                       <button
                         onClick={() => fetchDrillDown(row.operatore)}
@@ -379,13 +455,13 @@ export default function CamerieriBi() {
                       </button>
                     </td>
                     <td className="py-2 pr-4 font-semibold text-gray-800">{row.operatore}</td>
-                    <td className="py-2 pr-4">{row.tot_pezzi}</td>
-                    <td className="py-2 pr-4">{(row.pct_pezzi_team||0).toFixed(1)}%</td>
-                    <td className="py-2 pr-4">{(row.fatturato_stimato_operatore||0).toLocaleString('it-IT',{style:'currency',currency:'EUR'})}</td>
-                    <td className="py-2 pr-4">{row.quantum_target}</td>
+                    <td className="py-2 pr-4">{fmtNum(row.tot_pezzi)}</td>
+                    <td className="py-2 pr-4">{fmtPct(row.pct_pezzi_team)}</td>
+                    <td className="py-2 pr-4">{fmtEur(row.fatturato_stimato_operatore, { decimali: 2 })}</td>
+                    <td className="py-2 pr-4">{fmtNum(row.quantum_target)}</td>
                     <td className="py-2 pr-4">
                       <span className={`font-semibold ${(row.pct_target||0)>=100?'text-green-600':(row.pct_target||0)>=90?'text-yellow-600':'text-red-600'}`}>
-                        {(row.pct_target||0).toFixed(0)}%
+                        {fmtPct(row.pct_target, { decimali: 0 })}
                       </span>
                     </td>
                     <td className="py-2 pr-4">
@@ -393,20 +469,39 @@ export default function CamerieriBi() {
                         {row.stato_kpi||'—'}
                       </span>
                     </td>
-                    <td className="py-2 pr-4">{(row.tot_importo_aggiunte||0).toLocaleString('it-IT',{style:'currency',currency:'EUR'})}</td>
+                    <td className="py-2 pr-4">{fmtEur(row.tot_importo_aggiunte, { decimali: 2 })}</td>
                   </tr>
                   {expandedOp === row.operatore && (
-                    <tr key={`drill-${i}`}>
+                    <tr>
                       <td colSpan={9} className="bg-slate-50 px-6 py-4 border-b border-gray-100">
                         {drillLoading ? (
                           <div className="text-sm text-gray-400 text-center py-4">Caricamento...</div>
+                        ) : drillError ? (
+                          /* Un guasto RLS/rete non deve somigliare a "non ha venduto nulla". */
+                          <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-4 py-3">
+                            Errore nel caricamento del dettaglio prodotti: {drillError}
+                          </div>
                         ) : drillCategorie.length === 0 ? (
                           <div className="text-sm text-gray-400 text-center py-4">Nessun dato prodotti per questo mese</div>
                         ) : (
                           <div>
-                            <div className="text-xs font-semibold text-gray-500 uppercase mb-3">
-                              {expandedOp} — Dettaglio Categorie &amp; Prodotti
+                            <div className="flex items-center justify-between mb-3">
+                              <div className="text-xs font-semibold text-gray-500 uppercase">
+                                {expandedOp} — Dettaglio Categorie &amp; Prodotti
+                              </div>
+                              <BottoneCsv
+                                righe={drillData}
+                                colonne={COLONNE_CSV_PRODOTTI}
+                                nomeFile={`prodotti_${expandedOp}_${anno}-${String(mese).padStart(2,'0')}`}
+                              />
                             </div>
+                            <NotaCopertura
+                              righe={drillData.length}
+                              da={`${String(mese).padStart(2,'0')}/${anno}`}
+                              a={`${String(mese).padStart(2,'0')}/${anno}`}
+                              fonte="venduto_camerieri"
+                              troncato={drillTroncato}
+                            />
                             {/* Mini bar chart categorie */}
                             <div className="mb-4">
                               <ResponsiveContainer width="100%" height={Math.min(drillCategorie.length * 28 + 20, 220)}>
@@ -452,12 +547,14 @@ export default function CamerieriBi() {
                                           </tr>
                                         </thead>
                                         <tbody>
-                                          {Object.values(cat.prodotti).sort((a,b)=>b.quantita-a.quantita).map((p,pi)=>(
-                                            <tr key={pi} className="border-b border-gray-100 hover:bg-white">
+                                          {/* Lista ordinata per quantità: la key deve essere il
+                                              nome del prodotto, non l'indice di posizione. */}
+                                          {Object.values(cat.prodotti).sort((a,b)=>b.quantita-a.quantita).map(p=>(
+                                            <tr key={p.prodotto} className="border-b border-gray-100 hover:bg-white">
                                               <td className="px-4 py-1.5 text-gray-700">{p.prodotto}</td>
-                                              <td className="px-4 py-1.5 text-right font-medium text-purple-700">{Number(p.quantita).toFixed(0)}</td>
-                                              <td className="px-4 py-1.5 text-right text-gray-600">{Number(p.totale).toLocaleString('it-IT',{style:'currency',currency:'EUR'})}</td>
-                                              <td className="px-4 py-1.5 text-right text-gray-500">{p.prezzo_unitario ? Number(p.prezzo_unitario).toLocaleString('it-IT',{style:'currency',currency:'EUR'}) : '—'}</td>
+                                              <td className="px-4 py-1.5 text-right font-medium text-purple-700">{fmtNum(p.quantita)}</td>
+                                              <td className="px-4 py-1.5 text-right text-gray-600">{fmtEur(p.totale, { decimali: 2 })}</td>
+                                              <td className="px-4 py-1.5 text-right text-gray-500">{fmtEur(p.prezzo_unitario, { decimali: 2 })}</td>
                                             </tr>
                                           ))}
                                         </tbody>
@@ -472,7 +569,7 @@ export default function CamerieriBi() {
                       </td>
                     </tr>
                   )}
-                </>
+                </React.Fragment>
               ))}
               {sortedData.length===0&&(
                 <tr><td colSpan={9} className="py-12 text-center text-gray-400">

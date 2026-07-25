@@ -3,8 +3,10 @@
  * Legge v_menu_engineering (storico completo venduto_camerieri) e aggrega per categoria.
  * Drill-down: click su categoria → top 10 prodotti.
  */
-import React, { useEffect, useState, useMemo } from 'react'
+import React, { useEffect, useState, useMemo, useRef } from 'react'
 import supabase from '../supabase'
+import { fetchPagedInfo } from '../api/paged'
+import { useOrdinamento, IconaOrdine, BottoneCsv, NotaCopertura } from '../lib/tabella'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Legend, ReferenceLine, Cell
@@ -99,34 +101,21 @@ function FCTooltip({ active, payload, label }) {
 
 // ── Tabella ordinabile ────────────────────────────────────────────────────────
 function Tabella({ rows }) {
-  const [sortKey, setSortKey] = useState('totale')
-  const [sortDir, setSortDir] = useState('desc')
   const [expanded, setExpanded] = useState(null)
 
-  const sorted = useMemo(() => {
-    return [...rows].sort((a, b) => {
-      const av = a[sortKey] ?? 0
-      const bv = b[sortKey] ?? 0
-      if (typeof av === 'number') return sortDir === 'asc' ? av - bv : bv - av
-      return sortDir === 'asc' ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av))
-    })
-  }, [rows, sortKey, sortDir])
-
-  const toggle = (k) => {
-    if (sortKey === k) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
-    else { setSortKey(k); setSortDir('desc') }
-  }
+  // useOrdinamento tiene i valori mancanti SEMPRE in coda: con `?? 0` una
+  // categoria SENZA food cost risultava la più conveniente del menu.
+  const { righeOrdinate: sorted, colonna: sortKey, direzione: sortDir, propsTh } =
+    useOrdinamento(rows, 'totale', 'desc')
 
   const Th = ({ k, label, right }) => (
     <th
-      onClick={() => toggle(k)}
+      {...propsTh(k)}
       className={`px-3 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wide cursor-pointer select-none hover:text-gray-800 transition-colors ${right ? 'text-right' : 'text-left'}`}
     >
       <span className={`flex items-center gap-1 ${right ? 'justify-end' : ''}`}>
         {label}
-        {sortKey === k
-          ? (sortDir === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />)
-          : <ChevronDown size={12} className="text-gray-300" />}
+        <IconaOrdine colonna={k} colonnaAttiva={sortKey} direzione={sortDir} />
       </span>
     </th>
   )
@@ -202,11 +191,13 @@ function Tabella({ rows }) {
                           </tr>
                         </thead>
                         <tbody>
-                          {(r.topProdotti || []).map((p, j) => {
+                          {(r.topProdotti || []).map((p) => {
                             const pfc = p.food_cost_pct
                             const pfcColor = pfc > 35 ? 'text-rose-600' : pfc > 28 ? 'text-amber-600' : 'text-emerald-600'
                             return (
-                              <tr key={j} className="border-t border-gray-100">
+                              // Chiave sul nome prodotto: la lista è già ordinata
+                              // per fatturato e cambia a ogni ricarica.
+                              <tr key={p.prodotto} className="border-t border-gray-100">
                                 <td className="px-3 py-1.5 text-gray-700">{p.prodotto}</td>
                                 <td className="px-3 py-1.5 text-right text-gray-600">{fmt(p.quantita)}</td>
                                 <td className="px-3 py-1.5 text-right font-medium text-gray-800">{eur(p.totale)}</td>
@@ -239,31 +230,64 @@ export default function MenuEngineering() {
   const [dates, setDates] = useState(meseCorrente())
   const handlePeriodChange = (pid, d) => { setPeriod(pid); if (d?.from && d?.to) setDates(d) }
   const [rows, setRows]   = useState([])
+  const [troncato, setTroncato] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)
 
   // Carica dati da Supabase
   useEffect(() => {
+    let annullato = false
     setLoading(true)
     setError(null)
 
-    let q = supabase.from('v_menu_engineering').select('*')
-    if (sede !== 'all') q = q.eq('sede', sede)
-    if (tipo !== 'all') q = q.eq('tipologia', tipo)
-    // Filtro overlap sui blocchi periodo: data_fine >= from AND data_inizio <= to
-    if (dates.from) q = q.gte('data_fine', dates.from)
-    if (dates.to)   q = q.lte('data_inizio', dates.to)
-    q = q.range(0, 9999)
+    // `.range(0, 9999)` NON alza il cap PostgREST di 1000 righe: la vista ne ha
+    // oltre 5.400 e le somme per categoria uscivano parziali senza alcun errore.
+    // v_menu_engineering non ha PK: la chiave di fatto è (sede, data_inizio,
+    // categoria, prodotto), quindi si ordina per le prime tre qui e si lascia
+    // `prodotto` a fetchPaged, ottenendo un ordine univoco fra le pagine.
+    const build = () => {
+      let q = supabase.from('v_menu_engineering').select('*')
+        .order('sede').order('data_inizio').order('categoria')
+      if (sede !== 'all') q = q.eq('sede', sede)
+      if (tipo !== 'all') q = q.eq('tipologia', tipo)
+      // Filtro overlap sui blocchi periodo: data_fine >= from AND data_inizio <= to
+      if (dates.from) q = q.gte('data_fine', dates.from)
+      if (dates.to)   q = q.lte('data_inizio', dates.to)
+      return q
+    }
 
-    q.then(({ data, error: e }) => {
-      if (e) throw e
-      setRows(data ?? [])
-    }).catch(e => setError(e.message))
-      .finally(() => setLoading(false))
+    fetchPagedInfo(build, 'prodotto')
+      .then(({ righe, troncato: tr }) => {
+        if (annullato) return
+        setRows(righe)
+        setTroncato(tr)
+      })
+      .catch(e => { if (!annullato) { setError(e.message); setRows([]) } })
+      .finally(() => { if (!annullato) setLoading(false) })
+
+    return () => { annullato = true }
   }, [sede, tipo, dates])
 
   // ── Aggregazione per categoria (da righe prodotto v_menu_engineering) ────
+  // Categorie non-menu escluse dall'analisi (coperto, servizio…): il confronto
+  // è per stringa ESATTA, quindi una variante di scrittura a cassa ("COPERTO",
+  // "Coperti") rientrerebbe nel food cost. Il fatturato escluso viene comunque
+  // conteggiato e dichiarato sotto i KPI, così la differenza col venduto totale
+  // è visibile invece di sparire.
   const EXCLUDED_CATS = useMemo(() => new Set(['Costo servizio', 'Servizio', 'Coperto', 'Rep. 1 (10%)']), [])
+
+  const escluse = useMemo(() => {
+    const byCat = {}
+    let totale = 0
+    for (const r of rows) {
+      const k = r.categoria || 'Senza categoria'
+      if (!EXCLUDED_CATS.has(k)) continue
+      const imp = Number(r.importo_venduto) || 0
+      byCat[k] = (byCat[k] || 0) + imp
+      totale += imp
+    }
+    return { totale, categorie: Object.keys(byCat) }
+  }, [rows, EXCLUDED_CATS])
 
   const byCategoria = useMemo(() => {
     const map = {}
@@ -427,7 +451,9 @@ Righe totali: ${rows.length}`
               icon={Euro}
               label="Fatturato Categorie"
               value={eur(kpi.totFattura)}
-              sub="periodo selezionato"
+              sub={escluse.totale > 0
+                ? `periodo selezionato · esclusi ${eur(escluse.totale)} di ${escluse.categorie.join(', ')}`
+                : 'periodo selezionato'}
               color="#10b981"
             />
             <KPICard
@@ -472,8 +498,8 @@ Righe totali: ${rows.length}`
                     />
                     <Tooltip content={<FattTooltip />} />
                     <Bar dataKey="fatturato" name="Fatturato" radius={[0, 4, 4, 0]}>
-                      {chartFatt.map((entry, i) => (
-                        <Cell key={i} fill={entry.fill} />
+                      {chartFatt.map((entry) => (
+                        <Cell key={entry.name} fill={entry.fill} />
                       ))}
                     </Bar>
                   </BarChart>
@@ -509,8 +535,8 @@ Righe totali: ${rows.length}`
                     <ReferenceLine x={28} stroke="#ef4444" strokeDasharray="4 3" strokeWidth={2}
                       label={{ value: '28%', position: 'insideTopRight', fontSize: 10, fill: '#ef4444' }} />
                     <Bar dataKey="food_cost_pct" name="Food Cost%" radius={[0, 4, 4, 0]}>
-                      {chartFC.map((entry, i) => (
-                        <Cell key={i} fill={entry.food_cost_pct > 28 ? '#ef4444' : '#10b981'} />
+                      {chartFC.map((entry) => (
+                        <Cell key={entry.name} fill={entry.food_cost_pct > 28 ? '#ef4444' : '#10b981'} />
                       ))}
                     </Bar>
                   </BarChart>
@@ -521,8 +547,20 @@ Righe totali: ${rows.length}`
 
           {/* Tabella Menu Engineering */}
           <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-            <h2 className="text-sm font-bold text-gray-800 mb-1">Dettaglio per Categoria</h2>
-            <p className="text-xs text-gray-400 mb-4">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <h2 className="text-sm font-bold text-gray-800 mb-1">Dettaglio per Categoria</h2>
+              <BottoneCsv righe={byCategoria} colonne={[
+                { chiave: 'categoria', etichetta: 'Categoria' },
+                { chiave: 'tipologia', etichetta: 'Tipologia' },
+                { chiave: 'quantita', etichetta: 'Pezzi' },
+                { chiave: 'totale', etichetta: 'Fatturato €', valore: r => (r.totale == null ? null : +r.totale.toFixed(2)) },
+                { chiave: 'food_cost_pct', etichetta: 'Food cost %', valore: r => (r.food_cost_pct == null ? null : +r.food_cost_pct.toFixed(1)) },
+                { chiave: 'prezzo_medio', etichetta: 'Prezzo medio €', valore: r => (r.prezzo_medio == null ? null : +r.prezzo_medio.toFixed(2)) },
+              ]} nomeFile="menu_engineering_categorie" />
+            </div>
+            <NotaCopertura righe={rows.length} da={dates.from} a={dates.to} fonte="v_menu_engineering" troncato={troncato}
+              extra={`${byCategoria.length} categorie`} />
+            <p className="text-xs text-gray-400 mb-4 mt-1">
               Clicca su una categoria per i top 10 prodotti, sulle intestazioni per ordinare — food cost
               <span className="text-emerald-600 font-medium"> verde ≤ 28%</span>,
               <span className="text-amber-600 font-medium"> giallo 28–35%</span>,

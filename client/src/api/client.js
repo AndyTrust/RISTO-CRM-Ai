@@ -28,6 +28,7 @@ export {
   repartiApi,
   fattureBi,
   bilanciApi,
+  analisiCostiApi,
   fattureCategorieApi,
   costiFissiApi,
   standardNazionaliApi,

@@ -70,6 +70,7 @@ import AnalisiReparti from './pages/AnalisiReparti'
 import SondaggiPage from './pages/SondaggiPage'
 import RecensioniPage from './pages/RecensioniPage'
 import BilanciPage from './pages/BilanciPage'
+import CostiPrezziBi from './pages/CostiPrezziBi'
 import { modules as modulesApi, crmConfig } from './api/client'
 
 export const ModulesContext = React.createContext({})
@@ -175,6 +176,11 @@ export default function App() {
           <Route path="/turni-bi" element={<TurniAnalysisBi />} />
           <Route path="/contabilita-bi" element={<ContabilitaBi />} />
           <Route path="/coperti-bi" element={<CopertiBi />} />
+          {/* COSTI & PREZZI BI — analisi sulle 114.650 righe di dettaglio fattura.
+              Come per /bilanci, ogni sottosezione ha una sotto-route propria:
+              un'analisi che non si può linkare non si può nemmeno discutere. */}
+          <Route path="/costi-prezzi" element={<CostiPrezziBi />} />
+          <Route path="/costi-prezzi/:sezione" element={<CostiPrezziBi />} />
           {/* BILANCI — ogni sottosezione ha una sotto-route propria e linkabile */}
           <Route path="/bilanci" element={<BilanciPage />} />
           <Route path="/bilanci/:sezione" element={<BilanciPage />} />

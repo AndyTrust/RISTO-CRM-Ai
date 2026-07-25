@@ -2,8 +2,10 @@
  * ForecastPage.jsx — Revenue Forecast & Confronto Reale
  * Previsioni incasso per MA e PN, confronto con chiusure giornaliere reali.
  */
-import React, { useEffect, useState, useMemo } from 'react'
+import React, { useEffect, useState, useMemo, useRef } from 'react'
 import supabase from '../supabase'
+import { fetchPaged } from '../api/paged'
+import { useOrdinamento, IconaOrdine, BottoneCsv, NotaCopertura } from '../lib/tabella'
 import {
   AreaChart, Area, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
@@ -24,6 +26,18 @@ const SEDE_OPTS = [
   { value: 'PN',  label: 'Predda Niedda (PN)' },
 ]
 
+// Il grafico reale-vs-forecast non può disegnare anni di punti giornalieri.
+// Il limite ESISTE, quindi va dichiarato: quando il periodo è più lungo il
+// grafico mostra gli ULTIMI giorni e la pagina lo scrive. Prima il troncamento
+// era muto (`guard < 366`) mentre la query leggeva tutto: grafico e tabella
+// raccontavano due periodi diversi senza dirlo.
+const MAX_GIORNI_GRAFICO = 400
+
+const pad = x => String(x).padStart(2, '0')
+// Mai `toISOString()`: converte in UTC e di sera, in fuso italiano, "oggi"
+// diventa ieri. Formattazione locale con pad manuale.
+const isoLocale = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+
 function eur(n) {
   return n != null
     ? `€ ${Number(n).toLocaleString('it-IT', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
@@ -36,31 +50,49 @@ function datIt(s) {
 function datShort(s) {
   if (!s) return ''
   const d = new Date(s + 'T00:00:00')
-  return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`
+  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}`
 }
 
-// Prossimi N giorni a partire da oggi
-function nextNDays(n) {
-  const pad = x => String(x).padStart(2, '0')
+// Prossimi N giorni a partire da `da`
+function nextNDays(n, da) {
   const days = []
   for (let i = 0; i < n; i++) {
-    const d = new Date()
+    const d = new Date(da + 'T12:00:00')
     d.setDate(d.getDate() + i)
-    days.push(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`)
+    days.push(isoLocale(d))
   }
   return days
 }
 
-// Ultimi N giorni (incluso oggi)
-function lastNDays(n) {
-  const pad = x => String(x).padStart(2, '0')
+// Ultimi N giorni (incluso `a`)
+function lastNDays(n, a) {
   const days = []
   for (let i = n - 1; i >= 0; i--) {
-    const d = new Date()
+    const d = new Date(a + 'T12:00:00')
     d.setDate(d.getDate() - i)
-    days.push(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`)
+    days.push(isoLocale(d))
   }
   return days
+}
+
+/** "Oggi" che si aggiorna davvero: ricalcolato al focus della finestra e ogni minuto. */
+function useOggi() {
+  const [oggi, setOggi] = useState(() => isoLocale(new Date()))
+  useEffect(() => {
+    const aggiorna = () => setOggi(prec => {
+      const ora = isoLocale(new Date())
+      return ora === prec ? prec : ora   // stessa stringa = nessun re-render
+    })
+    const t = setInterval(aggiorna, 60_000)
+    window.addEventListener('focus', aggiorna)
+    document.addEventListener('visibilitychange', aggiorna)
+    return () => {
+      clearInterval(t)
+      window.removeEventListener('focus', aggiorna)
+      document.removeEventListener('visibilitychange', aggiorna)
+    }
+  }, [])
+  return oggi
 }
 
 // Icona meteo in base al testo della nota
@@ -92,30 +124,14 @@ function KPICard({ icon: Icon, label, value, sub, color = '#6366f1' }) {
   )
 }
 
-// ── Tooltip AreaChart forecast ────────────────────────────────────────────────
-function ForecastTooltip({ active, payload, label }) {
+// ── Tooltip condiviso (forecast e reale-vs-forecast) ─────────────────────────
+function SerieTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null
   return (
     <div className="bg-white border border-gray-200 rounded-lg shadow-md px-3 py-2 text-xs">
       <div className="font-semibold text-gray-800 mb-1">{label}</div>
-      {payload.map((p, i) => (
-        <div key={i} className="flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full" style={{ backgroundColor: p.color }} />
-          <span className="text-gray-600">{p.name}: <b>{eur(p.value)}</b></span>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-// ── Tooltip LineChart reale vs forecast ──────────────────────────────────────
-function RealeForecastTooltip({ active, payload, label }) {
-  if (!active || !payload?.length) return null
-  return (
-    <div className="bg-white border border-gray-200 rounded-lg shadow-md px-3 py-2 text-xs">
-      <div className="font-semibold text-gray-800 mb-1">{label}</div>
-      {payload.map((p, i) => (
-        <div key={i} className="flex items-center gap-2">
+      {payload.map(p => (
+        <div key={p.dataKey ?? p.name} className="flex items-center gap-2">
           <span className="w-2 h-2 rounded-full" style={{ backgroundColor: p.color }} />
           <span className="text-gray-600">{p.name}: <b>{eur(p.value)}</b></span>
         </div>
@@ -131,67 +147,86 @@ export default function ForecastPage() {
   const [chiusure, setChiusure]   = useState([])
   const [loading, setLoading]     = useState(true)
   const [error, setError]         = useState(null)
+  const richiestaRef = useRef(0)
 
-  // Date di riferimento
-  const nextDays = useMemo(() => nextNDays(7), [])
+  // "Oggi" vivo: con `useMemo(..., [])` la pagina restava ferma al giorno in
+  // cui era stata aperta (in una dashboard lasciata aperta la notte, "oggi"
+  // continuava a indicare ieri).
+  const oggiIso = useOggi()
+  const nextDays = useMemo(() => nextNDays(7, oggiIso), [oggiIso])
 
   // Periodo storico personalizzabile (default: ultimi 7 giorni incluso oggi)
-  const defaultLast = useMemo(() => lastNDays(7), [])
+  const defaultLast = useMemo(() => lastNDays(7, oggiIso), [oggiIso])
   const [histPeriod, setHistPeriod] = useState('last7')
   const [histFrom, setHistFrom] = useState(defaultLast[0])
   const [histTo, setHistTo]     = useState(defaultLast[defaultLast.length - 1])
   const handleHistChange = (pid, d) => { setHistPeriod(pid); if (d?.from) setHistFrom(d.from); if (d?.to) setHistTo(d.to) }
-  const lastDays = useMemo(() => {
-    if (!histFrom || !histTo || histFrom > histTo) return defaultLast
-    const pad = x => String(x).padStart(2, '0')
-    const days = []
-    const d = new Date(histFrom + 'T00:00:00')
-    const end = new Date(histTo + 'T00:00:00')
-    let guard = 0
-    while (d <= end && guard < 366) {
-      days.push(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`)
-      d.setDate(d.getDate() + 1)
-      guard++
-    }
-    return days
-  }, [histFrom, histTo, defaultLast])
+
+  const periodoValido = histFrom && histTo && histFrom <= histTo
+  const daStorico = periodoValido ? histFrom : defaultLast[0]
+  const aStorico  = periodoValido ? histTo   : defaultLast[defaultLast.length - 1]
+
+  // Giorni del grafico: gli ULTIMI MAX_GIORNI_GRAFICO del periodo richiesto.
+  const { giorniGrafico, troncato } = useMemo(() => {
+    const giorni = []
+    const d = new Date(daStorico + 'T12:00:00')
+    const end = new Date(aStorico + 'T12:00:00')
+    while (d <= end) { giorni.push(isoLocale(d)); d.setDate(d.getDate() + 1) }
+    if (giorni.length <= MAX_GIORNI_GRAFICO) return { giorniGrafico: giorni, troncato: false }
+    return { giorniGrafico: giorni.slice(-MAX_GIORNI_GRAFICO), troncato: true }
+  }, [daStorico, aStorico])
 
   // Carica dati
   useEffect(() => {
+    // Guardia di unmount + numero di richiesta: senza, la risposta di una
+    // richiesta vecchia può sovrascrivere quella nuova.
+    let annullato = false
+    const mia = ++richiestaRef.current
+
     setLoading(true)
     setError(null)
 
-    const fromF  = nextDays[0]
-    const toF    = nextDays[nextDays.length - 1]
-    const fromC  = lastDays[0]
-    const toC    = lastDays[lastDays.length - 1]
+    const fromF = nextDays[0]
+    const toF   = nextDays[nextDays.length - 1]
 
-    // Query forecast prossimi 7 giorni
-    let qF = supabase.from('revenue_forecast')
-      .select('sede, data_competenza, previsione_incasso, valutazione, note_meteo, aggiornato_il')
-      .gte('data_competenza', fromF)
-      .lte('data_competenza', toF)
-      .order('data_competenza', { ascending: true })
-    if (sede !== 'all') qF = qF.eq('sede', sede)
+    ;(async () => {
+      try {
+        // `.range()`/`.limit()` non bypassano il cap di 1000 righe del server:
+        // con un periodo storico ampio (selezionabile dall'utente) le chiusure
+        // si fermavano in silenzio alle prime 1000 righe in ordine di data,
+        // cioè perdendo proprio i giorni più recenti.
+        const [fData, cData] = await Promise.all([
+          fetchPaged(() => {
+            let q = supabase.from('revenue_forecast')
+              .select('id, sede, data_competenza, previsione_incasso, valutazione, note_meteo, aggiornato_il')
+              .gte('data_competenza', fromF).lte('data_competenza', toF)
+            if (sede !== 'all') q = q.eq('sede', sede)
+            return q
+          }, 'id'),
+          fetchPaged(() => {
+            let q = supabase.from('chiusure_giornaliere')
+              .select('id, sede, data, totale_venduto_ipratico, coperti, scontrino_medio')
+              .gte('data', daStorico).lte('data', aStorico)
+            if (sede !== 'all') q = q.eq('sede', sede)
+            return q
+          }, 'id'),
+        ])
 
-    // Query chiusure reali ultimi 7 giorni
-    let qC = supabase.from('chiusure_giornaliere')
-      .select('sede, data, totale_venduto_ipratico, coperti, scontrino_medio')
-      .gte('data', fromC)
-      .lte('data', toC)
-      .order('data', { ascending: true })
-    if (sede !== 'all') qC = qC.eq('sede', sede)
+        if (annullato || mia !== richiestaRef.current) return
+        setForecast(fData)
+        setChiusure(cData)
+      } catch (e) {
+        if (!annullato && mia === richiestaRef.current) {
+          setError(e?.message || String(e))
+          setForecast([]); setChiusure([])
+        }
+      } finally {
+        if (!annullato && mia === richiestaRef.current) setLoading(false)
+      }
+    })()
 
-    Promise.all([qF, qC])
-      .then(([{ data: fData, error: fErr }, { data: cData, error: cErr }]) => {
-        if (fErr) throw fErr
-        if (cErr) throw cErr
-        setForecast(fData ?? [])
-        setChiusure(cData ?? [])
-      })
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false))
-  }, [sede, nextDays, lastDays])
+    return () => { annullato = true }
+  }, [sede, nextDays, daStorico, aStorico])
 
   // ── KPI ──────────────────────────────────────────────────────────────────
   const oggi    = nextDays[0]
@@ -218,28 +253,30 @@ export default function ForecastPage() {
       const pn = righe.find(r => r.sede === 'PN')
       return {
         data: datShort(data),
-        MA:   ma ? Number(ma.previsione_incasso) || 0 : undefined,
-        PN:   pn ? Number(pn.previsione_incasso) || 0 : undefined,
-        // Se sede è unica, mostra il totale
-        totale: righe.reduce((s, r) => s + (Number(r.previsione_incasso) || 0), 0) || undefined,
+        MA:   ma ? Number(ma.previsione_incasso) || 0 : null,
+        PN:   pn ? Number(pn.previsione_incasso) || 0 : null,
+        totale: righe.length
+          ? righe.reduce((s, r) => s + (Number(r.previsione_incasso) || 0), 0)
+          : null,
       }
     })
   }, [forecast, nextDays])
 
-  // ── Dati LineChart reale vs forecast (ultimi 7 gg) ───────────────────────
+  // ── Dati LineChart reale vs forecast ─────────────────────────────────────
   const lineData = useMemo(() => {
-    return lastDays.map(data => {
+    return giorniGrafico.map(data => {
       const cRighe = chiusure.filter(r => r.data === data)
       const fRighe = forecast.filter(r => r.data_competenza === data)
-      const reale   = cRighe.reduce((s, r) => s + (Number(r.totale_venduto_ipratico) || 0), 0)
-      const previsto = fRighe.reduce((s, r) => s + (Number(r.previsione_incasso) || 0), 0)
       return {
         data:   datShort(data),
-        reale:  reale   || undefined,
-        forecast: previsto || undefined,
+        // Un giorno di chiusura REALE a €0 è un dato, non un buco: con
+        // `reale || undefined` veniva disegnato come mancante e la linea ci
+        // passava sopra interpolando, nascondendo la giornata a zero.
+        reale:    cRighe.length ? cRighe.reduce((s, r) => s + (Number(r.totale_venduto_ipratico) || 0), 0) : null,
+        forecast: fRighe.length ? fRighe.reduce((s, r) => s + (Number(r.previsione_incasso) || 0), 0) : null,
       }
     })
-  }, [chiusure, forecast, lastDays])
+  }, [chiusure, forecast, giorniGrafico])
 
   // ── Tabella forecast ────────────────────────────────────────────────────
   const tabellaForecast = useMemo(() => {
@@ -250,6 +287,35 @@ export default function ForecastPage() {
     })
   }, [forecast])
 
+  const ordForecast = useOrdinamento(tabellaForecast, 'data_competenza', 'asc')
+  const chiusureOrdinabili = useMemo(
+    () => [...chiusure].sort((a, b) => (a.data < b.data ? 1 : a.data > b.data ? -1 : (a.sede || '').localeCompare(b.sede || ''))),
+    [chiusure]
+  )
+  const ordChiusure = useOrdinamento(chiusureOrdinabili, 'data', 'desc')
+
+  const COLONNE_FORECAST = [
+    { chiave: 'data_competenza', etichetta: 'Data' },
+    { chiave: 'sede', etichetta: 'Sede' },
+    { chiave: 'previsione_incasso', etichetta: 'Previsione' },
+    { chiave: 'valutazione', etichetta: 'Valutazione' },
+    { chiave: 'note_meteo', etichetta: 'Meteo' },
+  ]
+  const COLONNE_CHIUSURE = [
+    { chiave: 'data', etichetta: 'Data' },
+    { chiave: 'sede', etichetta: 'Sede' },
+    { chiave: 'totale_venduto_ipratico', etichetta: 'Incasso' },
+    { chiave: 'coperti', etichetta: 'Coperti' },
+    { chiave: 'scontrino_medio', etichetta: 'Scontrino medio' },
+  ]
+
+  const Th = ({ ord, col, children, align = 'left' }) => (
+    <th {...ord.propsTh(col)}
+      className={`px-3 py-2 text-${align} text-xs font-semibold text-gray-500 uppercase tracking-wide cursor-pointer select-none hover:text-gray-800`}>
+      {children}<IconaOrdine colonna={col} colonnaAttiva={ord.colonna} direzione={ord.direzione} />
+    </th>
+  )
+
   // ── systemContext per PageAssistant ──────────────────────────────────────
   const systemContext = useMemo(() => {
     return `Pagina: Revenue Forecast
@@ -259,10 +325,11 @@ KPI previsioni:
 - Domani (${datIt(domani)}): ${eur(kpi.domani)}
 - Totale settimana (7 giorni): ${eur(kpi.settimana)}
 Righe forecast: ${forecast.length}
-Chiusure reali ultimi 7 giorni: ${chiusure.length}
+Periodo storico confrontato: ${daStorico} → ${aStorico}
+Chiusure reali nel periodo: ${chiusure.length}
 Giornate con nota meteo: ${forecast.filter(r => r.note_meteo).length}
 Valutazioni disponibili: ${[...new Set(forecast.filter(r => r.valutazione).map(r => r.valutazione))].join(', ') || 'nessuna'}`
-  }, [kpi, sede, oggi, domani, forecast, chiusure])
+  }, [kpi, sede, oggi, domani, forecast, chiusure, daStorico, aStorico])
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -296,6 +363,12 @@ Valutazioni disponibili: ${[...new Set(forecast.filter(r => r.valutazione).map(r
       {/* Filtro periodo storico — componente condiviso */}
       <PeriodFilter period={histPeriod} dates={{ from: histFrom, to: histTo }} onChange={handleHistChange}
         extra={<span className="text-xs text-gray-400 pb-2.5">Confronto previsioni vs reale sul periodo · previsioni future: prossimi 7 giorni</span>} />
+
+      {!periodoValido && (
+        <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-4 py-2 text-xs">
+          <AlertCircle size={14} /> Intervallo non valido (Dal &gt; Al): mostro gli ultimi 7 giorni.
+        </div>
+      )}
 
       {/* Errore */}
       {error && (
@@ -367,7 +440,7 @@ Valutazioni disponibili: ${[...new Set(forecast.filter(r => r.valutazione).map(r
                   <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                   <XAxis dataKey="data" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 10 }} tickFormatter={v => `€${(v / 1000).toFixed(1)}k`} />
-                  <Tooltip content={<ForecastTooltip />} />
+                  <Tooltip content={<SerieTooltip />} />
                   <Legend wrapperStyle={{ fontSize: 11 }} />
                   {sede === 'all' ? (
                     <>
@@ -385,12 +458,19 @@ Valutazioni disponibili: ${[...new Set(forecast.filter(r => r.valutazione).map(r
             )}
           </div>
 
-          {/* LineChart reale vs forecast (ultimi 7 giorni) */}
+          {/* LineChart reale vs forecast */}
           <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-            <h2 className="text-sm font-bold text-gray-800 mb-1">Incasso Reale vs Forecast — Ultimi 7 Giorni</h2>
-            <p className="text-xs text-gray-400 mb-4">
-              Confronto tra chiusure reali (iPratico) e previsioni
+            <h2 className="text-sm font-bold text-gray-800 mb-1">
+              Incasso Reale vs Forecast — {giorniGrafico[0]} → {giorniGrafico[giorniGrafico.length - 1]}
+            </h2>
+            <p className="text-xs text-gray-400 mb-1">
+              Confronto tra chiusure reali (iPratico) e previsioni · le giornate senza chiusura restano interrotte, quelle chiuse a €0 sono disegnate a zero
             </p>
+            {troncato && (
+              <p className="text-[11px] text-amber-600 font-medium mb-3">
+                ⚠ Periodo più lungo di {MAX_GIORNI_GRAFICO} giorni: il grafico mostra solo gli ultimi {MAX_GIORNI_GRAFICO}. La tabella qui sotto contiene invece tutto il periodo ({chiusure.length} righe).
+              </p>
+            )}
             {lineData.every(d => d.reale == null && d.forecast == null) ? (
               <div className="flex items-center justify-center h-48 text-gray-400 text-sm">
                 Nessun dato disponibile per il confronto.
@@ -399,9 +479,9 @@ Valutazioni disponibili: ${[...new Set(forecast.filter(r => r.valutazione).map(r
               <ResponsiveContainer width="100%" height={220}>
                 <LineChart data={lineData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                  <XAxis dataKey="data" tick={{ fontSize: 11 }} />
+                  <XAxis dataKey="data" tick={{ fontSize: 11 }} interval="preserveStartEnd" />
                   <YAxis tick={{ fontSize: 10 }} tickFormatter={v => `€${(v / 1000).toFixed(1)}k`} />
-                  <Tooltip content={<RealeForecastTooltip />} />
+                  <Tooltip content={<SerieTooltip />} />
                   <Legend wrapperStyle={{ fontSize: 11 }} />
                   <Line
                     type="monotone"
@@ -409,8 +489,8 @@ Valutazioni disponibili: ${[...new Set(forecast.filter(r => r.valutazione).map(r
                     name="Incasso Reale"
                     stroke="#10b981"
                     strokeWidth={2.5}
-                    dot={{ r: 4, fill: '#10b981' }}
-                    connectNulls
+                    dot={{ r: 3, fill: '#10b981' }}
+                    connectNulls={false}
                   />
                   <Line
                     type="monotone"
@@ -419,8 +499,8 @@ Valutazioni disponibili: ${[...new Set(forecast.filter(r => r.valutazione).map(r
                     stroke="#a78bfa"
                     strokeWidth={2}
                     strokeDasharray="5 4"
-                    dot={{ r: 3, fill: '#a78bfa' }}
-                    connectNulls
+                    dot={{ r: 2, fill: '#a78bfa' }}
+                    connectNulls={false}
                   />
                 </LineChart>
               </ResponsiveContainer>
@@ -429,10 +509,13 @@ Valutazioni disponibili: ${[...new Set(forecast.filter(r => r.valutazione).map(r
 
           {/* Tabella forecast */}
           <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-            <h2 className="text-sm font-bold text-gray-800 mb-4">
-              Dettaglio Previsioni
-              <span className="ml-2 text-xs font-normal text-gray-400">({tabellaForecast.length} righe)</span>
-            </h2>
+            <div className="flex items-start justify-between gap-3 flex-wrap mb-4">
+              <div>
+                <h2 className="text-sm font-bold text-gray-800">Dettaglio Previsioni</h2>
+                <NotaCopertura righe={tabellaForecast.length} da={nextDays[0]} a={nextDays[nextDays.length - 1]} fonte="revenue_forecast" />
+              </div>
+              <BottoneCsv righe={ordForecast.righeOrdinate} colonne={COLONNE_FORECAST} nomeFile={`forecast_${sede}`} />
+            </div>
             {tabellaForecast.length === 0 ? (
               <div className="text-center py-12 text-gray-400 text-sm">
                 Nessuna previsione disponibile per i prossimi 7 giorni.
@@ -442,16 +525,16 @@ Valutazioni disponibili: ${[...new Set(forecast.filter(r => r.valutazione).map(r
                 <table className="min-w-full text-sm">
                   <thead className="bg-gray-50">
                     <tr>
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Data</th>
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Sede</th>
-                      <th className="px-3 py-2 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Previsione</th>
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Valutazione</th>
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Meteo</th>
+                      <Th ord={ordForecast} col="data_competenza">Data</Th>
+                      <Th ord={ordForecast} col="sede">Sede</Th>
+                      <Th ord={ordForecast} col="previsione_incasso" align="right">Previsione</Th>
+                      <Th ord={ordForecast} col="valutazione">Valutazione</Th>
+                      <Th ord={ordForecast} col="note_meteo">Meteo</Th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50">
-                    {tabellaForecast.map((r, i) => (
-                      <tr key={i} className="hover:bg-gray-50 transition-colors">
+                    {ordForecast.righeOrdinate.map(r => (
+                      <tr key={`${r.data_competenza}-${r.sede}`} className="hover:bg-gray-50 transition-colors">
                         <td className="px-3 py-2 text-gray-700 whitespace-nowrap">
                           {datIt(r.data_competenza)}
                         </td>
@@ -491,31 +574,34 @@ Valutazioni disponibili: ${[...new Set(forecast.filter(r => r.valutazione).map(r
             )}
           </div>
 
-          {/* Chiusure reali recenti (ultimi 7 gg) */}
+          {/* Chiusure reali del periodo */}
           <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-            <h2 className="text-sm font-bold text-gray-800 mb-4">
-              Chiusure Reali Recenti
-              <span className="ml-2 text-xs font-normal text-gray-400">ultimi 7 giorni da iPratico</span>
-            </h2>
+            <div className="flex items-start justify-between gap-3 flex-wrap mb-4">
+              <div>
+                <h2 className="text-sm font-bold text-gray-800">Chiusure Reali</h2>
+                <NotaCopertura righe={chiusure.length} da={daStorico} a={aStorico} fonte="chiusure_giornaliere (iPratico)" />
+              </div>
+              <BottoneCsv righe={ordChiusure.righeOrdinate} colonne={COLONNE_CHIUSURE} nomeFile={`chiusure_${sede}`} />
+            </div>
             {chiusure.length === 0 ? (
               <div className="text-center py-12 text-gray-400 text-sm">
-                Nessuna chiusura registrata negli ultimi 7 giorni.
+                Nessuna chiusura registrata nel periodo selezionato.
               </div>
             ) : (
               <div className="overflow-x-auto rounded-xl border border-gray-100">
                 <table className="min-w-full text-sm">
                   <thead className="bg-gray-50">
                     <tr>
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Data</th>
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Sede</th>
-                      <th className="px-3 py-2 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Incasso</th>
-                      <th className="px-3 py-2 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Coperti</th>
-                      <th className="px-3 py-2 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Scontrino Medio</th>
+                      <Th ord={ordChiusure} col="data">Data</Th>
+                      <Th ord={ordChiusure} col="sede">Sede</Th>
+                      <Th ord={ordChiusure} col="totale_venduto_ipratico" align="right">Incasso</Th>
+                      <Th ord={ordChiusure} col="coperti" align="right">Coperti</Th>
+                      <Th ord={ordChiusure} col="scontrino_medio" align="right">Scontrino Medio</Th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50">
-                    {chiusure.map((r, i) => (
-                      <tr key={i} className="hover:bg-gray-50 transition-colors">
+                    {ordChiusure.righeOrdinate.map(r => (
+                      <tr key={`${r.data}-${r.sede}`} className="hover:bg-gray-50 transition-colors">
                         <td className="px-3 py-2 text-gray-700 whitespace-nowrap">{datIt(r.data)}</td>
                         <td className="px-3 py-2">
                           <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${

@@ -18,6 +18,9 @@ import {
 } from 'lucide-react'
 import { operatoreMeseApi, beMensileApi, kpiTargetsApi, bonusApi } from '../api/client'
 import supabase from '../supabase'
+import { fetchPaged, fetchPagedInfo } from '../api/paged'
+import { useOrdinamento, IconaOrdine, BottoneCsv, NotaCopertura } from '../lib/tabella'
+import useAnniDisponibili from '../hooks/useAnniDisponibili'
 import PageStatsWidget from '../components/PageStatsWidget'
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -41,9 +44,43 @@ const clamp  = (v, min, max) => Math.min(Math.max(v, min), max)
 
 function firstWord(name = '') { return name.trim().split(/\s+/)[0].toUpperCase() }
 
+/**
+ * Date del mese in ISO, calcolate SEMPRE in fuso locale.
+ *
+ * `new Date(anno, mese, 0).toISOString().slice(0,10)` — il pattern che era
+ * ripetuto in cinque punti di questo file — costruisce la mezzanotte LOCALE
+ * dell'ultimo giorno del mese e la converte in UTC: in Italia (UTC+1/+2)
+ * diventa il giorno PRECEDENTE, quindi `.lte('data_fine', …)` tagliava via
+ * l'ultimo giorno di ogni mese senza segnalare nulla.
+ */
+const ymd        = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+const inizioMese = (anno, mese) => `${anno}-${String(mese).padStart(2, '0')}-01`
+const fineMese   = (anno, mese) => ymd(new Date(anno, mese, 0))   // giorno 0 = ultimo del mese precedente
+
 // ── Shared UI ──────────────────────────────────────────────────────────────
 function Spinner({ small } = {}) {
   return <div className={`text-center text-gray-400 ${small ? 'py-4 text-xs' : 'py-12'}`}>Caricamento…</div>
+}
+
+/**
+ * Errore visibile in pagina.
+ * Il client Supabase non rigetta mai: senza mostrare l'errore, un blocco RLS o
+ * una rete caduta diventano indistinguibili da "nessun dato nel periodo".
+ */
+function Errore({ messaggio, contesto }) {
+  if (!messaggio) return null
+  return (
+    <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 flex items-start gap-3 my-2">
+      <AlertCircle size={16} className="text-red-500 flex-shrink-0 mt-0.5" />
+      <div className="min-w-0">
+        <p className="text-sm font-semibold text-red-800">
+          {contesto ? `Errore nel caricamento — ${contesto}` : 'Errore nel caricamento dei dati'}
+        </p>
+        <p className="text-xs text-red-700 mt-0.5 break-words">{messaggio}</p>
+        <p className="text-[11px] text-red-500 mt-1">I numeri mostrati sono incompleti o assenti: non usarli per decidere.</p>
+      </div>
+    </div>
+  )
 }
 
 function OverviewCard({ icon: Icon, label, value, sub, color = 'indigo', trend }) {
@@ -106,61 +143,94 @@ function ProgressBar({ value, max, color = 'indigo' }) {
 function TabVenduto({ sede, anno, mese }) {
   const [ops,    setOps]    = useState([])
   const [loading, setLoading] = useState(true)
-  const [sortBy,  setSortBy]  = useState('fatturato')
+  const [errore,  setErrore]  = useState(null)
   const [expanded,    setExpanded]    = useState(null)      // operatore espanso
   const [expandedCat, setExpandedCat] = useState({})        // { op: catName | null }
-  const [prodotti,    setProdotti]    = useState({})        // { op: [{cat,pezzi,totale,raw}] }
+  const [prodotti,    setProdotti]    = useState({})        // { op: [{cat,pezzi,totale}] }
   const [prodByCat,   setProdByCat]   = useState({})        // { "op|cat": [{prod,pezzi,totale}] }
+  const [errDrill,    setErrDrill]    = useState(null)
+  const [copertura,   setCopertura]   = useState({})        // { op: {righe, troncato} }
 
   useEffect(() => {
+    let annullato = false
     setLoading(true)
+    setErrore(null)
+    // Cambiando periodo/sede i drill-down già aperti non valgono più: tenerli
+    // in cache mostrerebbe i prodotti del mese precedente sotto l'intestazione
+    // del mese nuovo.
+    setProdotti({})
+    setProdByCat({})
+    setCopertura({})
+    setExpanded(null)
     operatoreMeseApi.list({ sede, anno, mese })
       .then(data => {
-        const filtered = (data || []).filter(op =>
-          !PSEUDO_OPS.includes(op.operatore?.toLowerCase())
-        )
-        setOps(filtered)
+        if (annullato) return
+        setOps((data || []).filter(op => !PSEUDO_OPS.includes(op.operatore?.toLowerCase())))
       })
-      .finally(() => setLoading(false))
+      .catch(e => { if (!annullato) setErrore(e?.message || String(e)) })
+      .finally(() => { if (!annullato) setLoading(false) })
+    return () => { annullato = true }
   }, [sede, anno, mese])
 
-  const sorted = useMemo(() => {
-    const arr = [...ops]
-    if (sortBy === 'fatturato') arr.sort((a, b) => (b.fatturato_stimato_operatore||0) - (a.fatturato_stimato_operatore||0))
-    else if (sortBy === 'pezzi') arr.sort((a, b) => (b.tot_pezzi||0) - (a.tot_pezzi||0))
-    else if (sortBy === 'aggiunte') arr.sort((a, b) => (b.tot_importo_aggiunte||0) - (a.tot_importo_aggiunte||0))
-    return arr
-  }, [ops, sortBy])
+  // Righe piatte e numeriche: le colonne della tabella devono essere le stesse
+  // chiavi su cui si ordina, altrimenti l'ordinamento e ciò che si legge
+  // divergono.
+  const righe = useMemo(() => ops.map(o => ({
+    operatore: o.operatore,
+    op:        o,
+    fatturato: parseFloat(o.fatturato_stimato_operatore) || 0,
+    pezzi:     parseInt(o.tot_pezzi) || 0,
+    aggiunte:  parseFloat(o.tot_importo_aggiunte) || 0,
+    aggiuntePz: parseInt(o.tot_aggiunte) || 0,
+  })), [ops])
 
-  const totFat  = useMemo(() => ops.reduce((s, o) => s + (parseFloat(o.fatturato_stimato_operatore)||0), 0), [ops])
-  const totPezzi = useMemo(() => ops.reduce((s, o) => s + (parseInt(o.tot_pezzi)||0), 0), [ops])
-  const totAgg  = useMemo(() => ops.reduce((s, o) => s + (parseFloat(o.tot_importo_aggiunte)||0), 0), [ops])
+  const totFat   = useMemo(() => righe.reduce((s, o) => s + o.fatturato, 0), [righe])
+  const totPezzi = useMemo(() => righe.reduce((s, o) => s + o.pezzi, 0), [righe])
+  const totAgg   = useMemo(() => righe.reduce((s, o) => s + o.aggiunte, 0), [righe])
+
+  const righeConQuota = useMemo(() => righe.map(r => ({
+    ...r,
+    pctTeam: totFat > 0 ? (r.fatturato / totFat) * 100 : 0,
+  })), [righe, totFat])
+
+  const { righeOrdinate, colonna, direzione, propsTh } = useOrdinamento(righeConQuota, 'fatturato', 'desc')
 
   async function toggleExpand(op) {
     const key = op.operatore
     if (expanded === key) { setExpanded(null); return }
     setExpanded(key)
     if (prodotti[key]) return
-    const ini  = `${anno}-${String(mese).padStart(2,'0')}-01`
-    const fine = new Date(anno, mese, 0).toISOString().slice(0,10)
-    const { data } = await supabase
-      .from('venduto_camerieri')
-      .select('categoria, prodotto, quantita, totale')
-      .eq('sede', sede).eq('operatore', op.operatore)
-      .gte('data_inizio', ini).lte('data_fine', fine)
-      .not('prodotto', 'ilike', '%coperto%')
-    // Aggrega per categoria, filtra solo items con valore economico > €0.01
-    const byCat = {}
-    for (const r of data || []) {
-      const tot = parseFloat(r.totale) || 0
-      if (tot <= 0.01) continue   // escludi items senza valore economico
-      const cat = r.categoria || 'Altro'
-      if (!byCat[cat]) byCat[cat] = { cat, pezzi: 0, totale: 0 }
-      byCat[cat].pezzi  += parseFloat(r.quantita) || 0
-      byCat[cat].totale += tot
+    setErrDrill(null)
+    try {
+      // Paginato: senza questo il drill-down leggeva al massimo 1000 righe di
+      // venduto_camerieri e i totali per categoria erano sottostimati in
+      // silenzio — nessun errore, solo numeri più bassi del vero.
+      const { righe: dati, troncato } = await fetchPagedInfo(
+        () => supabase
+          .from('venduto_camerieri')
+          .select('id,categoria,prodotto,quantita,totale')
+          .eq('sede', sede).eq('operatore', op.operatore)
+          .gte('data_inizio', inizioMese(anno, mese)).lte('data_fine', fineMese(anno, mese))
+          .not('prodotto', 'ilike', '%coperto%'),
+        'id'
+      )
+      // Aggrega per categoria, filtra solo items con valore economico > €0.01
+      const byCat = {}
+      for (const r of dati) {
+        const tot = parseFloat(r.totale) || 0
+        if (tot <= 0.01) continue   // escludi items senza valore economico
+        const cat = r.categoria || 'Altro'
+        if (!byCat[cat]) byCat[cat] = { cat, pezzi: 0, totale: 0 }
+        byCat[cat].pezzi  += parseFloat(r.quantita) || 0
+        byCat[cat].totale += tot
+      }
+      const sortedCats = Object.values(byCat).sort((a, b) => b.totale - a.totale)
+      setProdotti(p => ({ ...p, [key]: sortedCats }))
+      setCopertura(c => ({ ...c, [key]: { righe: dati.length, troncato } }))
+    } catch (e) {
+      setErrDrill(e?.message || String(e))
+      setProdotti(p => ({ ...p, [key]: [] }))
     }
-    const sortedCats = Object.values(byCat).sort((a, b) => b.totale - a.totale)
-    setProdotti(p => ({ ...p, [key]: sortedCats }))
   }
 
   async function toggleExpandCat(op, cat) {
@@ -171,39 +241,50 @@ function TabVenduto({ sede, anno, mese }) {
       [opKey]: prev[opKey] === cat ? null : cat,
     }))
     if (prodByCat[cKey]) return
-    const ini  = `${anno}-${String(mese).padStart(2,'0')}-01`
-    const fine = new Date(anno, mese, 0).toISOString().slice(0,10)
-    const { data } = await supabase
-      .from('venduto_camerieri')
-      .select('prodotto, quantita, totale')
-      .eq('sede', sede).eq('operatore', opKey)
-      .eq('categoria', cat)
-      .gte('data_inizio', ini).lte('data_fine', fine)
-      .not('prodotto', 'ilike', '%coperto%')
-    // Aggrega per prodotto
-    const byProd = {}
-    for (const r of data || []) {
-      const tot = parseFloat(r.totale) || 0
-      if (tot <= 0.01) continue
-      const prod = r.prodotto || '—'
-      if (!byProd[prod]) byProd[prod] = { prod, pezzi: 0, totale: 0 }
-      byProd[prod].pezzi  += parseFloat(r.quantita) || 0
-      byProd[prod].totale += tot
+    setErrDrill(null)
+    try {
+      const dati = await fetchPaged(
+        () => supabase
+          .from('venduto_camerieri')
+          .select('id,prodotto,quantita,totale')
+          .eq('sede', sede).eq('operatore', opKey)
+          .eq('categoria', cat)
+          .gte('data_inizio', inizioMese(anno, mese)).lte('data_fine', fineMese(anno, mese))
+          .not('prodotto', 'ilike', '%coperto%'),
+        'id'
+      )
+      // Aggrega per prodotto
+      const byProd = {}
+      for (const r of dati) {
+        const tot = parseFloat(r.totale) || 0
+        if (tot <= 0.01) continue
+        const prod = r.prodotto || '—'
+        if (!byProd[prod]) byProd[prod] = { prod, pezzi: 0, totale: 0 }
+        byProd[prod].pezzi  += parseFloat(r.quantita) || 0
+        byProd[prod].totale += tot
+      }
+      const prodArr = Object.values(byProd).sort((a, b) => b.totale - a.totale)
+      setProdByCat(p => ({ ...p, [cKey]: prodArr }))
+    } catch (e) {
+      setErrDrill(e?.message || String(e))
+      setProdByCat(p => ({ ...p, [cKey]: [] }))
     }
-    const prodArr = Object.values(byProd).sort((a, b) => b.totale - a.totale)
-    setProdByCat(p => ({ ...p, [cKey]: prodArr }))
   }
 
-  function SortBtn({ id, label }) {
+  // Intestazione ordinabile: bidirezionale, mancanti in coda (useOrdinamento).
+  function ThOrd({ col, label }) {
     return (
-      <button
-        onClick={() => setSortBy(id)}
-        className={`text-right text-xs font-semibold uppercase tracking-wider cursor-pointer select-none px-3 py-2 ${sortBy === id ? 'text-indigo-700' : 'text-gray-500 hover:text-gray-800'}`}
-      >{label} {sortBy === id ? '↓' : ''}</button>
+      <th
+        {...propsTh(col)}
+        className={`text-right px-3 py-2 text-xs font-semibold uppercase tracking-wider cursor-pointer select-none ${colonna === col ? 'text-indigo-700' : 'text-gray-500 hover:text-gray-800'}`}
+      >
+        {label}<IconaOrdine colonna={col} colonnaAttiva={colonna} direzione={direzione} />
+      </th>
     )
   }
 
   if (loading) return <Spinner />
+  if (errore)  return <Errore messaggio={errore} contesto="operatori del mese" />
 
   return (
     <div className="space-y-4">
@@ -619,20 +700,33 @@ function TabTavoli({ sede, anno, mese }) {
   const [tavoli,  setTavoli]  = useState([])
   const [loading, setLoading] = useState(true)
   const [sortBy,  setSortBy]  = useState('incasso')
+  const [errore,  setErrore]  = useState(null)
 
   useEffect(() => {
+    let annullato = false
     setLoading(true)
-    const ini  = `${anno}-${String(mese).padStart(2,'0')}-01`
-    const fine = new Date(anno, mese, 0).toISOString().slice(0,10)
-    supabase.from('statistiche_tavoli')
-      .select('tavolo, n_coperti, n_ordini, incasso, scontrino_medio, durata_media_min')
-      .eq('sede', sede)
-      .gte('data_inizio', ini).lte('data_fine', fine)
-      .range(0, 4999) // bypass limite default 1000 righe (tabella ha >1761 righe)
-      .then(({ data }) => {
-        // Aggrega per tavolo (possono esserci più range)
+    setErrore(null)
+
+    const ini  = inizioMese(anno, mese)
+    const fine = fineMese(anno, mese)
+
+    ;(async () => {
+      try {
+        // Paginazione VERA: il `.range(0, 4999)` non alzava il tetto server di
+        // 1000 righe, quindi su un mese pieno l'aggregazione per tavolo
+        // sommava solo una parte degli scontrini e li presentava come totale.
+        const righe = await fetchPaged(
+          () => supabase.from('statistiche_tavoli')
+            .select('id, tavolo, n_coperti, n_ordini, incasso, scontrino_medio, durata_media_min')
+            .eq('sede', sede)
+            .gte('data_inizio', ini).lte('data_fine', fine),
+          'id'
+        )
+        if (annullato) return
+
+        // Aggrega per tavolo (possono esserci più righe per tavolo nel periodo)
         const byT = {}
-        for (const r of data || []) {
+        for (const r of righe) {
           if (!byT[r.tavolo]) byT[r.tavolo] = {
             tavolo: r.tavolo, n_coperti: 0, n_ordini: 0,
             incasso: 0, durata_sum: 0, n_rows: 0
@@ -651,8 +745,16 @@ function TabTavoli({ sede, anno, mese }) {
           durata_media_min: t.n_rows > 0 ? Math.round(t.durata_sum / t.n_rows) : 0,
         }))
         setTavoli(arr)
-      })
-      .finally(() => setLoading(false))
+      } catch (e) {
+        // Il `.then(({ data }) => …)` senza `error` faceva sembrare un blocco
+        // RLS una sala senza incassi.
+        if (!annullato) { setErrore(e.message || String(e)); setTavoli([]) }
+      } finally {
+        if (!annullato) setLoading(false)
+      }
+    })()
+
+    return () => { annullato = true }
   }, [sede, anno, mese])
 
   const sorted = useMemo(() => {
@@ -682,6 +784,7 @@ function TabTavoli({ sede, anno, mese }) {
   }
 
   if (loading) return <Spinner />
+  if (errore) return <Errore messaggio={errore} contesto="statistiche_tavoli" />
   if (tavoli.length === 0) return (
     <div className="text-center py-10 text-gray-400 text-sm">
       Nessun dato tavoli per {MESI[mese-1]} {anno} — {sede}.<br/>
@@ -770,42 +873,47 @@ function TabIncentivi({ sede, anno, mese }) {
   const [operatori, setOperatori] = useState([])
   const [categorie, setCategorie] = useState([])
   const [variantiMap, setVariantiMap] = useState({})  // { op: tot_aggiunte }
+  const [errore, setErrore] = useState(null)
 
   const loadData = useCallback(async () => {
     setLoading(true)
+    setErrore(null)
     try {
-      // Quorum: N mesi PRIMA del mese corrente
+      // Quorum: N mesi PRIMA del mese corrente.
+      // Le date passano da ymd() e non da toISOString(): quest'ultima converte
+      // in UTC e in fuso italiano faceva slittare ogni estremo al giorno prima.
       const quorumEnd   = new Date(anno, mese - 1, 0)         // ultimo giorno mese precedente
       const quorumStart = new Date(anno, mese - 1 - nMesi, 1) // N mesi fa
-      const qFrom = quorumStart.toISOString().slice(0, 10)
-      const qTo   = quorumEnd.toISOString().slice(0, 10)
+      const qFrom = ymd(quorumStart)
+      const qTo   = ymd(quorumEnd)
 
       // Mese corrente
-      const curFrom = `${anno}-${String(mese).padStart(2, '0')}-01`
-      const curTo   = new Date(anno, mese, 0).toISOString().slice(0, 10)
+      const curFrom = inizioMese(anno, mese)
+      const curTo   = fineMese(anno, mese)
 
-      const [{ data: hist }, { data: curr }, { data: varCurr }] = await Promise.all([
-        supabase.from('venduto_camerieri')
-          .select('operatore, categoria, quantita, data_inizio')
+      // Il quorum è una MEDIA MENSILE su N mesi di venduto_camerieri (19.400
+      // righe): con `.range(0, 9999)` il server ne restituiva 1000 e la media
+      // veniva calcolata su una frazione arbitraria del periodo — cioè il
+      // target incentivi di ogni operatore era sbagliato senza alcun segnale.
+      const [hist, curr, varCurr] = await Promise.all([
+        fetchPaged(() => supabase.from('venduto_camerieri')
+          .select('id, operatore, categoria, quantita, data_inizio')
           .eq('sede', sede)
           .not('operatore', 'ilike', '%pienissimo%')
           .lte('data_inizio', qTo)
-          .gte('data_fine', qFrom)
-          .range(0, 9999),
-        supabase.from('venduto_camerieri')
-          .select('operatore, categoria, quantita')
+          .gte('data_fine', qFrom), 'id'),
+        fetchPaged(() => supabase.from('venduto_camerieri')
+          .select('id, operatore, categoria, quantita')
           .eq('sede', sede)
           .not('operatore', 'ilike', '%pienissimo%')
           .lte('data_inizio', curTo)
-          .gte('data_fine', curFrom)
-          .range(0, 9999),
-        supabase.from('varianti_camerieri')
-          .select('operatore, aggiunta_qty')
+          .gte('data_fine', curFrom), 'id'),
+        fetchPaged(() => supabase.from('varianti_camerieri')
+          .select('id, operatore, aggiunta_qty')
           .eq('sede', sede)
           .not('operatore', 'ilike', '%pienissimo%')
           .lte('data_inizio', curTo)
-          .gte('data_fine', curFrom)
-          .range(0, 4999),
+          .gte('data_fine', curFrom), 'id'),
       ])
 
       // ── Storico: raggruppa per op + cat + mese ──────────────────────────
@@ -875,7 +983,12 @@ function TabIncentivi({ sede, anno, mese }) {
       setOperatori(opsArr)
       setCategorie(topCats)
     } catch (e) {
+      // Un errore solo in console lascia a schermo una matrice incentivi
+      // apparentemente valida ma vuota o vecchia: qui deve vederlo l'utente.
       console.error('Errore caricamento incentivi:', e)
+      setErrore(e.message || String(e))
+      setQuorumMap({}); setCurrentMap({}); setVariantiMap({})
+      setOperatori([]); setCategorie([])
     } finally {
       setLoading(false)
     }

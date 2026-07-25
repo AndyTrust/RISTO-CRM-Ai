@@ -4,8 +4,8 @@
  * Il food cost "definito" = somma(quantità × costo unitario), calcolato in tempo reale.
  * Suggerimento prezzo ingrediente dalle fatture fornitori.
  */
-import React, { useState, useEffect, useCallback } from 'react'
-import { X, Plus, Trash2, Loader, Receipt, Search, Save } from 'lucide-react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
+import { X, Plus, Trash2, Loader, Receipt, Search, Save, AlertTriangle } from 'lucide-react'
 import { ricetteApi, listinoApi } from '../api/client'
 
 const UNITA = ['g', 'kg', 'ml', 'cl', 'L', 'pz']
@@ -15,47 +15,71 @@ export default function RecipeCard({ prodotto, prezzoVendita, onClose, onSaved }
   const [righe, setRighe] = useState([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [errore, setErrore] = useState(null)
   const [nuovo, setNuovo] = useState({ ingrediente: '', quantita: '', unita: 'g', costo_unitario: '' })
   // suggerimenti prezzo ingrediente
   const [suggOpen, setSuggOpen] = useState(false)
   const [sugg, setSugg] = useState([])
   const [suggLoading, setSuggLoading] = useState(false)
+  const [suggErr, setSuggErr] = useState(null)
+
+  const richiestaRef = useRef(0)
 
   const load = useCallback(async () => {
-    setLoading(true)
-    try { setRighe(await ricetteApi.list(prodotto)) }
-    catch { setRighe([]) }
-    finally { setLoading(false) }
+    const mia = ++richiestaRef.current
+    setLoading(true); setErrore(null)
+    try {
+      const dati = await ricetteApi.list(prodotto)
+      if (mia !== richiestaRef.current) return
+      setRighe(dati)
+    } catch (e) {
+      // `catch { setRighe([]) }` mostrava "Nessun ingrediente, aggiungi la prima
+      // riga": un guasto RLS invitava a re-inserire una ricetta già esistente,
+      // duplicandola. Ora la lista resta vuota MA l'errore è dichiarato.
+      if (mia !== richiestaRef.current) return
+      setErrore(`Ricetta non caricata: ${e?.message || e}. NON è detto che sia vuota: riprova prima di inserire ingredienti.`)
+      setRighe([])
+    } finally {
+      if (mia === richiestaRef.current) setLoading(false)
+    }
   }, [prodotto])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    load()
+    // Invalida la richiesta in volo: nessun setState dopo la chiusura della modale.
+    return () => { richiestaRef.current++ }
+  }, [load])
 
   const totale = righe.reduce((s, r) => s + (Number(r.quantita) || 0) * (Number(r.costo_unitario) || 0), 0)
   const fcPct = prezzoVendita > 0 ? +(100 * totale / prezzoVendita).toFixed(1) : null
 
   const aggiungi = async () => {
     if (!nuovo.ingrediente.trim()) return
-    setSaving(true)
+    setSaving(true); setErrore(null)
     try {
       await ricetteApi.salvaRiga({ ...nuovo, nome_prodotto: prodotto })
       setNuovo({ ingrediente: '', quantita: '', unita: nuovo.unita, costo_unitario: '' })
       setSuggOpen(false); setSugg([])
       await load()
+    } catch (e) {
+      // try/finally senza catch: il fallimento spariva e la riga sembrava salvata.
+      setErrore(`Ingrediente NON salvato: ${e?.message || e}`)
     } finally { setSaving(false) }
   }
 
   const elimina = async (id) => {
-    setSaving(true)
+    setSaving(true); setErrore(null)
     try { await ricetteApi.eliminaRiga(id); await load() }
+    catch (e) { setErrore(`Riga NON eliminata: ${e?.message || e}`) }
     finally { setSaving(false) }
   }
 
   const cercaPrezzo = async () => {
     const q = nuovo.ingrediente.trim()
     if (q.length < 2) return
-    setSuggOpen(true); setSuggLoading(true)
+    setSuggOpen(true); setSuggLoading(true); setSuggErr(null)
     try { setSugg(await listinoApi.suggerimentiCosto({ query: q })) }
-    catch { setSugg([]) }
+    catch (e) { setSugg([]); setSuggErr(e?.message || String(e)) }
     finally { setSuggLoading(false) }
   }
 
@@ -82,6 +106,11 @@ export default function RecipeCard({ prodotto, prezzoVendita, onClose, onSaved }
 
         {/* Righe */}
         <div className="px-5 py-4">
+          {errore && (
+            <div className="mb-3 bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-xs text-red-700 flex items-start gap-2">
+              <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" /> {errore}
+            </div>
+          )}
           {loading ? (
             <div className="flex items-center justify-center py-8 text-gray-400"><Loader size={18} className="animate-spin mr-2" /> Caricamento…</div>
           ) : (
@@ -109,7 +138,7 @@ export default function RecipeCard({ prodotto, prezzoVendita, onClose, onSaved }
                     </td>
                   </tr>
                 ))}
-                {righe.length === 0 && (
+                {righe.length === 0 && !errore && (
                   <tr><td colSpan={6} className="py-4 text-center text-gray-400 text-sm">Nessun ingrediente. Aggiungi la prima riga qui sotto.</td></tr>
                 )}
               </tbody>
@@ -155,12 +184,14 @@ export default function RecipeCard({ prodotto, prezzoVendita, onClose, onSaved }
               <div className="mt-2 border-t border-gray-200 pt-2">
                 {suggLoading ? (
                   <div className="text-xs text-gray-400 flex items-center gap-2"><Loader size={12} className="animate-spin" /> Ricerca prezzi…</div>
+                ) : suggErr ? (
+                  <div className="text-xs text-red-600">Ricerca fallita: {suggErr} — non significa "nessun prezzo".</div>
                 ) : sugg.length === 0 ? (
                   <div className="text-xs text-gray-400">Nessun prezzo trovato in fattura per “{nuovo.ingrediente}”.</div>
                 ) : (
                   <div className="space-y-1 max-h-40 overflow-y-auto">
-                    {sugg.map((s, i) => (
-                      <div key={i} className="flex items-center gap-2 text-xs bg-white border border-gray-100 rounded-lg px-2 py-1">
+                    {sugg.map((s) => (
+                      <div key={`${s.descrizione}|${s.unita_misura || ''}`} className="flex items-center gap-2 text-xs bg-white border border-gray-100 rounded-lg px-2 py-1">
                         <span className="flex-1 text-gray-600">{s.descrizione}</span>
                         <span className="text-gray-400">{s.unita_misura || ''}</span>
                         <span className="font-medium text-gray-700">{eur(s.prezzo_medio)}</span>

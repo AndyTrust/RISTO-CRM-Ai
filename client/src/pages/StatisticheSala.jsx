@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react'
+import React, { useEffect, useState, useMemo, useRef } from 'react'
 import {
   BarChart, Bar, LineChart, Line, AreaChart, Area,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell
@@ -8,21 +8,15 @@ import { periodToDates } from '../components/DateRangePicker'
 import PeriodFilter from '../components/PeriodFilter'
 import PageAssistant from '../components/PageAssistant'
 import supabase from '../supabase'
+import { fetchPaged } from '../api/paged'
+import { useOrdinamento, IconaOrdine, BottoneCsv, NotaCopertura } from '../lib/tabella'
+import { useCoperturaTavoli } from '../hooks/useCoperturaTavoli'
 import PageStatsWidget from '../components/PageStatsWidget'
 import { useTabParam } from '../hooks/useTabParam'
-
-// statistiche_tavoli copre SOLO da questa data (verificato su Supabase).
-const TAVOLI_COVERAGE_START = '2026-03-01'
 
 const COLORS = ['#6366f1', '#3b82f6', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#ef4444', '#14b8a6']
 const SEDE_LABEL = { MA: 'Mameli (MA)', PN: 'Predda Niedda (PN)' }
 const SEDE_COLOR = { MA: '#6366f1', PN: '#10b981' }
-
-async function sbq(q) {
-  const { data, error } = await q
-  if (error) throw error
-  return data ?? []
-}
 
 function eur(n) {
   return (n != null && !isNaN(n)) ? `€ ${Number(n).toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'
@@ -93,26 +87,42 @@ function TabTurni({ location, fromDate, toDate }) {
 
   useEffect(() => {
     if (!fromDate || !toDate) return
+    // Guardia di unmount: cambiando tab o rotta durante il fetch, senza questa
+    // si finisce a fare setState su un componente già smontato.
+    let annullato = false
     setLoading(true); setError(null)
     const sede = location === 'MA' ? 'MA' : location === 'PN' ? 'PN' : null
 
-    let qCiusure = supabase.from('chiusure_giornaliere')
-      .select('data, coperti').gte('data', fromDate).lte('data', toDate)
-    if (sede) qCiusure = qCiusure.eq('sede', sede)
-
-    let qTurni = supabase.from('chiusure_turni')
-      .select('data, turno, quantita').gte('data', fromDate).lte('data', toDate)
-      .in('turno', ['pranzo', 'cena'])
-    if (sede) qTurni = qTurni.eq('sede', sede)
-
-    let qTavoli = supabase.from('statistiche_tavoli')
-      .select('data_inizio, data_chiusura, durata_media_min, n_coperti')
-      .gte('data_inizio', fromDate).lte('data_inizio', toDate)
-      .not('data_chiusura', 'is', null)
-    if (sede) qTavoli = qTavoli.eq('sede', sede)
-
-    Promise.all([sbq(qCiusure.range(0, 9999)), sbq(qTurni.range(0, 9999)), sbq(qTavoli.range(0, 99999))])
+    // Paginazione VERA: `.range(0, 99999)` non alzava il tetto di 1000 righe
+    // del server. La curva oraria e i picchi qui sotto sono ricostruiti riga
+    // per riga dai tavoli, quindi su un periodo ampio venivano calcolati su
+    // una frazione dei dati — e i "picchi rilevati dai dati" erano i picchi
+    // del primo pezzo di periodo, non del periodo.
+    Promise.all([
+      fetchPaged(() => {
+        let q = supabase.from('chiusure_giornaliere').select('id, data, coperti')
+          .gte('data', fromDate).lte('data', toDate)
+        if (sede) q = q.eq('sede', sede)
+        return q
+      }, 'id'),
+      fetchPaged(() => {
+        let q = supabase.from('chiusure_turni').select('id, data, turno, quantita')
+          .gte('data', fromDate).lte('data', toDate)
+          .in('turno', ['pranzo', 'cena'])
+        if (sede) q = q.eq('sede', sede)
+        return q
+      }, 'id'),
+      fetchPaged(() => {
+        let q = supabase.from('statistiche_tavoli')
+          .select('id, data_inizio, data_chiusura, durata_media_min, n_coperti')
+          .gte('data_inizio', fromDate).lte('data_inizio', toDate)
+          .not('data_chiusura', 'is', null)
+        if (sede) q = q.eq('sede', sede)
+        return q
+      }, 'id'),
+    ])
       .then(([chiusureData, turniData, tavoliData]) => {
+        if (annullato) return
         // ── byDow: media coperti per giorno ──
         const dowSum = Array(7).fill(0), dowCount = Array(7).fill(0)
         for (const r of chiusureData) {
@@ -190,8 +200,10 @@ function TabTurni({ location, fromDate, toDate }) {
           setPiccoAuto(null)
         }
       })
-      .catch(e => setError(e.message || String(e)))
-      .finally(() => setLoading(false))
+      .catch(e => { if (!annullato) setError(e.message || String(e)) })
+      .finally(() => { if (!annullato) setLoading(false) })
+
+    return () => { annullato = true }
   }, [location, fromDate, toDate])
 
   // Sala: 1 cameriere ogni paxPerCameriere coperti, tra min e max
@@ -497,7 +509,9 @@ export default function StatisticheSala() {
   const toDate   = dates?.to   || ''
   const handleDateChange = (pid, d) => { setPeriod(pid); if (d) setDates(d) }
   const sedeFilter = location === 'MA' || location === 'PN' ? location : null
-  const tavoliCoverageWarning = fromDate && fromDate < TAVOLI_COVERAGE_START
+  // Data di inizio copertura chiesta ai dati, non più cablata qui e in CopertiBi.
+  const { da: coperturaTavoliDa } = useCoperturaTavoli()
+  const tavoliCoverageWarning = Boolean(fromDate && coperturaTavoliDa && fromDate < coperturaTavoliDa)
 
   // Raw data
   const [chiusure, setChiusure] = useState([])   // chiusure_giornaliere
@@ -514,41 +528,65 @@ export default function StatisticheSala() {
     { id: 'turni',        label: '👥 Turni Consigliati' },
   ]
 
-  async function fetchData() {
+  const richiestaRef = useRef(0)
+
+  async function fetchData({ segnalaAnnullato } = {}) {
     if (!fromDate || !toDate) return
+    const mia = ++richiestaRef.current
+    const vivo = () => mia === richiestaRef.current && !segnalaAnnullato?.()
+
     setLoading(true); setError(null)
     try {
-      let qc = supabase.from('chiusure_giornaliere')
-        .select('sede, data, totale_venduto_ipratico, coperti, coperto_medio, scontrino_medio')
-        .gte('data', fromDate).lte('data', toDate)
-      if (sedeFilter) qc = qc.eq('sede', sedeFilter)
-
-      let qt = supabase.from('statistiche_tavoli')
-        .select('sede, data_inizio, tavolo, nome_stanza, operatore, n_coperti, n_ordini, n_coperture, durata_media_min, incasso, scontrino_medio')
-        .gte('data_inizio', fromDate).lte('data_inizio', toDate + 'T23:59:59')
-      if (sedeFilter) qt = qt.eq('sede', sedeFilter)
-
-      let qtu = supabase.from('chiusure_turni')
-        .select('sede, data, turno, incasso, quantita')
-        .gte('data', fromDate).lte('data', toDate)
-        .in('turno', ['pranzo', 'cena'])
-      if (sedeFilter) qtu = qtu.eq('sede', sedeFilter)
-
+      // Paginazione VERA: il `.range(0, 9999)` non alzava il tetto di 1000
+      // righe del server. Tutti i KPI, il ranking operatori e la tabella
+      // tavoli qui sotto sono aggregazioni fatte nel browser su queste righe:
+      // leggerne solo le prime 1000 significava mostrare numeri sbagliati con
+      // l'aria di essere completi.
       const [cRows, tRows, tuRows] = await Promise.all([
-        sbq(qc.order('data').range(0, 9999)),
-        sbq(qt.range(0, 9999)),
-        sbq(qtu.range(0, 9999)),
+        fetchPaged(() => {
+          let q = supabase.from('chiusure_giornaliere')
+            .select('id, sede, data, totale_venduto_ipratico, coperti, coperto_medio, scontrino_medio')
+            .gte('data', fromDate).lte('data', toDate)
+          if (sedeFilter) q = q.eq('sede', sedeFilter)
+          return q
+        }, 'id'),
+        fetchPaged(() => {
+          let q = supabase.from('statistiche_tavoli')
+            .select('id, sede, data_inizio, tavolo, nome_stanza, operatore, n_coperti, n_ordini, n_coperture, durata_media_min, incasso, scontrino_medio')
+            .gte('data_inizio', fromDate).lte('data_inizio', toDate + 'T23:59:59')
+          if (sedeFilter) q = q.eq('sede', sedeFilter)
+          return q
+        }, 'id'),
+        fetchPaged(() => {
+          let q = supabase.from('chiusure_turni')
+            .select('id, sede, data, turno, incasso, quantita')
+            .gte('data', fromDate).lte('data', toDate)
+            .in('turno', ['pranzo', 'cena'])
+          if (sedeFilter) q = q.eq('sede', sedeFilter)
+          return q
+        }, 'id'),
       ])
-      setChiusure(cRows); setTavoli(tRows); setTurni(tuRows)
+      if (!vivo()) return
+      // Ordine cronologico applicato qui: `id` serve solo a paginare stabilmente.
+      setChiusure([...cRows].sort((a, b) => a.data.localeCompare(b.data)))
+      setTavoli(tRows); setTurni(tuRows)
     } catch (err) {
+      if (!vivo()) return
       setError(err.message || String(err))
       setChiusure([]); setTavoli([]); setTurni([])
     } finally {
-      setLoading(false)
+      if (vivo()) setLoading(false)
     }
   }
 
-  useEffect(() => { fetchData() }, [location, fromDate, toDate])
+  useEffect(() => {
+    // Guardia di unmount: senza, cambiare rotta durante il fetch produce
+    // setState su un componente già smontato.
+    let annullato = false
+    fetchData({ segnalaAnnullato: () => annullato })
+    return () => { annullato = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location, fromDate, toDate])
 
   // ── KPI (corretti) ─────────────────────────────────────────────────────────
   const kpi = useMemo(() => {
@@ -686,6 +724,46 @@ export default function StatisticheSala() {
   const periodoLabel = `${fromDate?.split('-').reverse().join('/')} → ${toDate?.split('-').reverse().join('/')}`
   const sedeLabel = sedeFilter ? SEDE_LABEL[sedeFilter] : 'Tutte le sedi (globale)'
 
+  // ── Ordinamento + export delle tabelle ─────────────────────────────────────
+  const ordTavoli = useOrdinamento(tavoliAgg, 'incasso', 'desc')
+  const ordGiorni = useOrdinamento(giornaliero, 'data', 'asc')
+
+  const COLONNE_OPERATORI = [
+    { chiave: 'operatore', etichetta: 'Operatore' },
+    { chiave: 'sede', etichetta: 'Sede' },
+    { chiave: 'n_tavoli', etichetta: 'Tavoli serviti' },
+    { chiave: 'n_coperti', etichetta: 'Coperti totali' },
+    { chiave: 'coperto_medio', etichetta: 'Coperto medio', valore: r => Math.round(r.coperto_medio * 100) / 100 },
+    { chiave: 'incasso_per_tavolo', etichetta: 'Incasso per tavolo', valore: r => Math.round(r.incasso_per_tavolo * 100) / 100 },
+    { chiave: 'durata_media', etichetta: 'Permanenza media (min)' },
+    { chiave: 'incasso', etichetta: 'Incasso totale' },
+  ]
+  const COLONNE_TAVOLI = [
+    { chiave: 'stanza', etichetta: 'Stanza' },
+    { chiave: 'sede', etichetta: 'Sede' },
+    { chiave: 'tavolo', etichetta: 'Tavolo' },
+    { chiave: 'count', etichetta: 'Aperture' },
+    { chiave: 'coperti_medi', etichetta: 'Coperti medi', valore: r => Math.round(r.coperti_medi * 10) / 10 },
+    { chiave: 'durata_media', etichetta: 'Permanenza media (min)', valore: r => Math.round(r.durata_media) },
+    { chiave: 'incasso_per_min', etichetta: 'Euro/min', valore: r => Math.round(r.incasso_per_min * 100) / 100 },
+    { chiave: 'scontrino_medio', etichetta: 'Scontrino medio', valore: r => Math.round(r.scontrino_medio * 100) / 100 },
+    { chiave: 'incasso', etichetta: 'Incasso' },
+  ]
+  const COLONNE_GIORNI = [
+    { chiave: 'data', etichetta: 'Data' },
+    { chiave: 'n_coperti', etichetta: 'Coperti' },
+    { chiave: 'coperto_medio', etichetta: 'Coperto medio', valore: r => Math.round(r.coperto_medio * 100) / 100 },
+    { chiave: 'incasso_totale', etichetta: 'Venduto totale' },
+  ]
+
+  // Intestazione ordinabile riusabile (le tabelle di questa pagina non lo erano).
+  const Th = ({ ord, col, children, align = 'right' }) => (
+    <th {...ord.propsTh(col)}
+      className={`text-${align} py-2 px-3 font-semibold cursor-pointer select-none hover:text-violet-600 whitespace-nowrap`}>
+      {children}<IconaOrdine colonna={col} colonnaAttiva={ord.colonna} direzione={ord.direzione} />
+    </th>
+  )
+
   return (
     <>
     <PageStatsWidget />
@@ -726,7 +804,7 @@ export default function StatisticheSala() {
       {tavoliCoverageWarning && (
         <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-3 text-xs flex items-start gap-2">
           <AlertTriangle size={16} className="flex-shrink-0 mt-0.5 text-amber-500"/>
-          <span>Le statistiche per tavolo (permanenza, operatori, tavoli&stanze) esistono solo dal <strong>{TAVOLI_COVERAGE_START.split('-').reverse().join('/')}</strong>. Il periodo inizia prima: quei blocchi mostrano solo la parte coperta. Coperti, venduto e split turni sono completi.</span>
+          <span>Le statistiche per tavolo (permanenza, operatori, tavoli&stanze) esistono solo dal <strong>{coperturaTavoliDa?.split('-').reverse().join('/')}</strong> (prima riga presente in <code>statistiche_tavoli</code>). Il periodo inizia prima: quei blocchi mostrano solo la parte coperta. Coperti, venduto e split turni sono completi.</span>
         </div>
       )}
 
@@ -851,7 +929,14 @@ export default function StatisticheSala() {
             <div className="card"><div className="card-body text-center py-8"><p className="text-gray-500">Dati non disponibili per il periodo</p></div></div>
           ) : (<>
             <div className="card">
-              <div className="card-header"><h2 className="font-semibold">Ranking operatori per incasso tavoli</h2></div>
+              <div className="card-header flex items-start justify-between gap-3 flex-wrap">
+                <div>
+                  <h2 className="font-semibold">Ranking operatori per incasso tavoli</h2>
+                  <NotaCopertura righe={tavoli.length} da={fromDate} a={toDate} fonte="statistiche_tavoli"
+                    extra={`${operatori.length} operatori`} />
+                </div>
+                <BottoneCsv righe={operatori} colonne={COLONNE_OPERATORI} nomeFile={`operatori_${location||'tutte'}_${fromDate}_${toDate}`} />
+              </div>
               <div className="card-body">
                 <ResponsiveContainer width="100%" height={Math.max(200, operatori.length*46)}>
                   <BarChart data={operatori} layout="vertical" margin={{ top: 5, right: 60, left: 150, bottom: 5 }}>
@@ -860,7 +945,7 @@ export default function StatisticheSala() {
                     <YAxis dataKey="operatore" type="category" width={140} tick={{ fontSize: 12 }} />
                     <Tooltip formatter={v => eur(v)} />
                     <Bar dataKey="incasso" fill="#6366f1">
-                      {operatori.map((op, idx) => (<Cell key={idx} fill={SEDE_COLOR[op.sede] || COLORS[idx % COLORS.length]} />))}
+                      {operatori.map((op, idx) => (<Cell key={op.key} fill={SEDE_COLOR[op.sede] || COLORS[idx % COLORS.length]} />))}
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
@@ -907,22 +992,29 @@ export default function StatisticheSala() {
             <div className="card"><div className="card-body text-center py-8"><p className="text-gray-500">Dati non disponibili per il periodo</p></div></div>
           ) : (<>
             <div className="card">
-              <div className="card-header"><h2 className="font-semibold">Performance tavoli (top per incasso)</h2></div>
+              <div className="card-header flex items-start justify-between gap-3 flex-wrap">
+                <div>
+                  <h2 className="font-semibold">Performance tavoli</h2>
+                  <NotaCopertura righe={tavoli.length} da={fromDate} a={toDate} fonte="statistiche_tavoli"
+                    extra={`${tavoliAgg.length} tavoli distinti`} />
+                </div>
+                <BottoneCsv righe={ordTavoli.righeOrdinate} colonne={COLONNE_TAVOLI} nomeFile={`tavoli_${location||'tutte'}_${fromDate}_${toDate}`} />
+              </div>
               <div className="card-body overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="border-b border-gray-200"><tr>
-                    <th className="text-left py-2 px-3 font-semibold">Stanza</th>
-                    {!sedeFilter && <th className="text-left py-2 px-3 font-semibold">Sede</th>}
-                    <th className="text-right py-2 px-3 font-semibold">Tavolo</th>
-                    <th className="text-right py-2 px-3 font-semibold">Aperture</th>
-                    <th className="text-right py-2 px-3 font-semibold">Coperti medi</th>
-                    <th className="text-right py-2 px-3 font-semibold">Permanenza media</th>
-                    <th className="text-right py-2 px-3 font-semibold">€/min</th>
-                    <th className="text-right py-2 px-3 font-semibold">Scontrino medio</th>
-                    <th className="text-right py-2 px-3 font-semibold">Incasso</th>
+                    <Th ord={ordTavoli} col="stanza" align="left">Stanza</Th>
+                    {!sedeFilter && <Th ord={ordTavoli} col="sede" align="left">Sede</Th>}
+                    <Th ord={ordTavoli} col="tavolo">Tavolo</Th>
+                    <Th ord={ordTavoli} col="count">Aperture</Th>
+                    <Th ord={ordTavoli} col="coperti_medi">Coperti medi</Th>
+                    <Th ord={ordTavoli} col="durata_media">Permanenza media</Th>
+                    <Th ord={ordTavoli} col="incasso_per_min">€/min</Th>
+                    <Th ord={ordTavoli} col="scontrino_medio">Scontrino medio</Th>
+                    <Th ord={ordTavoli} col="incasso">Incasso</Th>
                   </tr></thead>
                   <tbody>
-                    {tavoliAgg.map(t => (
+                    {ordTavoli.righeOrdinate.map(t => (
                       <tr key={t.key} className="border-b border-gray-100 hover:bg-gray-50">
                         <td className="py-2 px-3 font-medium">{t.stanza}</td>
                         {!sedeFilter && <td className="py-2 px-3 text-gray-500">{t.sede}</td>}
@@ -1011,18 +1103,25 @@ export default function StatisticheSala() {
               </div>
             </div>
             <div className="card">
-              <div className="card-header"><h2 className="font-semibold">Dettagli giornalieri</h2></div>
+              <div className="card-header flex items-start justify-between gap-3 flex-wrap">
+                <div>
+                  <h2 className="font-semibold">Dettagli giornalieri</h2>
+                  <NotaCopertura righe={giornaliero.length} da={fromDate} a={toDate} fonte="chiusure_giornaliere"
+                    extra={sedeFilter ? `sede ${sedeFilter}` : 'MA + PN sommate'} />
+                </div>
+                <BottoneCsv righe={ordGiorni.righeOrdinate} colonne={COLONNE_GIORNI} nomeFile={`giornaliero_${location||'tutte'}_${fromDate}_${toDate}`} />
+              </div>
               <div className="card-body overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="border-b border-gray-200"><tr>
-                    <th className="text-left py-2 px-3 font-semibold">Data</th>
-                    <th className="text-right py-2 px-3 font-semibold">Coperti</th>
-                    <th className="text-right py-2 px-3 font-semibold">Coperto medio</th>
-                    <th className="text-right py-2 px-3 font-semibold">Venduto totale</th>
+                    <Th ord={ordGiorni} col="data" align="left">Data</Th>
+                    <Th ord={ordGiorni} col="n_coperti">Coperti</Th>
+                    <Th ord={ordGiorni} col="coperto_medio">Coperto medio</Th>
+                    <Th ord={ordGiorni} col="incasso_totale">Venduto totale</Th>
                   </tr></thead>
                   <tbody>
-                    {giornaliero.map((g, idx) => (
-                      <tr key={idx} className="border-b border-gray-100 hover:bg-gray-50">
+                    {ordGiorni.righeOrdinate.map(g => (
+                      <tr key={g.data} className="border-b border-gray-100 hover:bg-gray-50">
                         <td className="py-2 px-3 font-medium">{g.data}</td>
                         <td className="text-right py-2 px-3">{g.n_coperti || '—'}</td>
                         <td className="text-right py-2 px-3">{g.coperto_medio ? eur(g.coperto_medio) : '—'}</td>

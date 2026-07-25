@@ -4,6 +4,7 @@
  * Usato in produzione (Vercel) dove non c'è Express.
  */
 import supabase from '../supabase'
+import { fetchPaged, fetchPagedInfo } from './paged'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -42,19 +43,15 @@ async function sbFetch(queryBuilder) {
  * @param {string} select colonne (default '*')
  * @param {number} page   dimensione batch
  */
-async function sbFetchAll(table, select = '*', page = 1000) {
-  const out = []
-  for (let i = 0; ; i += page) {
-    // .order('id') è obbligatorio: senza ordinamento stabile Postgres non
-    // garantisce la stessa sequenza tra una pagina e l'altra, e il backup
-    // potrebbe contenere righe duplicate o perderne alcune.
-    const { data, error } = await supabase.from(table).select(select).order('id').range(i, i + page - 1)
-    if (error) throw new Error(`${table}: ${error.message}`)
-    const batch = data ?? []
-    out.push(...batch)
-    if (batch.length < page) break
+async function sbFetchAll(table, select = '*') {
+  // .order('id') è obbligatorio: senza ordinamento stabile Postgres non
+  // garantisce la stessa sequenza tra una pagina e l'altra, e il backup
+  // potrebbe contenere righe duplicate o perderne alcune.
+  try {
+    return await fetchPaged(() => supabase.from(table).select(select), 'id')
+  } catch (e) {
+    throw new Error(`${table}: ${e.message}`)
   }
-  return out
 }
 
 /**
@@ -71,19 +68,26 @@ async function sbFetchAll(table, select = '*', page = 1000) {
  *                           garantisce la stessa sequenza tra pagine successive
  * @param {number} max       tetto di sicurezza sulle righe totali
  */
-async function sbFetchPaged(build, orderCol, { page = 1000, max = 100000 } = {}) {
-  const out = []
-  for (let i = 0; i < max; i += page) {
-    let q = build()
-    if (orderCol) q = q.order(orderCol, { ascending: true })
-    const { data, error } = await q.range(i, i + page - 1)
-    if (error) throw error
-    const batch = data ?? []
-    out.push(...batch)
-    if (batch.length < page) break
-  }
-  return out
+async function sbFetchPaged(build, orderCol, { max = 200000 } = {}) {
+  return fetchPaged(build, orderCol, { max })
 }
+
+/**
+ * ⚠️ IL "BYPASS" `.range(0, 4999)` NON ESISTE.
+ *
+ * In tutto questo file (e nelle pagine) c'erano chiamate con il commento
+ * "bypass limite default 1000 righe". Misurato sul progetto il 2026-07-25:
+ * `limit=5000`, `limit=10000` e `Range: 0-19999` restituiscono comunque
+ * 1000 righe. `db-max-rows` è un tetto lato server e nessun parametro del
+ * client lo alza. Le conseguenze reali, con `.order('data')` crescente:
+ *
+ *   chiusure_turni     → dati fermi al 2025-06-22 (13 mesi invisibili)
+ *   venduto_camerieri  → dati fermi al 2026-01-01
+ *   statistiche_tavoli → dati fermi al 2026-04-19
+ *   chiusure_giornaliere → dati fermi al 2026-05-20
+ *
+ * Ogni lettura che poi AGGREGA lato client deve passare da sbFetchPaged().
+ */
 
 /** Escape dei metacaratteri LIKE (% e _) per evitare match involontari in ilike(). */
 function escapeLike(s) {
@@ -382,12 +386,27 @@ export const employees = {
 
 // ─── CHIUSURE ─────────────────────────────────────────────────────────────
 export const chiusure = {
+  /**
+   * @param {number} [p.limit] numero massimo di GIORNI (non di righe).
+   *   Il vecchio `.limit(90)` contava le righe: con due sedi aperte "90" erano
+   *   45 giorni, e il grafico Andamento Vendite della Dashboard mostrava metà
+   *   del periodo richiesto senza dirlo. Se c'è un intervallo esplicito
+   *   (from/to) il tetto non si applica: si legge tutto, paginando.
+   */
   getAll: async (p = {}) => {
-    let q = supabase.from('v_chiusure').select('*').order('data', { ascending: false }).limit(parseInt(p.limit) || 90)
     const sede = locationToSede(p.location)
-    if (sede) q = q.eq('sede', sede)
-    q = applyDateRange(q, p.from, p.to)
-    return sbFetch(q)
+    const build = () => {
+      let q = supabase.from('v_chiusure').select('*')
+      if (sede) q = q.eq('sede', sede)
+      return applyDateRange(q, p.from, p.to)
+    }
+    if (p.from || p.to) {
+      const rows = await sbFetchPaged(build, 'id')
+      return rows.sort((a, b) => String(b.data).localeCompare(String(a.data)))
+    }
+    const giorni = parseInt(p.limit) || 90
+    const nSedi = sede ? 1 : 2
+    return sbFetch(build().order('data', { ascending: false }).limit(giorni * nSedi))
   },
 
   mensile: async (p = {}) => {
@@ -409,25 +428,32 @@ export const chiusure = {
   recenti: async (p = {}) => {
     const thirtyDaysAgo = new Date(); thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
     const defaultFrom = thirtyDaysAgo.toISOString().split('T')[0]
-    let q = supabase.from('v_chiusure').select('*').order('data', { ascending: true })
-    const sede = locationToSede(p.location)
-    if (sede) q = q.eq('sede', sede)
-    q = applyDateRange(q, p.from || defaultFrom, p.to)
-    // .range esplicito: v_chiusure ha gia' >1000 righe e PostgREST troncava in
-    // silenzio in ordine data crescente, facendo sparire i giorni piu' recenti
-    return sbFetch(q.range(0, 19999))
+    // v_chiusure ha già >1000 righe e PostgREST tronca in silenzio in ordine
+    // data crescente, facendo sparire i giorni PIÙ RECENTI. `.range(0, 19999)`
+    // non risolveva nulla (il cap è lato server): serve la paginazione vera.
+    const build = () => {
+      let q = supabase.from('v_chiusure').select('*')
+      const sede = locationToSede(p.location)
+      if (sede) q = q.eq('sede', sede)
+      return applyDateRange(q, p.from || defaultFrom, p.to)
+    }
+    // Paginazione per `id` (univoco) e riordino cronologico in memoria: `data`
+    // si ripete su due sedi, quindi non è una chiave di paginazione stabile.
+    const rows = await sbFetchPaged(build, 'id')
+    return rows.sort((a, b) => String(a.data).localeCompare(String(b.data)))
   },
 
   stats: async (p = {}) => {
     // Aggregazione diretta da chiusure_giornaliere con supporto filtri data
-    let q = supabase
-      .from('chiusure_giornaliere')
-      .select('sede, totale_venduto_ipratico, coperti, coperto_medio, scontrino_medio, data')
-    const sede = locationToSede(p.location)
-    if (sede) q = q.eq('sede', sede)
-    q = applyDateRange(q, p.from, p.to)
-    q = q.range(0, 4999) // bypass limite default 1000 righe
-    const rows = await sbFetch(q)
+    const build = () => {
+      let q = supabase
+        .from('chiusure_giornaliere')
+        .select('id, sede, totale_venduto_ipratico, coperti, coperto_medio, scontrino_medio, data')
+      const sede = locationToSede(p.location)
+      if (sede) q = q.eq('sede', sede)
+      return applyDateRange(q, p.from, p.to)
+    }
+    const rows = await sbFetchPaged(build, 'id')
 
     // Aggrega per sede in JavaScript
     const bySede = {}
@@ -463,11 +489,26 @@ export const chiusure = {
     }))
   },
 
+  /**
+   * Confronto anno su anno. Prima il filtro periodo era ignorato del tutto
+   * (si leggeva sempre TUTTA la view), quindi il tab "Anno su Anno" non
+   * rispondeva al selettore di periodo. Ora `p.anni` restringe agli anni
+   * richiesti; senza parametri restituisce l'intera serie storica.
+   */
   confrontoAnnuale: async (p = {}) => {
-    let q = supabase.from('v_chiusure_confronto_annuale').select('*').order('anno').order('mese')
     const sede = locationToSede(p.location)
-    if (sede) q = q.eq('sede', sede)
-    return sbFetch(q)
+    const build = () => {
+      let q = supabase.from('v_chiusure_confronto_annuale').select('*')
+      if (sede) q = q.eq('sede', sede)
+      if (Array.isArray(p.anni) && p.anni.length) q = q.in('anno', p.anni.map(Number))
+      else {
+        if (p.from) q = q.gte('anno', parseInt(p.from.substring(0, 4)))
+        if (p.to)   q = q.lte('anno', parseInt(p.to.substring(0, 4)))
+      }
+      return q
+    }
+    const rows = await sbFetchPaged(build, 'anno')
+    return rows.sort((a, b) => (a.anno - b.anno) || (a.mese - b.mese))
   },
 }
 
@@ -950,20 +991,23 @@ export const fornitori = {
   analisi: async (p = {}) => {
     try {
       // Fatture nel periodo → base per tutto
-      let qFat = supabase.from('fatture_importate')
-        .select('data_fattura, totale, p_iva, fornitore, sede, tipo_documento')
-        // .limit() NON aggira il cap PostgREST di 1000 righe: serve .range().
-        // Senza, con periodo "anno corrente" (2189 fatture) si perdevano i mesi recenti.
-        .order('data_fattura').range(0, 49999)
-        // Le fatture marcate duplicate vanno escluse, altrimenti la spesa è
-        // gonfiata: sul 2025 i duplicati valgono ~768k su 2.045k lordi.
-        // `.not(...,'is',true)` copre anche is_duplicato NULL, che è il caso
-        // della maggior parte dello storico.
-        .not('is_duplicato', 'is', true)
-      if (p.from) qFat = qFat.gte('data_fattura', p.from)
-      if (p.to)   qFat = qFat.lte('data_fattura', p.to)
-      if (p.sede) qFat = qFat.eq('sede', p.sede)
-      const fattureRows = await sbFetch(qFat)
+      // Né `.limit()` né `.range(0, 49999)` aggirano il cap PostgREST di 1000
+      // righe (è un tetto lato server): con 17.262 fatture a DB si leggevano
+      // solo le 1000 più vecchie del periodo. Serve la paginazione vera.
+      const buildFat = () => {
+        let q = supabase.from('fatture_importate')
+          .select('id, data_fattura, totale, p_iva, fornitore, sede, tipo_documento')
+          // Le fatture marcate duplicate vanno escluse, altrimenti la spesa è
+          // gonfiata: sul 2025 i duplicati valgono ~768k su 2.045k lordi.
+          // `.not(...,'is',true)` copre anche is_duplicato NULL, che è il caso
+          // della maggior parte dello storico.
+          .not('is_duplicato', 'is', true)
+        if (p.from) q = q.gte('data_fattura', p.from)
+        if (p.to)   q = q.lte('data_fattura', p.to)
+        if (p.sede) q = q.eq('sede', p.sede)
+        return q
+      }
+      const fattureRows = await sbFetchPaged(buildFat, 'id')
 
       // Mappa p_iva → categoria da fornitori_fatture
       const fornitoriRows = await sbFetch(
@@ -1155,23 +1199,28 @@ export const fattureBi = {
 export const prodottiCatalogo = {
   // Lista catalogo con aggregati venduto
   getAll: async (p = {}) => {
-    let q = supabase.from('prodotti_catalogo').select('*').eq('attivo', true).order('nome')
-    if (p.search) q = q.ilike('nome', `%${p.search}%`)
-    if (p.categoria) q = q.eq('categoria', p.categoria)
-    q = q.range(0, 4999) // bypass limite default 1000 righe (tabella ha >4500 righe)
-    return sbFetch(q)
+    // prodotti_catalogo ha >4500 righe: il vecchio `.range(0, 4999)` ne leggeva
+    // comunque 1000 (cap server) e il catalogo risultava amputato.
+    const build = () => {
+      let q = supabase.from('prodotti_catalogo').select('*').eq('attivo', true)
+      if (p.search) q = q.ilike('nome', `%${escapeLike(p.search)}%`)
+      if (p.categoria) q = q.eq('categoria', p.categoria)
+      return q
+    }
+    const rows = await sbFetchPaged(build, 'id')
+    return rows.sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || '')))
   },
 
   // Prodotti di un fornitore (via prodotti_fornitori_mapping)
   getByFornitore: async (p_iva) => {
     const piva = (p_iva || '').replace(/^IT/, '')
-    return sbFetch(
-      supabase.from('prodotti_fornitori_mapping')
+    const rows = await sbFetchPaged(
+      () => supabase.from('prodotti_fornitori_mapping')
         .select('*, prodotti_catalogo(*)')
-        .eq('p_iva', piva)
-        .order('ultimo_prezzo', { ascending: false })
-        .range(0, 4999) // bypass limite default 1000 righe
+        .eq('p_iva', piva),
+      'id'
     )
+    return rows.sort((a, b) => (Number(b.ultimo_prezzo) || 0) - (Number(a.ultimo_prezzo) || 0))
   },
 
   // Aggiorna nome normalizzato (merge prodotti duplicati)
@@ -1206,16 +1255,21 @@ export const listinoApi = {
   // Senza date → tutto lo storico. Il prezzo usa la media venduta se disponibile,
   // altrimenti il prezzo di listino (l'importo venduto nella view è spesso NULL).
   prodottiConFoodCost: async ({ sede, dateFrom, dateTo } = {}) => {
-    let q = supabase.from('v_menu_engineering')
-      .select('sede,prodotto,categoria,tipologia,quantita,importo_venduto,food_cost_medio')
-      .range(0, 9999)
-    if (dateFrom) q = q.gte('data_fine', dateFrom)
-    if (dateTo)   q = q.lte('data_inizio', dateTo)
-    if (sede && sede !== 'ALL') q = q.eq('sede', sede)
+    // v_menu_engineering non ha una PK: si pagina sulla coppia che la rende
+    // univoca di fatto (prodotto), accettando che l'ordine non sia perfetto —
+    // il risultato viene comunque riaggregato subito dopo.
+    const buildMe = () => {
+      let q = supabase.from('v_menu_engineering')
+        .select('sede,prodotto,categoria,tipologia,quantita,importo_venduto,food_cost_medio')
+      if (dateFrom) q = q.gte('data_fine', dateFrom)
+      if (dateTo)   q = q.lte('data_inizio', dateTo)
+      if (sede && sede !== 'ALL') q = q.eq('sede', sede)
+      return q
+    }
     const [rows, listino] = await Promise.all([
-      sbFetch(q),
-      sbFetch(supabase.from('listino_prodotti')
-        .select('nome_prodotto,categoria,costo_acquisto,prezzo_vendita,attivo').range(0, 9999)),
+      sbFetchPaged(buildMe, 'prodotto'),
+      sbFetchPaged(() => supabase.from('listino_prodotti')
+        .select('nome_prodotto,categoria,costo_acquisto,prezzo_vendita,attivo'), 'id'),
     ])
     // Listino indicizzato per nome normalizzato
     const listMap = {}
@@ -1265,12 +1319,14 @@ export const listinoApi = {
   },
 
   // Tutti i prezzi d'acquisto aggregati (per auto-compilazione rivendita in-memory).
-  prezziAcquistoTutti: async () => sbFetch(
-    supabase.from('v_prodotti_fornitori')
-      .select('descrizione,prezzo_medio,prezzo_min,unita_misura,fatture_count')
-      .order('fatture_count', { ascending: false })
-      .range(0, 9999)
-  ),
+  prezziAcquistoTutti: async () => {
+    const rows = await sbFetchPaged(
+      () => supabase.from('v_prodotti_fornitori')
+        .select('descrizione,prezzo_medio,prezzo_min,unita_misura,fatture_count'),
+      'descrizione'
+    )
+    return rows.sort((a, b) => (Number(b.fatture_count) || 0) - (Number(a.fatture_count) || 0))
+  },
 
   // Cerca prezzi d'acquisto reali dalle fatture (v_prodotti_fornitori) per suggerire
   // il food cost. Usa il token più lungo del nome per il match, oppure una query libera.
@@ -1542,10 +1598,12 @@ export const analytics = {
       const toPrev   = shiftYears(to, -1)
 
       // Carica periodo corrente + stesso periodo anno precedente
-      const { data: rows } = await supabase.from('chiusure_giornaliere')
-        .select('sede, data, totale_venduto_ipratico, coperti, coperto_medio')
-        .gte('data', fromPrev).lte('data', to)
-        .order('data').range(0, 4999) // bypass limite default 1000 righe
+      const rows = await sbFetchPaged(
+        () => supabase.from('chiusure_giornaliere')
+          .select('id, sede, data, totale_venduto_ipratico, coperti, coperto_medio')
+          .gte('data', fromPrev).lte('data', to),
+        'id'
+      )
 
       const annoCorrente = parseInt(to.substring(0, 4))
       const annoPrec = annoCorrente - 1
@@ -1639,9 +1697,11 @@ export const analytics = {
   // Stagionalità: indici mensili dell'ultimo anno completo + coperto medio per sede
   seasonality: async (p = {}) => {
     try {
-      const { data: rows } = await supabase.from('chiusure_giornaliere')
-        .select('sede, data, totale_venduto_ipratico, coperti, coperto_medio')
-        .order('data').range(0, 4999) // bypass limite default 1000 righe
+      const rows = await sbFetchPaged(
+        () => supabase.from('chiusure_giornaliere')
+          .select('id, sede, data, totale_venduto_ipratico, coperti, coperto_medio'),
+        'id'
+      )
 
       // Anno base = ultimo anno completo (dinamico, non hardcoded)
       const baseYear = String(new Date().getFullYear() - 1)
@@ -1703,8 +1763,11 @@ export const analytics = {
   // p.from/p.to: lo storico mostrato è filtrato sul periodo; la regressione usa tutta la serie.
   forecast: async (p = {}) => {
     try {
-      const { data: rows } = await supabase.from('chiusure_giornaliere')
-        .select('sede, data, totale_venduto_ipratico, coperti').order('data').range(0, 4999) // bypass limite 1000
+      const rows = await sbFetchPaged(
+        () => supabase.from('chiusure_giornaliere')
+          .select('id, sede, data, totale_venduto_ipratico, coperti'),
+        'id'
+      )
 
       // Indici stagionali dall'ultimo anno COMPLETO disponibile (combinati MA+PN).
       // Era hardcoded a '2025': dal 2027 la stagionalità sarebbe rimasta ferma
@@ -1859,9 +1922,12 @@ export const analytics = {
 
       // Indici stagionali dall'ultimo anno completo (dinamico, per sede)
       const baseYear = new Date().getFullYear() - 1
-      const { data: rows2025 } = await supabase.from('chiusure_giornaliere')
-        .select('sede, data, totale_venduto_ipratico')
-        .gte('data', `${baseYear}-01-01`).lte('data', `${baseYear}-12-31`).range(0, 4999) // bypass limite 1000
+      const rows2025 = await sbFetchPaged(
+        () => supabase.from('chiusure_giornaliere')
+          .select('id, sede, data, totale_venduto_ipratico')
+          .gte('data', `${baseYear}-01-01`).lte('data', `${baseYear}-12-31`),
+        'id'
+      )
 
       const bySedeM = { MA: {}, PN: {} }
       for (const r of rows2025 ?? []) {
@@ -1961,10 +2027,14 @@ export const analytics = {
   // Heatmap per giorno della settimana + top 5 giorni storici
   heatmap: async (p = {}) => {
     try {
-      let qHm = supabase.from('chiusure_giornaliere')
-        .select('sede, data, totale_venduto_ipratico, coperti, coperto_medio')
-      qHm = applyDateRange(qHm, p.from, p.to)
-      const { data: rows } = await qHm.range(0, 4999) // bypass limite default 1000 righe
+      const rows = await sbFetchPaged(
+        () => applyDateRange(
+          supabase.from('chiusure_giornaliere')
+            .select('id, sede, data, totale_venduto_ipratico, coperti, coperto_medio'),
+          p.from, p.to
+        ),
+        'id'
+      )
 
       const DOW = ['Dom','Lun','Mar','Mer','Gio','Ven','Sab']
       const byDow = {}
@@ -2132,11 +2202,20 @@ export const bustePaga = {
   // Lista cedolini (filtro anno, mese, sede)
   // Regola PT: full time = 160h/mese 40h/sett | PT 62.5% = 100h/mese 25h/sett | PT 75% = 120h/mese 30h/sett | PT 50% = 80h/mese 20h/sett
   getAll: async (p = {}) => {
-    let q = supabase.from('buste_paga').select('*').order('anno', { ascending: false }).order('mese', { ascending: false }).order('employee_name', { ascending: true })
-    if (p.anno)  q = q.eq('anno', parseInt(p.anno))
-    if (p.mese)  q = q.eq('mese', parseInt(p.mese))
-    if (p.sede && p.sede !== 'Tutte') q = q.eq('sede', p.sede)
-    const rows = await sbFetch(q.range(0, 9999))   // coerente con riepilogo/costoMensile
+    const build = () => {
+      let q = supabase.from('buste_paga').select('*')
+      if (p.anno)  q = q.eq('anno', parseInt(p.anno))
+      if (p.mese)  q = q.eq('mese', parseInt(p.mese))
+      if (p.sede && p.sede !== 'Tutte') q = q.eq('sede', p.sede)
+      return q
+    }
+    // Paginazione reale su `id`; l'ordinamento di presentazione (anno/mese desc,
+    // nome asc) si applica dopo, perché su colonne non univoche la paginazione
+    // lato server non è stabile.
+    const rows = (await sbFetchPaged(build, 'id')).sort((a, b) =>
+      (b.anno - a.anno) || (b.mese - a.mese) ||
+      String(a.employee_name || '').localeCompare(String(b.employee_name || ''))
+    )
     return rows.map(r => {
       // Usa costo_azienda salvato dal LUL PDF.
       // Fallback CCNL: paga_base × 1.9653, poi netto × 1.9653
@@ -2164,14 +2243,18 @@ export const bustePaga = {
 
   // Riepilogo aggregato per sede/mese
   riepilogo: async (p = {}) => {
-    let q = supabase.from('buste_paga').select('sede,anno,mese,netto,costo_azienda,paga_base,totale_competenze,employee_code').order('anno').order('mese')
-    if (p.anno) q = q.eq('anno', parseInt(p.anno))
     // I filtri sede/mese erano ignorati: si scaricava l'intera tabella e, oltre
     // le 1000 righe, PostgREST troncava in silenzio → costo personale sottostimato
-    const sedeFiltro = locationToSede(p.sede || p.location)
-    if (sedeFiltro) q = q.eq('sede', sedeFiltro)
-    if (p.mese)    q = q.eq('mese', parseInt(p.mese))
-    const rows = await sbFetch(q.range(0, 9999))
+    const build = () => {
+      let q = supabase.from('buste_paga')
+        .select('id,sede,anno,mese,netto,costo_azienda,paga_base,totale_competenze,employee_code')
+      if (p.anno) q = q.eq('anno', parseInt(p.anno))
+      const sedeFiltro = locationToSede(p.sede || p.location)
+      if (sedeFiltro) q = q.eq('sede', sedeFiltro)
+      if (p.mese)    q = q.eq('mese', parseInt(p.mese))
+      return q
+    }
+    const rows = await sbFetchPaged(build, 'id')
     // Aggrega per sede+anno+mese
     const map = {}
     for (const r of rows) {
@@ -2196,10 +2279,10 @@ export const bustePaga = {
   statoDipendenti: async () => {
     // Fonte UNICA: tabella buste_paga.
     // Attivo = presente nell'ultimo mese caricato (MAX anno+mese nel DB).
-    const busteRows = await sbFetch(
-      supabase.from('buste_paga')
-        .select('employee_id,employee_code,employee_name,sede,anno,mese,netto')
-        .range(0, 4999) // bypass limite default 1000 righe
+    const busteRows = await sbFetchPaged(
+      () => supabase.from('buste_paga')
+        .select('id,employee_id,employee_code,employee_name,sede,anno,mese,netto'),
+      'id'
     )
     // 1. Trova il periodo globale massimo (ultima busta paga caricata)
     let maxPeriod = 0
@@ -2250,14 +2333,17 @@ export const bustePaga = {
 
   // Costo mensile aggregato
   costoMensile: async (p = {}) => {
-    let q = supabase.from('buste_paga').select('sede,anno,mese,netto,costo_azienda,paga_base,totale_competenze').order('anno').order('mese')
-    if (p.anno) q = q.eq('anno', parseInt(p.anno))
-    // Filtri sede/mese applicati + range esplicito (vedi riepilogo: senza .range()
-    // PostgREST tronca a 1000 righe senza segnalarlo)
-    const sedeFiltro = locationToSede(p.sede || p.location)
-    if (sedeFiltro) q = q.eq('sede', sedeFiltro)
-    if (p.mese)    q = q.eq('mese', parseInt(p.mese))
-    const rows = await sbFetch(q.range(0, 9999))
+    // Paginazione reale: senza, PostgREST tronca a 1000 righe senza segnalarlo
+    const build = () => {
+      let q = supabase.from('buste_paga')
+        .select('id,sede,anno,mese,netto,costo_azienda,paga_base,totale_competenze')
+      if (p.anno) q = q.eq('anno', parseInt(p.anno))
+      const sedeFiltro = locationToSede(p.sede || p.location)
+      if (sedeFiltro) q = q.eq('sede', sedeFiltro)
+      if (p.mese)    q = q.eq('mese', parseInt(p.mese))
+      return q
+    }
+    const rows = await sbFetchPaged(build, 'id')
     const map = {}
     for (const r of rows) {
       const key = `${r.sede}-${r.anno}-${r.mese}`
@@ -2371,13 +2457,15 @@ export const statistiche = {
   getAll: async (p = {}) => {
     try {
       const sede = locationToSede(p.location)
-      let q = supabase.from('chiusure_giornaliere')
-        .select('sede,data,totale_venduto_ipratico,coperti,coperto_medio,scontrino_medio')
-      if (sede) q = q.eq('sede', sede)
-      if (p.from) q = q.gte('data', p.from)
-      if (p.to)   q = q.lte('data', p.to)
-      q = q.range(0, 4999) // bypass limite default 1000 righe
-      const rows = await sbFetch(q)
+      const build = () => {
+        let q = supabase.from('chiusure_giornaliere')
+          .select('id,sede,data,totale_venduto_ipratico,coperti,coperto_medio,scontrino_medio')
+        if (sede) q = q.eq('sede', sede)
+        if (p.from) q = q.gte('data', p.from)
+        if (p.to)   q = q.lte('data', p.to)
+        return q
+      }
+      const rows = await sbFetchPaged(build, 'id')
       const bySede = {}
       for (const r of rows) {
         const s = r.sede
@@ -2483,14 +2571,16 @@ export const statistiche = {
   tavoli: async (p = {}) => {
     try {
       const sede = locationToSede(p.location)
-      let q = supabase.from('statistiche_tavoli')
-        .select('sede,tavolo,n_coperti,n_ordini,incasso,durata_media_min,scontrino_medio')
-      if (sede) q = q.eq('sede', sede)
-      // Overlap interval filter
-      if (p.to)   q = q.lte('data_inizio', p.to)
-      if (p.from) q = q.gte('data_fine', p.from)
-      q = q.range(0, 4999) // bypass limite default 1000 righe (tabella ha >1761 righe)
-      const rows = await sbFetch(q)
+      const build = () => {
+        let q = supabase.from('statistiche_tavoli')
+          .select('id,sede,tavolo,n_coperti,n_ordini,incasso,durata_media_min,scontrino_medio')
+        if (sede) q = q.eq('sede', sede)
+        // Overlap interval filter
+        if (p.to)   q = q.lte('data_inizio', p.to)
+        if (p.from) q = q.gte('data_fine', p.from)
+        return q
+      }
+      const rows = await sbFetchPaged(build, 'id')
       // Aggrega per tavolo (ci possono essere più periodi)
       const byTavolo = {}
       for (const r of rows) {
@@ -2523,15 +2613,26 @@ export const statistiche = {
   giornaliero: async (p = {}) => {
     try {
       const sede = locationToSede(p.location)
-      let q = supabase.from('chiusure_giornaliere')
-        .select('sede,data,totale_venduto_ipratico,coperti,coperto_medio,scontrino_medio')
-        .order('data', { ascending: true })
-      if (sede) q = q.eq('sede', sede)
-      if (p.from) q = q.gte('data', p.from)
-      if (p.to)   q = q.lte('data', p.to)
-      if (!p.from && !p.to) q = q.limit(60)
-      else q = q.range(0, 4999) // bypass limite 1000 quando si usa un range date
-      const rows = await sbFetch(q)
+      const build = () => {
+        let q = supabase.from('chiusure_giornaliere')
+          .select('id,sede,data,totale_venduto_ipratico,coperti,coperto_medio,scontrino_medio')
+        if (sede) q = q.eq('sede', sede)
+        if (p.from) q = q.gte('data', p.from)
+        if (p.to)   q = q.lte('data', p.to)
+        return q
+      }
+      let rows
+      if (!p.from && !p.to) {
+        // Senza periodo: ultimi 60 giorni di calendario, non "ultime 60 righe"
+        // (con due sedi 60 righe sono 30 giorni). Ordine DESC + reverse.
+        rows = await sbFetch(
+          build().order('data', { ascending: false }).limit(120)
+        )
+        rows = rows.reverse()
+      } else {
+        rows = (await sbFetchPaged(build, 'id'))
+          .sort((a, b) => String(a.data).localeCompare(String(b.data)))
+      }
       // Normalizza nomi campo per compatibilità frontend
       return rows.map(r => ({
         ...r,
@@ -4048,13 +4149,429 @@ export const bilanciApi = {
 
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// ANALISI COSTI & PREZZI — sfrutta i 114.650 righe di dettaglio fattura
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Fino a ieri le fatture erano leggibili solo per TESTATA (fornitore, totale).
+// Con `fatture_righe` si può finalmente rispondere a domande che prima erano
+// fuori portata: quanto è aumentato QUELL'articolo, chi me lo vende meglio,
+// quanto pesa ogni categoria merceologica su ogni sede.
+//
+// Tre avvertenze che valgono per tutto il modulo e che la UI deve ripetere:
+//
+//  • `fatture_righe.importo_riga` e `prezzo_unitario` sono NETTI IVA, mentre
+//    `fatture_importate.totale` è LORDO. Non vanno mai sommati insieme.
+//  • Le note di credito (TD04) sono già NEGATIVE in `fatture_righe`, quindi si
+//    sommano così come sono. In `fatture_importate` invece sono positive e
+//    andrebbero sottratte: è la ragione per cui le due fonti non tornano se si
+//    mescolano.
+//  • Le 9.960 fatture dal 2019 al 2024 NON hanno sede. Ogni analisi per sede
+//    su quel periodo è impossibile, non "vuota": il modulo lo dichiara con
+//    `righe_senza_sede` invece di far sparire i dati o di inventare un 50/50.
+
+const CATEGORIE_NON_MERCE = new Set(['ALTRO', 'NON_CLASSIFICATO'])
+
+export const analisiCostiApi = {
+  /** Categorie merceologiche con i flag is_food_cost / is_materia_prima. */
+  categorie: async () => sbFetch(
+    supabase.from('categorie_merceologiche').select('*').order('ordine')
+  ),
+
+  /**
+   * Prezzi per articolo nel tempo, con confronto fra fornitori.
+   *
+   * L'aggregazione è lato client perché PostgREST ha le funzioni di aggregato
+   * disabilitate su questo progetto (verificato: `select=...sum()` → PGRST123
+   * "Use of aggregate functions is not allowed"). Quindi si scaricano le righe
+   * del periodo con paginazione vera e si aggrega qui.
+   *
+   * Vengono ignorate le righe con `prezzo_unitario` nullo o ≤ 0: senza prezzo
+   * unitario un confronto fra fornitori non ha significato, e includerle come
+   * "0" farebbe risultare qualunque articolo in calo.
+   *
+   * @returns {{ articoli, righeLette, troncato, righeSenzaSede }}
+   */
+  prezziArticoli: async ({ from, to, sede, categoria, search, minAcquisti = 3 } = {}) => {
+    const build = () => {
+      let q = supabase.from('fatture_righe')
+        .select('id, nome_normalizzato, descrizione, fornitore, p_iva, data_fattura, quantita, unita_misura, prezzo_unitario, importo_riga, categoria, sede')
+        .not('nome_normalizzato', 'is', null)
+        .gt('prezzo_unitario', 0)
+      if (from) q = q.gte('data_fattura', from)
+      if (to)   q = q.lte('data_fattura', to)
+      if (sede && sede !== 'ALL') q = q.eq('sede', sede)
+      if (categoria && categoria !== 'ALL') q = q.eq('categoria', categoria)
+      if (search) q = q.ilike('nome_normalizzato', `%${escapeLike(search)}%`)
+      return q
+    }
+
+    const { righe, troncato } = await fetchPagedInfo(build, 'id', { max: 150000 })
+
+    const perArticolo = new Map()
+    let righeSenzaSede = 0
+    for (const r of righe) {
+      if (!r.sede) righeSenzaSede++
+      const k = r.nome_normalizzato
+      if (!perArticolo.has(k)) perArticolo.set(k, {
+        nome: k,
+        descrizione: r.descrizione,
+        categoria: r.categoria,
+        um: r.unita_misura,
+        fornitori: new Map(),
+        acquisti: 0,
+        spesa: 0,
+        quantita: 0,
+        primo: null, ultimo: null,
+        prezzoMin: null, prezzoMax: null,
+      })
+      const a = perArticolo.get(k)
+      const prezzo = Number(r.prezzo_unitario)
+      const data = r.data_fattura || ''
+
+      a.acquisti++
+      a.spesa += Number(r.importo_riga) || 0
+      a.quantita += Number(r.quantita) || 0
+      if (r.unita_misura && !a.um) a.um = r.unita_misura
+
+      if (a.prezzoMin === null || prezzo < a.prezzoMin) a.prezzoMin = prezzo
+      if (a.prezzoMax === null || prezzo > a.prezzoMax) a.prezzoMax = prezzo
+      if (!a.primo  || data < a.primo.data)  a.primo  = { data, prezzo, fornitore: r.fornitore }
+      if (!a.ultimo || data > a.ultimo.data) a.ultimo = { data, prezzo, fornitore: r.fornitore }
+
+      const f = r.fornitore || '(senza fornitore)'
+      if (!a.fornitori.has(f)) a.fornitori.set(f, { fornitore: f, p_iva: r.p_iva, acquisti: 0, spesa: 0, sommaPrezzi: 0, ultimo: null, prezzoMin: prezzo })
+      const fo = a.fornitori.get(f)
+      fo.acquisti++
+      fo.spesa += Number(r.importo_riga) || 0
+      fo.sommaPrezzi += prezzo
+      if (prezzo < fo.prezzoMin) fo.prezzoMin = prezzo
+      if (!fo.ultimo || data > fo.ultimo.data) fo.ultimo = { data, prezzo }
+    }
+
+    const articoli = []
+    for (const a of perArticolo.values()) {
+      if (a.acquisti < minAcquisti) continue
+      const fornitori = [...a.fornitori.values()]
+        .map(f => ({ ...f, prezzoMedio: f.sommaPrezzi / f.acquisti, ultimoPrezzo: f.ultimo?.prezzo ?? null, ultimaData: f.ultimo?.data ?? null }))
+        .sort((x, y) => y.spesa - x.spesa)
+
+      // Confronto fra fornitori sullo STESSO articolo: ha senso solo con almeno
+      // due fornitori. Con uno solo il "risparmio potenziale" sarebbe un numero
+      // inventato, quindi resta null.
+      const migliore = fornitori.length > 1
+        ? fornitori.reduce((m, f) => (f.prezzoMedio < m.prezzoMedio ? f : m), fornitori[0])
+        : null
+      const peggiore = fornitori.length > 1
+        ? fornitori.reduce((m, f) => (f.prezzoMedio > m.prezzoMedio ? f : m), fornitori[0])
+        : null
+
+      const p0 = a.primo?.prezzo ?? null
+      const p1 = a.ultimo?.prezzo ?? null
+      articoli.push({
+        nome: a.nome,
+        descrizione: a.descrizione,
+        categoria: a.categoria,
+        um: a.um || null,
+        acquisti: a.acquisti,
+        quantita: a.quantita,
+        spesa: a.spesa,
+        nFornitori: fornitori.length,
+        primoPrezzo: p0, primaData: a.primo?.data ?? null,
+        ultimoPrezzo: p1, ultimaData: a.ultimo?.data ?? null,
+        prezzoMin: a.prezzoMin, prezzoMax: a.prezzoMax,
+        // null (non 0) quando la variazione non è calcolabile: "0%" vorrebbe
+        // dire "prezzo invariato", che è un'affermazione diversa da "non so".
+        variazionePct: p0 && p1 ? ((p1 - p0) / p0) * 100 : null,
+        // Escursione fra il minimo e il massimo pagato nel periodo: è
+        // l'indicatore che fa emergere gli articoli comprati a prezzi ballerini
+        // anche quando primo e ultimo prezzo coincidono.
+        escursionePct: a.prezzoMin > 0 ? ((a.prezzoMax - a.prezzoMin) / a.prezzoMin) * 100 : null,
+        fornitori,
+        migliorFornitore: migliore ? migliore.fornitore : null,
+        migliorPrezzo: migliore ? migliore.prezzoMedio : null,
+        peggiorFornitore: peggiore ? peggiore.fornitore : null,
+        peggiorPrezzo: peggiore ? peggiore.prezzoMedio : null,
+        // Quanto si sarebbe speso in meno comprando sempre dal fornitore più
+        // economico, a parità di quantità acquistate.
+        risparmioPotenziale: migliore && peggiore && migliore !== peggiore
+          ? fornitori.reduce((s, f) => s + Math.max(0, (f.prezzoMedio - migliore.prezzoMedio)) * (f.spesa / (f.prezzoMedio || 1)), 0)
+          : null,
+      })
+    }
+
+    articoli.sort((a, b) => b.spesa - a.spesa)
+    return { articoli, righeLette: righe.length, troncato, righeSenzaSede }
+  },
+
+  /** Serie temporale dei prezzi di un singolo articolo, per fornitore. */
+  storicoArticolo: async ({ nome, from, to } = {}) => {
+    if (!nome) return []
+    const build = () => {
+      let q = supabase.from('fatture_righe')
+        .select('id, data_fattura, fornitore, prezzo_unitario, quantita, importo_riga, unita_misura, numero_fattura, sede')
+        .eq('nome_normalizzato', nome)
+        .gt('prezzo_unitario', 0)
+      if (from) q = q.gte('data_fattura', from)
+      if (to)   q = q.lte('data_fattura', to)
+      return q
+    }
+    const righe = await sbFetchPaged(build, 'id')
+    return righe.sort((a, b) => String(a.data_fattura).localeCompare(String(b.data_fattura)))
+  },
+
+  /**
+   * Spesa per categoria merceologica, per mese e per sede.
+   *
+   * Le categorie ALTRO e NON_CLASSIFICATO restano nel risultato ma marcate:
+   * NON_CLASSIFICATO in particolare non è "zero" né "altro", è "nessuna delle
+   * 182 regole ha riconosciuto la riga" — è un debito da presidiare, e
+   * nasconderlo farebbe sembrare la classificazione migliore di com'è.
+   */
+  spesaMerceologica: async ({ from, to, sede } = {}) => {
+    const [cats, res] = await Promise.all([
+      analisiCostiApi.categorie(),
+      fetchPagedInfo(() => {
+        let q = supabase.from('fatture_righe')
+          .select('id, data_fattura, categoria, importo_riga, sede, fornitore')
+        if (from) q = q.gte('data_fattura', from)
+        if (to)   q = q.lte('data_fattura', to)
+        if (sede && sede !== 'ALL') q = q.eq('sede', sede)
+        return q
+      }, 'id', { max: 150000 }),
+    ])
+
+    const metaCat = new Map(cats.map(c => [c.categoria, c]))
+    const perCatMese = new Map()
+    const perCat = new Map()
+    let righeSenzaSede = 0
+
+    for (const r of res.righe) {
+      if (!r.sede) righeSenzaSede++
+      const cat = r.categoria || 'NON_CLASSIFICATO'
+      const mese = (r.data_fattura || '').substring(0, 7)
+      const imp = Number(r.importo_riga) || 0
+      const m = metaCat.get(cat)
+
+      const kc = cat
+      if (!perCat.has(kc)) perCat.set(kc, {
+        categoria: cat,
+        macro: m?.macro ?? 'IGNOTO',
+        isFoodCost: m?.is_food_cost ?? false,
+        isMateriaPrima: m?.is_materia_prima ?? false,
+        daPresidiare: CATEGORIE_NON_MERCE.has(cat),
+        spesa: 0, righe: 0, MA: 0, PN: 0, senzaSede: 0,
+        fornitori: new Set(),
+      })
+      const c = perCat.get(kc)
+      c.spesa += imp; c.righe++
+      if (r.fornitore) c.fornitori.add(r.fornitore)
+      if (r.sede === 'MA') c.MA += imp
+      else if (r.sede === 'PN') c.PN += imp
+      else c.senzaSede += imp
+
+      const km = `${mese}|${cat}`
+      if (!perCatMese.has(km)) perCatMese.set(km, { mese, categoria: cat, macro: m?.macro ?? 'IGNOTO', spesa: 0, MA: 0, PN: 0 })
+      const cm = perCatMese.get(km)
+      cm.spesa += imp
+      if (r.sede === 'MA') cm.MA += imp
+      else if (r.sede === 'PN') cm.PN += imp
+    }
+
+    return {
+      perCategoria: [...perCat.values()]
+        .map(c => ({ ...c, nFornitori: c.fornitori.size, fornitori: undefined }))
+        .sort((a, b) => b.spesa - a.spesa),
+      perCategoriaMese: [...perCatMese.values()].sort((a, b) => a.mese.localeCompare(b.mese)),
+      righeLette: res.righe.length,
+      troncato: res.troncato,
+      righeSenzaSede,
+    }
+  },
+
+  /**
+   * Conto economico gestionale per sede, con separazione fra costi DIRETTI di
+   * locale e STRUTTURA CENTRALE.
+   *
+   * È la lettura che mancava. Sommando tutto insieme, Mameli risulta in perdita
+   * e basta; separando le voci si vede che su Mameli gravano Amministrazione e
+   * Marketing — cioè personale che serve entrambi i locali — mentre su Predda
+   * Niedda non grava nulla di analogo. Senza questa distinzione le due sedi non
+   * sono confrontabili.
+   *
+   * Tutto è calcolato AL NETTO IVA, perché i costi fornitori sono netti:
+   *  • ricavi netti = corrispettivi / 1,10 (stessa convenzione di
+   *    v_food_cost_mensile, aliquota ristorazione)
+   *  • costi fornitori = somma di `fatture_righe.importo_riga` (già netta)
+   * Confrontare corrispettivi lordi con costi netti gonfierebbe il margine.
+   *
+   * Il personale senza reparto assegnato NON viene silenziosamente attribuito
+   * al diretto: resta in una voce propria, perché su Mameli 2026 vale 129.405 €,
+   * un terzo del costo del personale, e spalmarlo cambierebbe la conclusione.
+   *
+   * @param {string} da  'YYYY-MM-DD'
+   * @param {string} a   'YYYY-MM-DD'
+   */
+  marginalitaSedi: async ({ da, a } = {}) => {
+    const annoDa = parseInt(String(da).substring(0, 4), 10)
+    const annoA  = parseInt(String(a).substring(0, 4), 10)
+    const meseDa = parseInt(String(da).substring(5, 7), 10)
+    const meseA  = parseInt(String(a).substring(5, 7), 10)
+    const dentroPeriodo = (anno, mese) => {
+      const k = anno * 12 + mese
+      return k >= annoDa * 12 + meseDa && k <= annoA * 12 + meseA
+    }
+
+    const [chiusure, righeFatt, buste, dipendenti, reparti, fissi] = await Promise.all([
+      sbFetchPaged(() => supabase.from('chiusure_giornaliere')
+        .select('id, sede, data, totale_venduto_ipratico, totale_venduto_dgfe, coperti')
+        .gte('data', da).lte('data', a), 'id'),
+      fetchPagedInfo(() => supabase.from('fatture_righe')
+        .select('id, sede, data_fattura, importo_riga, categoria')
+        .gte('data_fattura', da).lte('data_fattura', a), 'id', { max: 150000 }),
+      sbFetchPaged(() => supabase.from('buste_paga')
+        .select('id, sede, anno, mese, costo_azienda, netto, employee_id')
+        .gte('anno', annoDa).lte('anno', annoA), 'id'),
+      sbFetchPaged(() => supabase.from('employees').select('id, reparto_id'), 'id'),
+      sbFetch(supabase.from('reparti').select('id, nome')),
+      sbFetchPaged(() => supabase.from('costi_fissi')
+        .select('id, sede, anno, mese, importo, escludi_da_be')
+        .gte('anno', annoDa).lte('anno', annoA), 'id'),
+    ])
+
+    const repartoDi = new Map(reparti.map(r => [r.id, r.nome]))
+    const repartoDip = new Map(dipendenti.map(e => [e.id, repartoDi.get(e.reparto_id) ?? null]))
+
+    // I reparti che servono entrambi i locali. Ricavati dai nomi perché
+    // `reparti` non ha (ancora) un flag "struttura centrale": se un domani lo
+    // avrà, basterà leggerlo qui.
+    const REPARTI_CENTRALI = new Set(['Amministrazione', 'Marketing'])
+
+    const vuota = () => ({
+      ricaviLordi: 0, ricaviNetti: 0, coperti: 0, giorni: 0,
+      fornitori: 0, fornitoriFood: 0,
+      persDiretto: 0, persCentrale: 0, persNonAssegnato: 0,
+      fissi: 0,
+      dettaglioReparti: {},
+    })
+    const perSede = { MA: vuota(), PN: vuota() }
+    const perMese = new Map()
+    const mese = (s, m) => {
+      if (!perMese.has(m)) perMese.set(m, { mese: m, MA: vuota(), PN: vuota() })
+      return perMese.get(m)[s]
+    }
+
+    for (const c of chiusure) {
+      const s = c.sede
+      if (!perSede[s]) continue
+      const lordo = Number(c.totale_venduto_ipratico ?? c.totale_venduto_dgfe) || 0
+      const m = String(c.data).substring(0, 7)
+      for (const t of [perSede[s], mese(s, m)]) {
+        t.ricaviLordi += lordo
+        t.ricaviNetti += lordo / 1.10
+        t.coperti += Number(c.coperti) || 0
+        t.giorni++
+      }
+    }
+
+    let righeFattSenzaSede = 0
+    for (const r of righeFatt.righe) {
+      const s = r.sede
+      const imp = Number(r.importo_riga) || 0
+      if (!perSede[s]) { righeFattSenzaSede++; continue }
+      const m = String(r.data_fattura).substring(0, 7)
+      for (const t of [perSede[s], mese(s, m)]) {
+        t.fornitori += imp
+        if (!CATEGORIE_NON_MERCE.has(r.categoria)) t.fornitoriFood += imp
+      }
+    }
+
+    for (const b of buste) {
+      const s = b.sede
+      if (!perSede[s] || !dentroPeriodo(b.anno, b.mese)) continue
+      const costo = Number(b.costo_azienda) || (Number(b.netto) || 0) * 1.79
+      const rep = b.employee_id ? repartoDip.get(b.employee_id) ?? null : null
+      const m = `${b.anno}-${String(b.mese).padStart(2, '0')}`
+      const voce = rep === null ? 'persNonAssegnato'
+        : REPARTI_CENTRALI.has(rep) ? 'persCentrale' : 'persDiretto'
+      for (const t of [perSede[s], mese(s, m)]) {
+        t[voce] += costo
+        const nome = rep ?? '(reparto non assegnato)'
+        t.dettaglioReparti[nome] = (t.dettaglioReparti[nome] || 0) + costo
+      }
+    }
+
+    for (const f of fissi) {
+      const s = f.sede
+      if (!perSede[s] || f.escludi_da_be === true || !dentroPeriodo(f.anno, f.mese)) continue
+      const m = `${f.anno}-${String(f.mese).padStart(2, '0')}`
+      const imp = Number(f.importo) || 0
+      perSede[s].fissi += imp
+      mese(s, m).fissi += imp
+    }
+
+    const chiudi = (t) => {
+      const personaleSede = t.persDiretto + t.persNonAssegnato
+      const margineSede = t.ricaviNetti - t.fornitori - personaleSede - t.fissi
+      const risultato = margineSede - t.persCentrale
+      const pct = v => (t.ricaviNetti > 0 ? (v / t.ricaviNetti) * 100 : null)
+      return {
+        ...t,
+        personaleSede,
+        personaleTotale: personaleSede + t.persCentrale,
+        margineSede,
+        risultato,
+        // Percentuali null (non 0) quando non c'è un fatturato su cui calcolarle
+        fornitoriPct: pct(t.fornitori),
+        personaleSedePct: pct(personaleSede),
+        personaleCentralePct: pct(t.persCentrale),
+        fissiPct: pct(t.fissi),
+        margineSedePct: pct(margineSede),
+        risultatoPct: pct(risultato),
+        primeCostPct: pct(t.fornitori + personaleSede),
+        copertoMedioNetto: t.coperti > 0 ? t.ricaviNetti / t.coperti : null,
+      }
+    }
+
+    return {
+      sedi: { MA: chiudi(perSede.MA), PN: chiudi(perSede.PN) },
+      mensile: [...perMese.entries()]
+        .sort((x, y) => x[0].localeCompare(y[0]))
+        .map(([m, v]) => ({ mese: m, MA: chiudi(v.MA), PN: chiudi(v.PN) })),
+      // Trasparenza sul dato: quante righe fattura del periodo non hanno sede
+      // e quindi NON sono attribuite a nessuno dei due locali.
+      righeFattSenzaSede,
+      righeFattLette: righeFatt.righe.length,
+      troncato: righeFatt.troncato,
+    }
+  },
+
+  /**
+   * Serie storica pluriennale della spesa fornitori (7 esercizi).
+   * Legge le viste già aggregate a DB: 85 righe per il macro mensile e 1.689
+   * per il dettaglio categoria/sede, quindi niente paginazione pesante.
+   */
+  serieStorica: async () => {
+    const [macro, perCategoria] = await Promise.all([
+      sbFetchPaged(() => supabase.from('v_macro_spesa_mensile').select('*'), 'anno_mese'),
+      sbFetchPaged(() => supabase.from('v_spesa_categoria_sede_mese').select('*'), 'mese'),
+    ])
+    return { macro, perCategoria }
+  },
+
+  /** Food cost mensile per sede (vista già pronta, copre dal 2025). */
+  foodCostMensile: async () => sbFetchPaged(
+    () => supabase.from('v_food_cost_mensile').select('*'), 'mese'
+  ),
+}
+
 export default {
   modules, employees, chiusure, kpi, venduto,
   fornitori, pagamentiFatture, prodottiCatalogo, listinoApi, ricetteApi, chat, data, analytics, bustePaga, statistiche, turni,
   roles, admin, crmConfig, sediApi, operatorMapping, repartiApi,
   fattureCategorieApi, costiFissiApi, standardNazionaliApi, kpiTargetsApi, kpiPerformanceApi,
   beMensileApi, operatoreMeseApi, obiettiviProdottoApi, bonusApi,
-  fattureBi, bilanciApi,
+  fattureBi, bilanciApi, analisiCostiApi,
   calcBonusTeam, calcBonusIndividuale,
   verificaApi,
 }

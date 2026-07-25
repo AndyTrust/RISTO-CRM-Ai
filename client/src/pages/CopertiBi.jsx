@@ -1,7 +1,10 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import supabase from '../supabase'
+import { fetchPaged } from '../api/paged'
+import { BottoneCsv, NotaCopertura } from '../lib/tabella'
+import { useCoperturaTavoli } from '../hooks/useCoperturaTavoli'
 import PageAssistant from '../components/PageAssistant'
-import PeriodFilter, { periodFilterToDates } from '../components/PeriodFilter'
+import PeriodFilter from '../components/PeriodFilter'
 import { periodToDates } from '../components/DateRangePicker'
 import {
   LineChart, Line, BarChart, Bar, ScatterChart, Scatter,
@@ -9,9 +12,6 @@ import {
   ResponsiveContainer, LabelList
 } from 'recharts'
 import { Users, DollarSign, Clock, Star, Table, TrendingUp, ChevronUp, ChevronDown, Info, AlertTriangle, RotateCw, Building2 } from 'lucide-react'
-
-// statistiche_tavoli copre SOLO da questa data in poi (verificato su Supabase).
-const TAVOLI_COVERAGE_START = '2026-03-01'
 
 const SEDE_OPTIONS = [
   { value: 'ALL', label: 'Tutte le sedi' },
@@ -24,11 +24,6 @@ const SEDE_COLOR = { MA: '#6366f1', PN: '#10b981' }
 const GIORNI_SHORT = ['Dom','Lun','Mar','Mer','Gio','Ven','Sab']
 
 // ── Helpers ────────────────────────────────────────────────────────────────
-async function sbq(q) {
-  const { data, error } = await q
-  if (error) throw error
-  return data ?? []
-}
 const eur = n => (n == null || isNaN(n)) ? '—'
   : Number(n).toLocaleString('it-IT', { style: 'currency', currency: 'EUR' })
 const num = n => (n == null || isNaN(n)) ? '—' : Number(n).toLocaleString('it-IT')
@@ -86,8 +81,8 @@ const LineTooltip = ({ active, payload, label }) => {
   return (
     <div className="bg-white border border-gray-200 rounded-lg shadow-lg p-3 text-sm">
       <div className="font-semibold text-gray-800 mb-1">{label?.slice(0,10).split('-').reverse().join('/')}</div>
-      {payload.map((p,i)=>(
-        <div key={i} className="text-gray-600">
+      {payload.map(p=>(
+        <div key={p.dataKey ?? p.name} className="text-gray-600">
           {p.name}: <span className="font-medium" style={{color:p.color}}>{num(p.value)}</span>
         </div>
       ))}
@@ -110,51 +105,74 @@ export default function CopertiBi() {
   const [error, setError] = useState(null)
   const [sortCol, setSortCol] = useState('incasso')
   const [sortDir, setSortDir] = useState('desc')
+  const richiestaRef = useRef(0)
 
-  // statistiche_tavoli copre il periodo selezionato?
-  const tavoliCoverageWarning = dateFrom && dateFrom < TAVOLI_COVERAGE_START
+  // Da quando esiste davvero statistiche_tavoli: chiesto ai dati, non più
+  // scritto a mano qui e in StatisticheSala.jsx con lo stesso valore.
+  const { da: coperturaTavoliDa } = useCoperturaTavoli()
+  const tavoliCoverageWarning = Boolean(dateFrom && coperturaTavoliDa && dateFrom < coperturaTavoliDa)
 
-  useEffect(() => { fetchData() }, [sede, dateFrom, dateTo])
-
-  async function fetchData() {
+  useEffect(() => {
     if (!dateFrom || !dateTo) return
+    // Guardia di unmount + numero di richiesta: un cambio di periodo rapido
+    // faceva partire più fetch e vinceva l'ultima che rispondeva, non l'ultima
+    // richiesta.
+    let annullato = false
+    const mia = ++richiestaRef.current
+
     setLoading(true)
     setError(null)
-    try {
-      // 1) chiusure_giornaliere (fonte di verità coperti/venduto) — filtro data + sede
-      let qc = supabase.from('chiusure_giornaliere')
-        .select('sede, data, totale_venduto_ipratico, coperti, coperto_medio, scontrino_medio')
-        .gte('data', dateFrom).lte('data', dateTo)
-      if (sede !== 'ALL') qc = qc.eq('sede', sede)
 
-      // 2) statistiche_tavoli (un record = un tavolo aperto/chiuso) — filtro su data_inizio + sede
-      let qt = supabase.from('statistiche_tavoli')
-        .select('sede, data_inizio, tavolo, nome_stanza, operatore, n_coperti, n_ordini, n_coperture, durata_media_min, incasso, scontrino_medio, fatturato_tavolo')
-        .gte('data_inizio', dateFrom).lte('data_inizio', dateTo + 'T23:59:59')
-      if (sede !== 'ALL') qt = qt.eq('sede', sede)
+    ;(async () => {
+      try {
+        // Paginazione VERA. `.range(0, 9999)` non alzava nulla: il server
+        // tronca comunque a 1000 righe, quindi con un periodo ampio i tavoli
+        // (5.202 righe a DB) e i turni (3.123) arrivavano tagliati e ogni
+        // aggregazione qui sotto — KPI, ranking, check di coerenza — era
+        // calcolata su un pezzo di periodo senza che nulla lo segnalasse.
+        const [cRows, tRows, tuRows] = await Promise.all([
+          fetchPaged(() => {
+            let q = supabase.from('chiusure_giornaliere')
+              .select('id, sede, data, totale_venduto_ipratico, coperti, coperto_medio, scontrino_medio')
+              .gte('data', dateFrom).lte('data', dateTo)
+            if (sede !== 'ALL') q = q.eq('sede', sede)
+            return q
+          }, 'id'),
+          fetchPaged(() => {
+            let q = supabase.from('statistiche_tavoli')
+              .select('id, sede, data_inizio, tavolo, nome_stanza, operatore, n_coperti, n_ordini, n_coperture, durata_media_min, incasso, scontrino_medio, fatturato_tavolo')
+              .gte('data_inizio', dateFrom).lte('data_inizio', dateTo + 'T23:59:59')
+            if (sede !== 'ALL') q = q.eq('sede', sede)
+            return q
+          }, 'id'),
+          fetchPaged(() => {
+            let q = supabase.from('chiusure_turni')
+              .select('id, sede, data, turno, incasso, quantita')
+              .gte('data', dateFrom).lte('data', dateTo)
+              .in('turno', ['pranzo', 'cena'])
+            if (sede !== 'ALL') q = q.eq('sede', sede)
+            return q
+          }, 'id'),
+        ])
 
-      // 3) chiusure_turni (split pranzo/cena reale) — filtro data + sede
-      let qtu = supabase.from('chiusure_turni')
-        .select('sede, data, turno, incasso, quantita')
-        .gte('data', dateFrom).lte('data', dateTo)
-        .in('turno', ['pranzo', 'cena'])
-      if (sede !== 'ALL') qtu = qtu.eq('sede', sede)
+        if (annullato || mia !== richiestaRef.current) return
+        // L'ordine cronologico si applica qui: `id` serve solo a paginare in
+        // modo stabile, non è l'ordine con cui si guardano i dati.
+        setChiusureData([...cRows].sort((a, b) => a.data.localeCompare(b.data)))
+        setTavoliData(tRows)
+        setTurniData(tuRows)
+      } catch (e) {
+        if (!annullato && mia === richiestaRef.current) {
+          setError(e.message || String(e))
+          setChiusureData([]); setTavoliData([]); setTurniData([])
+        }
+      } finally {
+        if (!annullato && mia === richiestaRef.current) setLoading(false)
+      }
+    })()
 
-      const [cRows, tRows, tuRows] = await Promise.all([
-        sbq(qc.order('data').range(0, 9999)),
-        sbq(qt.range(0, 9999)),
-        sbq(qtu.range(0, 9999)),
-      ])
-      setChiusureData(cRows)
-      setTavoliData(tRows)
-      setTurniData(tuRows)
-    } catch (e) {
-      setError(e.message || String(e))
-      setChiusureData([]); setTavoliData([]); setTurniData([])
-    } finally {
-      setLoading(false)
-    }
-  }
+    return () => { annullato = true }
+  }, [sede, dateFrom, dateTo])
 
   // ── KPI globali (da chiusure_giornaliere + statistiche_tavoli) ─────────────
   const kpis = useMemo(() => {
@@ -331,6 +349,20 @@ export default function CopertiBi() {
     {key:'scontrino_medio',label:'Scontrino medio'},
   ]
 
+  const COLONNE_CSV_TAVOLI = [
+    { chiave: 'sede', etichetta: 'Sede' },
+    { chiave: 'tavolo', etichetta: 'Tavolo' },
+    { chiave: 'nome_stanza', etichetta: 'Stanza' },
+    { chiave: 'count', etichetta: 'Aperture' },
+    { chiave: 'coperti_medi', etichetta: 'Coperti medi', valore: r => Math.round(r.coperti_medi * 10) / 10 },
+    { chiave: 'n_coperti', etichetta: 'Coperti totali' },
+    { chiave: 'n_ordini', etichetta: 'Ordini' },
+    { chiave: 'durata_media_min', etichetta: 'Durata media (min)', valore: r => Math.round(r.durata_media_min) },
+    { chiave: 'incasso_per_min', etichetta: 'Euro/min', valore: r => Math.round(r.incasso_per_min * 100) / 100 },
+    { chiave: 'incasso', etichetta: 'Incasso totale' },
+    { chiave: 'scontrino_medio', etichetta: 'Scontrino medio', valore: r => Math.round(r.scontrino_medio * 100) / 100 },
+  ]
+
   const periodoLabel = `${dateFrom?.split('-').reverse().join('/')} → ${dateTo?.split('-').reverse().join('/')}`
 
   return (
@@ -370,7 +402,7 @@ export default function CopertiBi() {
         <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-3 mb-6 text-xs flex items-start gap-2">
           <AlertTriangle size={16} className="flex-shrink-0 mt-0.5 text-amber-500"/>
           <span>
-            Le statistiche per tavolo (durata, €/min, scatter, tabella) esistono <strong>solo dal {TAVOLI_COVERAGE_START.split('-').reverse().join('/')}</strong>.
+            Le statistiche per tavolo (durata, €/min, scatter, tabella) esistono <strong>solo dal {coperturaTavoliDa?.split('-').reverse().join('/')}</strong> (prima riga presente in <code>statistiche_tavoli</code>).
             Il periodo selezionato parte prima: i blocchi basati su <code>statistiche_tavoli</code> mostrano solo la parte di periodo coperta.
             I coperti e il venduto (da <code>chiusure_giornaliere</code>) sono invece completi.
           </span>
@@ -526,7 +558,7 @@ export default function CopertiBi() {
                 <YAxis dataKey="etich" type="category" width={70} fontSize={11}/>
                 <Tooltip formatter={v=>eur(v)}/>
                 <Bar dataKey="incasso" name="Incasso" radius={[0,4,4,0]}>
-                  {topTavoli.map((t,i)=><Cell key={i} fill={SEDE_COLOR[t.sede]||'#3b82f6'}/>)}
+                  {topTavoli.map(t=><Cell key={t.key} fill={SEDE_COLOR[t.sede]||'#3b82f6'}/>)}
                   <LabelList dataKey="incasso" position="right" fontSize={10}
                     formatter={v=>`€${(v/1000).toFixed(1)}k`}/>
                 </Bar>
@@ -554,7 +586,7 @@ export default function CopertiBi() {
                 <YAxis fontSize={11}/>
                 <Tooltip formatter={(v,name)=>name==='Media Coperti'?[`${v} coperti`,name]:[v,name]}/>
                 <Bar dataKey="mediaCoperti" name="Media Coperti" radius={[4,4,0,0]} opacity={0.9}>
-                  {giorniDistrib.map((_,i)=>(<Cell key={i} fill={i===5||i===6||i===0?'#6366f1':'#3b82f6'}/>))}
+                  {giorniDistrib.map((g,i)=>(<Cell key={g.giorno} fill={i===5||i===6||i===0?'#6366f1':'#3b82f6'}/>))}
                   <LabelList dataKey="mediaCoperti" position="top" fontSize={10}/>
                 </Bar>
               </BarChart>
@@ -613,11 +645,17 @@ export default function CopertiBi() {
 
       {/* TABELLA TAVOLI */}
       <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
-        <h2 className="text-base font-semibold text-gray-800 mb-1 flex items-center gap-2">
-          <Table size={16} className="text-blue-500"/> Dettaglio Tavoli ({sortedTavoli.length})
-          <Info_ text="Una riga per tavolo (sede+tavolo). Aperture = numero record statistiche_tavoli; €/min = incasso ÷ somma minuti occupazione; coperti medi = coperti ÷ aperture."/>
-        </h2>
-        <p className="text-xs text-gray-500 mb-4">Fonte: statistiche_tavoli · {periodoLabel}</p>
+        <div className="flex items-start justify-between gap-3 flex-wrap mb-4">
+          <div>
+            <h2 className="text-base font-semibold text-gray-800 mb-1 flex items-center gap-2">
+              <Table size={16} className="text-blue-500"/> Dettaglio Tavoli ({sortedTavoli.length})
+              <Info_ text="Una riga per tavolo (sede+tavolo). Aperture = numero record statistiche_tavoli; €/min = incasso ÷ somma minuti occupazione; coperti medi = coperti ÷ aperture."/>
+            </h2>
+            <NotaCopertura righe={tavoliData.length} da={dateFrom} a={dateTo} fonte="statistiche_tavoli"
+              extra={`${sortedTavoli.length} tavoli distinti`} />
+          </div>
+          <BottoneCsv righe={sortedTavoli} colonne={COLONNE_CSV_TAVOLI} nomeFile={`tavoli_${sede}_${dateFrom}_${dateTo}`} />
+        </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>

@@ -4,11 +4,14 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend
 } from 'recharts'
 import { fornitori as fornitoriApi, pagamentiFatture as pagApi, prodottiCatalogo as catApi, fattureBi, fattureCategorieApi } from '../api/client'
+import supabase from '../supabase'
+import { fetchPagedInfo } from '../api/paged'
+import { BottoneCsv, NotaCopertura } from '../lib/tabella'
 import {
   Building2, Search, X, ChevronRight, ChevronDown, FileText, TrendingDown, TrendingUp,
   Plus, Check, Pencil, Trash2, Euro, Clock, AlertCircle, CheckCircle2,
   Package, BarChart2, RefreshCw, Filter, CreditCard, Receipt, Calendar,
-  ChevronLeft, Download, Info, Tag, Hash, Layers
+  ChevronLeft, Info, Tag, Hash, Layers
 } from 'lucide-react'
 import PageAssistant from '../components/PageAssistant'
 import PageStatsWidget from '../components/PageStatsWidget'
@@ -92,6 +95,10 @@ function CategoriaSelect({ fornitore, onChange }) {
 // ─── DateRangeBar ─────────────────────────────────────────────────────────────
 function DateRangeBar({ from, to, onChange }) {
   const [period, setPeriod] = useState('custom')
+  // I preset «Anno prec.» e «Tutto» esistevano in PERIODI ma erano dead code:
+  // la barra usa PeriodFilter, che non li prevede. Con 7 anni di fatture a DB
+  // (dal giugno 2019) servono davvero, quindi vengono resi raggiungibili qui.
+  const PRESET_EXTRA = PERIODI.filter(p => p.label === 'Anno prec.' || p.label === 'Tutto')
   return (
     <div className="space-y-2">
       <PageStatsWidget />
@@ -99,12 +106,27 @@ function DateRangeBar({ from, to, onChange }) {
         period={period}
         dates={{ from, to }}
         onChange={(pid, d) => { setPeriod(pid); onChange(d?.from || '', d?.to || '') }}
-        extra={(from || to) && (
-          <button onClick={() => onChange('','')}
-            className="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1 pb-2">
-            <X size={11}/> Reset
-          </button>
-        )} />
+        extra={
+          <>
+            {PRESET_EXTRA.map(p => (
+              <button key={p.label} onClick={() => { setPeriod('custom'); onChange(p.from, p.to) }}
+                title={p.from ? `${p.from} → ${p.to}` : 'Nessun filtro di data: tutto lo storico (dal 2019)'}
+                className={`text-xs px-3 py-2 rounded-xl border transition-all mb-1 ${
+                  from === p.from && to === p.to
+                    ? 'bg-indigo-600 border-indigo-600 text-white'
+                    : 'bg-white border-gray-200 text-gray-600 hover:border-indigo-400 hover:text-indigo-600'
+                }`}>
+                {p.label}
+              </button>
+            ))}
+            {(from || to) && (
+              <button onClick={() => onChange('','')}
+                className="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1 pb-2">
+                <X size={11}/> Reset
+              </button>
+            )}
+          </>
+        } />
     </div>
   )
 }
@@ -112,7 +134,7 @@ function DateRangeBar({ from, to, onChange }) {
 // ─── Modal: Aggiungi/Modifica pagamento ───────────────────────────────────────
 function PagamentoModal({ fattura, pagamento, onClose, onSaved }) {
   const [form, setForm] = useState({
-    data_pagamento: pagamento?.data_pagamento || new Date().toISOString().split('T')[0],
+    data_pagamento: pagamento?.data_pagamento || iso(new Date()),
     importo: pagamento?.importo || (fattura ? String(+(fattura.totale - (fattura.totale_pagato||0)).toFixed(2)) : ''),
     tipo:    pagamento?.tipo   || 'PAGAMENTO',
     metodo:  pagamento?.metodo || 'BONIFICO',
@@ -191,21 +213,31 @@ function PagamentoModal({ fattura, pagamento, onClose, onSaved }) {
 // ─── RigheFattura (prodotti di una singola fattura) ────────────────────────────
 function RigheFattura({ fatturaId }) {
   const [righe, setRighe] = useState(null)
+  const [errore, setErrore] = useState(null)
 
   useEffect(() => {
     if (!fatturaId) return
-    fornitoriApi.getRigheFattura(fatturaId).then(setRighe).catch(() => setRighe([]))
+    let annullato = false
+    fornitoriApi.getRigheFattura(fatturaId)
+      .then(r => { if (!annullato) setRighe(r) })
+      // `.catch(() => setRighe([]))` faceva passare un guasto per "nessuna riga
+      // estratta", che qui è un messaggio operativo diverso (manca l'estrazione).
+      .catch(e => { if (!annullato) { setErrore(e?.message || String(e)); setRighe([]) } })
+    return () => { annullato = true }
   }, [fatturaId])
 
   if (righe === null) return <p className="text-xs text-gray-400 py-3 text-center">Caricamento righe...</p>
+  if (errore) return <p className="text-xs text-red-600 py-3 text-center">Righe non caricate: {errore}</p>
   if (!righe.length) return <p className="text-xs text-gray-400 py-3 text-center italic">Nessuna riga prodotto estratta per questa fattura</p>
 
   return (
     <div className="mt-2">
-      <div className="text-xs font-medium text-gray-500 mb-2">{righe.length} righe prodotto</div>
+      <div className="text-xs font-medium text-gray-500 mb-2">
+        {righe.length} righe prodotto · importi <strong>netto IVA</strong> (fatture_righe.importo_riga)
+      </div>
       <div className="space-y-1.5">
         {righe.map((r, i) => (
-          <div key={i} className="flex items-start justify-between gap-2 py-1.5 border-b border-gray-50 last:border-0">
+          <div key={r.id ?? `${r.riga_numero ?? i}-${r.descrizione}`} className="flex items-start justify-between gap-2 py-1.5 border-b border-gray-50 last:border-0">
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-1.5 flex-wrap">
                 {r.codice_articolo && (
@@ -231,7 +263,7 @@ function RigheFattura({ fatturaId }) {
 // ─── BulkPagamentoModal ────────────────────────────────────────────────────────
 function BulkPagamentoModal({ fatture, onClose, onDone }) {
   const [form, setForm] = useState({
-    data_pagamento: new Date().toISOString().split('T')[0],
+    data_pagamento: iso(new Date()),
     tipo: 'SALDO',
     metodo: 'BONIFICO',
     note: '',
@@ -312,9 +344,17 @@ function FatturaRow({ f, onAddPag, onEditPag, onDeletePag, checked, onToggle }) 
   const [showRighe, setShowRighe] = useState(false)
   const residuo = +(parseFloat(f.totale||0) - parseFloat(f.totale_pagato||0)).toFixed(2)
 
+  const [pagErr, setPagErr] = useState(null)
+
   useEffect(() => {
     if (!expanded) return
-    pagApi.getByFattura(f.id).then(setPagamenti).catch(() => setPagamenti([]))
+    let annullato = false
+    pagApi.getByFattura(f.id)
+      .then(p => { if (!annullato) { setPagamenti(p); setPagErr(null) } })
+      // Senza distinguere l'errore, "Nessun pagamento" poteva essere un guasto:
+      // e su una fattura già saldata è un'informazione che porta a pagare due volte.
+      .catch(e => { if (!annullato) { setPagamenti([]); setPagErr(e?.message || String(e)) } })
+    return () => { annullato = true }
   }, [expanded, f.id])
 
   const handleDelete = async (pid) => {
@@ -348,7 +388,9 @@ function FatturaRow({ f, onAddPag, onEditPag, onDeletePag, checked, onToggle }) 
             <p className="text-xs text-gray-400 mt-0.5">{f.data_fattura}{f.scadenza_pagamento ? ` · scade ${f.scadenza_pagamento}` : ''}</p>
           </div>
           <div className="text-right flex-shrink-0">
-            <p className="text-sm font-semibold text-gray-800">{eur(f.totale)}</p>
+            {/* v_fatture_con_stato.totale è il totale documento, IVA INCLUSA */}
+            <p className="text-sm font-semibold text-gray-800" title="Totale fattura, lordo IVA">{eur(f.totale)}</p>
+            <p className="text-[10px] text-gray-400 leading-none">lordo IVA</p>
             {residuo > 0.01 && <p className="text-xs text-amber-600">res. {eur(residuo)}</p>}
           </div>
         </div>
@@ -374,7 +416,9 @@ function FatturaRow({ f, onAddPag, onEditPag, onDeletePag, checked, onToggle }) 
           {/* Pagamenti */}
           <div className="mt-3">
             <p className="text-xs font-medium text-gray-500 mb-2">Pagamenti registrati</p>
-            {pagamenti === null
+            {pagErr
+              ? <p className="text-xs text-red-600">Pagamenti non caricati: {pagErr} — non è detto che non ce ne siano.</p>
+              : pagamenti === null
               ? <p className="text-xs text-gray-400">Caricamento...</p>
               : pagamenti.length === 0
                 ? <p className="text-xs text-gray-400 italic">Nessun pagamento</p>
@@ -414,25 +458,48 @@ function FornitoreDetail({ fornitore, onClose, onUpdated, dateFrom, dateTo }) {
 
   const [loadError, setLoadError] = useState(null)
 
+  const [troncato, setTroncato] = useState(false)
+  const richiestaRef = useRef(0)
+
   const loadData = useCallback(async () => {
+    const mia = ++richiestaRef.current
     setLoadingFat(true)
     setLoadError(null)
     try {
-      const [fats, prods] = await Promise.all([
-        fornitoriApi.getFatture({ p_iva: fornitore.p_iva, from: dateFrom, to: dateTo, limit: 500 }),
-        fornitoriApi.getRighe({ p_iva: fornitore.p_iva, from: dateFrom, to: dateTo, limit: 2000 }),
+      // `getFatture({ limit: 500 })` non pagina: su un fornitore con più fatture
+      // nel periodo il residuo totale e i conteggi per stato uscivano parziali.
+      // Qui si legge v_fatture_con_stato a pagine (ha `id`, ordinamento stabile).
+      const buildFat = () => {
+        let q = supabase.from('v_fatture_con_stato').select('*')
+          .eq('p_iva', (fornitore.p_iva || '').replace(/^IT/, ''))
+        if (dateFrom) q = q.gte('data_fattura', dateFrom)
+        if (dateTo)   q = q.lte('data_fattura', dateTo)
+        return q
+      }
+      const [resFat, prods] = await Promise.all([
+        fetchPagedInfo(buildFat, 'id'),
+        // getRighe è già paginata lato API (aggrega su fatture_righe).
+        fornitoriApi.getRighe({ p_iva: fornitore.p_iva, from: dateFrom, to: dateTo }),
       ])
-      setFatture(Array.isArray(fats) ? fats : [])
+      if (mia !== richiestaRef.current) return
+      const fats = resFat.righe.sort((a, b) => String(b.data_fattura || '').localeCompare(String(a.data_fattura || '')))
+      setFatture(fats)
+      setTroncato(resFat.troncato)
       setProdotti(Array.isArray(prods) ? prods : [])
     } catch (e) {
+      if (mia !== richiestaRef.current) return
       console.error('FornitoreDetail loadData error:', e)
       setLoadError(e.message || 'Errore nel caricamento dati')
       setFatture([])
       setProdotti([])
-    } finally { setLoadingFat(false) }
+    } finally { if (mia === richiestaRef.current) setLoadingFat(false) }
   }, [fornitore.p_iva, dateFrom, dateTo])
 
-  useEffect(() => { loadData() }, [loadData])
+  useEffect(() => {
+    loadData()
+    // Invalida la richiesta in volo: la modale può essere chiusa prima.
+    return () => { richiestaRef.current++ }
+  }, [loadData])
 
   const fattureFiltrate = useMemo(() => fatture.filter(f => {
     if (filterStato !== 'TUTTI' && f.stato_pagamento !== filterStato) return false
@@ -502,12 +569,15 @@ function FornitoreDetail({ fornitore, onClose, onUpdated, dateFrom, dateTo }) {
           {/* KPI strip */}
           <div className="grid grid-cols-4 gap-2 mt-4">
             {[
-              { label: 'Spesa', val: eur(fornitore.tot_spesa), sub: `${fatture.length} fatt.` },
-              { label: 'Pagato', val: eur(fornitore.tot_pagato), sub: `${fatture.filter(f=>f.stato_pagamento==='SALDATA').length} saldate`, col: 'text-emerald-700' },
-              { label: 'Residuo', val: eur(residuoTot), sub: `${totAperte} aperte`, col: residuoTot > 0 ? 'text-amber-600' : '' },
+              // tot_spesa/tot_pagato vengono da v_fornitori_completi e sono
+              // totali documento: LORDI IVA. Vanno etichettati, altrimenti nella
+              // stessa modale convivono con gli importi NETTI del tab Prodotti.
+              { label: 'Spesa (lordo IVA)', val: eur(fornitore.tot_spesa), sub: `${fatture.length} fatt. · tutto lo storico` },
+              { label: 'Pagato (lordo IVA)', val: eur(fornitore.tot_pagato), sub: `${fatture.filter(f=>f.stato_pagamento==='SALDATA').length} saldate`, col: 'text-emerald-700' },
+              { label: 'Residuo (lordo IVA)', val: eur(residuoTot), sub: `${totAperte} aperte · solo periodo`, col: residuoTot > 0 ? 'text-amber-600' : '' },
               { label: 'Prodotti', val: prodotti.length, sub: 'articoli unici' },
-            ].map((k, i) => (
-              <div key={i} className="bg-gray-50 rounded-xl p-2.5 text-center">
+            ].map((k) => (
+              <div key={k.label} className="bg-gray-50 rounded-xl p-2.5 text-center">
                 <p className="text-xs text-gray-400">{k.label}</p>
                 <p className={`font-semibold text-sm ${k.col || 'text-gray-800'}`}>{k.val}</p>
                 <p className="text-xs text-gray-400">{k.sub}</p>
@@ -516,6 +586,8 @@ function FornitoreDetail({ fornitore, onClose, onUpdated, dateFrom, dateTo }) {
           </div>
 
           {dateFrom && <p className="text-xs text-violet-500 mt-2">📅 Periodo filtrato: {dateFrom} → {dateTo || 'oggi'}</p>}
+          <NotaCopertura righe={fatture.length} da={dateFrom || '—'} a={dateTo || 'oggi'}
+            fonte="v_fatture_con_stato (lordo IVA)" troncato={troncato} />
         </div>
 
         {/* Tabs */}
@@ -568,6 +640,18 @@ function FornitoreDetail({ fornitore, onClose, onUpdated, dateFrom, dateTo }) {
                   <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400"/>
                   <input className="input pl-8 py-1.5 text-xs" placeholder="Cerca n. fattura..." value={searchFat} onChange={e => setSearchFat(e.target.value)}/>
                 </div>
+                <BottoneCsv righe={fattureFiltrate} nomeFile={`fatture_${fornitore.p_iva}`} colonne={[
+                  { chiave: 'numero_fattura', etichetta: 'N. fattura' },
+                  { chiave: 'data_fattura', etichetta: 'Data' },
+                  { chiave: 'sede', etichetta: 'Sede' },
+                  { chiave: 'tipo_documento', etichetta: 'Tipo doc.' },
+                  { chiave: 'imponibile', etichetta: 'Imponibile € (netto IVA)' },
+                  { chiave: 'iva', etichetta: 'IVA €' },
+                  { chiave: 'totale', etichetta: 'Totale € (lordo IVA)' },
+                  { chiave: 'totale_pagato', etichetta: 'Pagato € (lordo IVA)' },
+                  { chiave: 'stato_pagamento', etichetta: 'Stato' },
+                  { chiave: 'scadenza_pagamento', etichetta: 'Scadenza' },
+                ]} />
               </div>
 
               {/* Toolbar selezione multipla */}
@@ -641,11 +725,29 @@ function FornitoreDetail({ fornitore, onClose, onUpdated, dateFrom, dateTo }) {
                   </div>
                 : (
                   <div className="space-y-1.5">
-                    <div className="grid grid-cols-[auto_1fr_auto_auto_auto] gap-x-3 px-2 py-1 text-xs font-medium text-gray-400 border-b border-gray-100">
-                      <span>Codice</span><span>Prodotto</span><span>Qty tot.</span><span>Ult. prezzo</span><span>Spesa tot.</span>
+                    {/* fatture_righe.importo_riga è NETTO IVA: la colonna "Spesa tot."
+                        non è confrontabile con il KPI "Spesa" della testata (lordo). */}
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                        Importi di questo tab: <strong>netto IVA</strong> (righe fattura). I KPI in testata sono lordo IVA:
+                        i due totali non torneranno mai identici.
+                      </p>
+                      <BottoneCsv righe={prodottiFiltrati} nomeFile={`prodotti_${fornitore.p_iva}`} colonne={[
+                        { chiave: 'codice_articolo', etichetta: 'Codice' },
+                        { chiave: 'descrizione', etichetta: 'Descrizione' },
+                        { chiave: 'nome_normalizzato', etichetta: 'Nome normalizzato' },
+                        { chiave: 'um', etichetta: 'UM' },
+                        { chiave: 'tot_qty', etichetta: 'Qtà totale' },
+                        { chiave: 'ultimo_prezzo', etichetta: 'Ultimo prezzo € (netto IVA)' },
+                        { chiave: 'tot_importo', etichetta: 'Spesa totale € (netto IVA)' },
+                        { chiave: 'n_occorrenze', etichetta: 'N. occorrenze' },
+                      ]} />
                     </div>
-                    {prodottiFiltrati.map((p, i) => (
-                      <div key={i} className="grid grid-cols-[auto_1fr_auto_auto_auto] gap-x-3 px-2 py-2 text-xs border-b border-gray-50 hover:bg-gray-50 rounded-lg items-center">
+                    <div className="grid grid-cols-[auto_1fr_auto_auto_auto] gap-x-3 px-2 py-1 text-xs font-medium text-gray-400 border-b border-gray-100">
+                      <span>Codice</span><span>Prodotto</span><span>Qty tot.</span><span>Ult. prezzo</span><span>Spesa tot. (netto IVA)</span>
+                    </div>
+                    {prodottiFiltrati.map((p) => (
+                      <div key={p.codice_articolo || p.nome_normalizzato || p.descrizione} className="grid grid-cols-[auto_1fr_auto_auto_auto] gap-x-3 px-2 py-2 text-xs border-b border-gray-50 hover:bg-gray-50 rounded-lg items-center">
                         <span className="font-mono bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded border text-[10px] whitespace-nowrap">{p.codice_articolo || '—'}</span>
                         <div className="min-w-0">
                           <p className="font-medium text-gray-700 truncate">{p.descrizione}</p>
@@ -797,18 +899,29 @@ function FornitoreDetail({ fornitore, onClose, onUpdated, dateFrom, dateTo }) {
 function BiSection({ dateFrom, dateTo }) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [errore, setErrore] = useState(null)
   const [sedeFilter, setSedeFilter] = useState('TUTTI')
 
   useEffect(() => {
-    setLoading(true)
+    let annullato = false
+    setLoading(true); setErrore(null)
     const sede = sedeFilter !== 'TUTTI' ? sedeFilter : undefined
     fornitoriApi.analisi({ from: dateFrom, to: dateTo, sede })
-      .then(setData)
-      .catch(() => setData({ perGruppo: [], mensile: [], perCategoria: [], bySede: {MA:0,PN:0}, forecast: null }))
-      .finally(() => setLoading(false))
+      .then(d => { if (!annullato) setData(d) })
+      // Il catch riempiva la pagina di zeri: un guasto diventava "spesa €0",
+      // cioè un dato falso invece di un errore.
+      .catch(e => { if (!annullato) { setErrore(e?.message || String(e)); setData(null) } })
+      .finally(() => { if (!annullato) setLoading(false) })
+    return () => { annullato = true }
   }, [dateFrom, dateTo, sedeFilter])
 
   if (loading) return <p className="text-sm text-gray-400 text-center py-8">Caricamento BI...</p>
+  if (errore) return (
+    <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 flex items-center gap-2">
+      <AlertCircle size={15} className="text-red-500 flex-shrink-0"/>
+      <p className="text-sm text-red-700"><strong>Analisi non disponibile:</strong> {errore}</p>
+    </div>
+  )
   if (!data) return null
 
   const mensileLabeled = data.mensile.map(m => ({ ...m, label: fmt_mese(m.mese) }))
@@ -834,12 +947,14 @@ function BiSection({ dateFrom, dateTo }) {
       {/* KPI strip */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {[
-          { label: 'Spesa totale', val: eur(totSpesa), icon: '💰', col: 'text-gray-800' },
-          { label: 'Media mensile', val: eur(mediaM), icon: '📅', col: 'text-violet-700' },
-          { label: 'Prev. mese succ.', val: data.forecast ? eur(data.forecast) : '—', icon: '🔮', col: 'text-blue-700' },
+          // fatture_importate.totale = totale documento: tutti questi importi
+          // sono LORDI IVA (note di credito TD04 già sottratte lato API).
+          { label: 'Spesa totale (lordo IVA)', val: eur(totSpesa), icon: '💰', col: 'text-gray-800' },
+          { label: 'Media mensile (lordo IVA)', val: eur(mediaM), icon: '📅', col: 'text-violet-700' },
+          { label: 'Prev. mese succ. (lordo IVA)', val: data.forecast ? eur(data.forecast) : '—', icon: '🔮', col: 'text-blue-700' },
           { label: 'Fornitori attivi', val: data.perGruppo.filter(f=>f.tot_spesa>0).length, icon: '🏭', col: 'text-gray-800' },
-        ].map((k, i) => (
-          <div key={i} className="bg-white rounded-2xl border border-gray-100 p-4">
+        ].map((k) => (
+          <div key={k.label} className="bg-white rounded-2xl border border-gray-100 p-4">
             <div className="flex items-center gap-2 mb-1">
               <span className="text-base">{k.icon}</span>
               <p className="text-xs text-gray-400">{k.label}</p>
@@ -899,17 +1014,17 @@ function BiSection({ dateFrom, dateTo }) {
               <div className="flex items-center gap-4">
                 <PieChart width={130} height={130}>
                   <Pie data={data.perCategoria} dataKey="tot_spesa" cx={60} cy={60} outerRadius={55} innerRadius={30}>
-                    {data.perCategoria.map((e, i) => (
-                      <Cell key={i} fill={CAT_CHART_COLOR[e.categoria] || '#6b7280'}/>
+                    {data.perCategoria.map((e) => (
+                      <Cell key={e.categoria} fill={CAT_CHART_COLOR[e.categoria] || '#6b7280'}/>
                     ))}
                   </Pie>
                   <Tooltip formatter={v => eur(v)} contentStyle={{ fontSize: 10 }}/>
                 </PieChart>
                 <div className="flex-1 space-y-1.5 min-w-0">
-                  {data.perCategoria.slice(0, 7).map((c, i) => {
+                  {data.perCategoria.slice(0, 7).map((c) => {
                     const tot = data.perCategoria.reduce((s, x) => s + x.tot_spesa, 0)
                     return (
-                      <div key={i} className="flex items-center gap-2">
+                      <div key={c.categoria} className="flex items-center gap-2">
                         <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: CAT_CHART_COLOR[c.categoria] || '#6b7280' }}/>
                         <span className="text-xs text-gray-600 truncate flex-1">{c.categoria}</span>
                         <span className="text-xs font-medium text-gray-700 whitespace-nowrap">{eur(c.tot_spesa)}</span>
@@ -931,7 +1046,7 @@ function BiSection({ dateFrom, dateTo }) {
                 {data.perGruppo.slice(0, 8).map((f, i) => {
                   const max = data.perGruppo[0].tot_spesa
                   return (
-                    <div key={i} className="space-y-0.5">
+                    <div key={f.p_iva || f.nome} className="space-y-0.5">
                       <div className="flex justify-between items-center">
                         <div className="flex items-center gap-1.5 min-w-0">
                           <span className="text-xs text-gray-400 w-4 flex-shrink-0">{i+1}.</span>
@@ -993,31 +1108,55 @@ function AllocaSediSection({ dateFrom, dateTo }) {
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
-    fattureCategorieApi?.getAll?.().then(setCategorie).catch(() => fornitoriApi.getCategorie?.().then(setCategorie).catch(()=>{}))
+    let annullato = false
+    fattureCategorieApi?.getAll?.()
+      .then(c => { if (!annullato) setCategorie(c) })
+      .catch(() => fornitoriApi.getCategorie?.().then(c => { if (!annullato) setCategorie(c) }).catch(()=>{}))
+    return () => { annullato = true }
   }, [])
 
   const [loadAllocaError, setLoadAllocaError] = useState(null)
+  const [troncato, setTroncato] = useState(false)
+  const richiestaRef = useRef(0)
 
   const load = useCallback(async () => {
+    const mia = ++richiestaRef.current
     setLoading(true); setSelected(new Set()); setLoadAllocaError(null)
     try {
-      const data = await fornitoriApi.listaArricchite({
-        from: dateFrom, to: dateTo,
-        categoria_tipo: filtri.categoria_tipo !== 'TUTTI' ? filtri.categoria_tipo : undefined,
-        sede: filtri.sede === 'MA' || filtri.sede === 'PN' ? filtri.sede : undefined,
-        solo_manuali: filtri.solo_manuali || undefined,
-        p_iva: filtri.p_iva || undefined,
-        limit: 1000,
-      })
-      setRows(Array.isArray(data) ? data : [])
+      // `listaArricchite({ limit: 1000 })` chiedeva ESATTAMENTE il cap PostgREST:
+      // con più fatture nel filtro il set era troncato senza alcun segnale, e
+      // l'azione bulk "su tutte quelle del filtro" (che agisce lato DB) lavorava
+      // su un insieme più grande di quello mostrato. Qui si pagina davvero:
+      // v_fatture_arricchite ha `fattura_id`, univoco e stabile.
+      const build = () => {
+        let q = supabase.from('v_fatture_arricchite').select('*')
+        if (dateFrom) q = q.gte('data_fattura', dateFrom)
+        if (dateTo)   q = q.lte('data_fattura', dateTo)
+        if (filtri.p_iva) q = q.eq('p_iva', filtri.p_iva.replace(/^IT/, ''))
+        if (filtri.categoria_tipo !== 'TUTTI') q = q.eq('categoria_tipo', filtri.categoria_tipo)
+        if (filtri.sede === 'MA') q = q.gt('importo_ma', 0)
+        if (filtri.sede === 'PN') q = q.gt('importo_pn', 0)
+        if (filtri.solo_manuali)  q = q.eq('allocazione_manuale', true)
+        return q
+      }
+      const { righe, troncato: tr } = await fetchPagedInfo(build, 'fattura_id')
+      if (mia !== richiestaRef.current) return
+      righe.sort((a, b) => String(b.data_fattura || '').localeCompare(String(a.data_fattura || '')))
+      // La vista espone `fattura_id`: la UI (checkbox, bulk) lavora su `id`.
+      setRows(righe.map(r => ({ ...r, id: r.fattura_id })))
+      setTroncato(tr)
     } catch (e) {
+      if (mia !== richiestaRef.current) return
       console.error('AllocaSedi load error:', e)
       setLoadAllocaError(e.message || 'Errore caricamento fatture')
       setRows([])
-    } finally { setLoading(false) }
+    } finally { if (mia === richiestaRef.current) setLoading(false) }
   }, [dateFrom, dateTo, filtri])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    load()
+    return () => { richiestaRef.current++ }
+  }, [load])
 
   const filtered = useMemo(() => {
     if (!filtri.search) return rows
@@ -1136,11 +1275,30 @@ function AllocaSediSection({ dateFrom, dateTo }) {
             checked={filtered.length > 0 && selected.size === filtered.length}
             onChange={toggleAll}/>
           <span className="flex-1">{loading ? 'Caricamento...' : `${filtered.length} fatture`}</span>
+          <BottoneCsv righe={filtered} nomeFile="fatture_allocazione_sedi" colonne={[
+            { chiave: 'fornitore_nome', etichetta: 'Fornitore' },
+            { chiave: 'p_iva', etichetta: 'P.IVA' },
+            { chiave: 'numero_fattura', etichetta: 'N. fattura' },
+            { chiave: 'data_fattura', etichetta: 'Data' },
+            { chiave: 'categoria_tipo', etichetta: 'Categoria' },
+            { chiave: 'totale', etichetta: 'Totale € (lordo IVA)' },
+            { chiave: 'importo_ma', etichetta: 'Quota MA € (lordo IVA)' },
+            { chiave: 'importo_pn', etichetta: 'Quota PN € (lordo IVA)' },
+            { chiave: 'sede_presunta', etichetta: 'Sede presunta 50/50', valore: r => (r.sede_presunta ? 'sì' : 'no') },
+            { chiave: 'allocazione_manuale', etichetta: 'Allocazione manuale', valore: r => (r.allocazione_manuale ? 'sì' : 'no') },
+            { chiave: 'is_nota_credito', etichetta: 'Nota di credito', valore: r => (r.is_nota_credito ? 'sì' : 'no') },
+          ]} />
           <button
             onClick={() => { setBulkAction({...bulkAction, applyToAll: true, sposta_a:'SPLIT50'}); setBulkOpen(true) }}
+            title="L'azione viene eseguita a DB su tutte le fatture che rispettano periodo, P.IVA e categoria — la ricerca testuale digitata qui NON viene applicata."
             className="text-xs text-violet-600 hover:underline">
-            Azione bulk su tutte le {filtered.length} del filtro →
+            Azione bulk lato DB su tutto il filtro (periodo + P.IVA + categoria) →
           </button>
+        </div>
+        <div className="px-4 pb-2">
+          <NotaCopertura righe={rows.length} da={dateFrom || '—'} a={dateTo || 'oggi'}
+            fonte="v_fatture_arricchite (lordo IVA)" troncato={troncato}
+            extra={filtri.search ? `${filtered.length} dopo la ricerca testuale (lato client)` : undefined} />
         </div>
         <div className="max-h-[60vh] overflow-auto">
           {filtered.slice(0, 500).map(r => (
@@ -1200,8 +1358,22 @@ function AllocaSediSection({ dateFrom, dateTo }) {
           <div className="bg-white rounded-2xl p-5 max-w-md w-full space-y-4" onClick={e => e.stopPropagation()}>
             <h3 className="font-bold text-lg">Conferma allocazione sede</h3>
             <div className="text-sm text-gray-600">
-              Target: <strong>{bulkAction.applyToAll ? `Tutte le ${filtered.length} fatture del filtro` : `${selected.size} fatture selezionate`}</strong>
+              Target: <strong>{bulkAction.applyToAll
+                ? 'TUTTE le fatture che a DB rispettano il filtro'
+                : `${selected.size} fatture selezionate`}</strong>
             </div>
+            {bulkAction.applyToAll && (
+              // Il numero mostrato in lista non è il target: allocaFiltro lavora
+              // lato DB su periodo + P.IVA + categoria, senza la ricerca testuale.
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800">
+                L'operazione viene eseguita dal database su <strong>periodo {dateFrom || 'tutto'} → {dateTo || 'oggi'}</strong>
+                {filtri.p_iva && <>, P.IVA <strong>{filtri.p_iva}</strong></>}
+                {filtri.categoria_tipo !== 'TUTTI' && <>, categoria <strong>{filtri.categoria_tipo}</strong></>}.
+                Le {filtered.length} righe elencate sono solo quelle caricate a schermo
+                {filtri.search && <> e filtrate per il testo "{filtri.search}", che <strong>non</strong> viene applicato</>}:
+                il numero di fatture aggiornate può essere maggiore.
+              </div>
+            )}
             <div className="space-y-2">
               <label className="text-xs text-gray-500">Azione</label>
               <select className="input py-1.5 text-sm w-full" value={bulkAction.sposta_a}
@@ -1249,7 +1421,6 @@ export default function FornitoriPage() {
   const [loading, setLoading]     = useState(true)
   const [search, setSearch]       = useState('')
   const [catFilter, setCatFilter] = useState('TUTTI')
-  const [sedeFilter, setSedeFilter] = useState('TUTTI')
   const [selectedF, setSelectedF] = useState(null)
 
   // Filtro periodo
@@ -1257,18 +1428,40 @@ export default function FornitoriPage() {
   const [dateTo,   setDateTo]   = useState(PERIODI[3].to)
   const changePeriod = (f, t) => { setDateFrom(f); setDateTo(t) }
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const rows = await fornitoriApi.getAll({
-        categoria: catFilter !== 'TUTTI' ? catFilter : undefined,
-        sede: sedeFilter !== 'TUTTI' ? sedeFilter : undefined,
-      })
-      setFornitori(rows)
-    } finally { setLoading(false) }
-  }, [catFilter, sedeFilter])
+  const [errore, setErrore] = useState(null)
+  const richiestaRef = useRef(0)
 
-  useEffect(() => { load() }, [load])
+  const load = useCallback(async () => {
+    const mia = ++richiestaRef.current
+    setLoading(true); setErrore(null)
+    try {
+      // `getAll` legge v_fornitori_completi senza `.range()`: oltre 1000
+      // fornitori (oggi 428) la lista si troncherebbe in silenzio, e i KPI di
+      // testata — che sommano queste righe — con lei.
+      const build = () => {
+        let q = supabase.from('v_fornitori_completi').select('*')
+        if (catFilter !== 'TUTTI') q = q.eq('categoria', catFilter)
+        return q
+      }
+      const righe = await fetchPagedInfo(build, 'id')
+      if (mia !== richiestaRef.current) return
+      const rows = righe.righe
+        .map(r => ({ ...r, partita_iva: r.p_iva, attivo: r.active ?? true }))
+        .sort((a, b) => (parseFloat(b.tot_spesa || 0) - parseFloat(a.tot_spesa || 0)))
+      setFornitori(rows)
+    } catch (e) {
+      if (mia !== richiestaRef.current) return
+      // try/finally senza catch: un guasto lasciava la lista vuota, identica a
+      // "nessun fornitore trovato".
+      setErrore(e?.message || String(e))
+      setFornitori([])
+    } finally { if (mia === richiestaRef.current) setLoading(false) }
+  }, [catFilter])
+
+  useEffect(() => {
+    load()
+    return () => { richiestaRef.current++ }
+  }, [load])
 
   const filtered = useMemo(() => {
     let rows = fornitori.filter(f => f.active !== false)
@@ -1297,7 +1490,9 @@ export default function FornitoriPage() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-xl font-bold text-gray-900">Fornitori & Costi</h1>
-          <p className="text-sm text-gray-400 mt-0.5">{filtered.length} fornitori · {eur(totSpesa)} totale · {totFatture} fatture</p>
+          <p className="text-sm text-gray-400 mt-0.5">
+            {filtered.length} fornitori · {eur(totSpesa)} totale (lordo IVA, tutto lo storico) · {totFatture} fatture
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <div className="flex rounded-xl overflow-hidden border border-gray-200 text-xs font-medium">
@@ -1311,6 +1506,18 @@ export default function FornitoriPage() {
               🏠 Alloca Sedi
             </button>
           </div>
+          <BottoneCsv righe={filtered} nomeFile="fornitori" colonne={[
+            { chiave: 'nome', etichetta: 'Fornitore' },
+            { chiave: 'p_iva', etichetta: 'P.IVA' },
+            { chiave: 'categoria', etichetta: 'Categoria' },
+            { chiave: 'n_fatture', etichetta: 'N. fatture' },
+            { chiave: 'tot_spesa', etichetta: 'Spesa totale € (lordo IVA)' },
+            { chiave: 'tot_pagato', etichetta: 'Pagato € (lordo IVA)' },
+            { chiave: 'tot_residuo', etichetta: 'Residuo € (lordo IVA)' },
+            { chiave: 'fatture_aperte', etichetta: 'Fatture aperte' },
+            { chiave: 'prima_fattura', etichetta: 'Prima fattura' },
+            { chiave: 'ultima_fattura', etichetta: 'Ultima fattura' },
+          ]} />
           <button onClick={load} className="btn-ghost p-2 text-gray-400 rounded-xl border border-gray-200">
             <RefreshCw size={15}/>
           </button>
@@ -1335,15 +1542,22 @@ export default function FornitoriPage() {
             <input className="input py-1.5 text-sm flex-1 min-w-[180px] max-w-xs"
               placeholder="Cerca fornitore o P.IVA..."
               value={search} onChange={e => setSearch(e.target.value)}/>
-            <div className="flex rounded-xl overflow-hidden border border-gray-200 text-xs font-medium">
-              {[['TUTTI','Tutti'],['MA','Solo MA'],['PN','Solo PN']].map(([val,lbl]) => (
-                <button key={val} onClick={() => setSedeFilter(val)}
-                  className={`px-3 py-1.5 transition-colors ${sedeFilter===val ? 'bg-violet-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
-                  {lbl}
-                </button>
-              ))}
-            </div>
+            {/* Il filtro sede è stato rimosso da qui: v_fornitori_completi aggrega
+                TUTTE le sedi e il parametro `sede` non veniva applicato — i tre
+                bottoni mostravano sempre lo stesso identico elenco. La ripartizione
+                per sede vive nel tab "Alloca Sedi". */}
+            <span className="text-xs text-gray-400">
+              Totali su entrambe le sedi (lordo IVA) — per la ripartizione MA/PN usa il tab <strong>Alloca Sedi</strong>
+            </span>
           </div>
+
+          {errore && (
+            <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 flex items-center gap-2">
+              <AlertCircle size={15} className="text-red-500 flex-shrink-0"/>
+              <p className="text-sm text-red-700"><strong>Fornitori non caricati:</strong> {errore}</p>
+              <button onClick={load} className="ml-auto text-xs text-red-600 hover:underline">Riprova</button>
+            </div>
+          )}
 
           <div className="flex gap-1.5 flex-wrap">
             {CATEGORIE.map(c => {

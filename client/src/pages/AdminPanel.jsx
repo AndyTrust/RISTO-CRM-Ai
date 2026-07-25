@@ -3,7 +3,7 @@
  * Backoffice Risto CRM — gestione senza toccare il codice.
  * Sezioni: Dipendenti · Ruoli · KPI Target · Database
  */
-import React, { useEffect, useState, useMemo, useCallback } from 'react'
+import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   Users, Tag, Target, Database, Plus, Edit3, Trash2, Save, X, RefreshCw,
@@ -14,6 +14,24 @@ import {
 } from 'lucide-react'
 import { employees as empApi, roles as rolesApi, kpi as kpiApi, admin as adminApi, sediApi, turni as turniApi } from '../api/client'
 import supabase from '../supabase'
+import { fetchPaged } from '../api/paged'
+
+/**
+ * Flag "il componente è ancora montato".
+ *
+ * I `load` di questi tab non partono solo dall'useEffect: vengono richiamati
+ * anche dopo ogni mutazione. Una guardia locale al singolo effect quindi non
+ * basta — serve un flag valido per tutte le chiamate. Senza, cambiare tab
+ * mentre una fetch è in volo produce un setState su un componente smontato.
+ */
+function useMontato() {
+  const vivo = useRef(true)
+  useEffect(() => {
+    vivo.current = true
+    return () => { vivo.current = false }
+  }, [])
+  return vivo
+}
 
 // ─── Utils ───────────────────────────────────────────────────────────────────
 const SEDI = ['MA', 'PN']
@@ -68,6 +86,8 @@ function DipendentiTab({ onToast }) {
   const [addMode,   setAddMode]     = useState(false)
   const [addForm,   setAddForm]     = useState({ name: '', role: '', sede: 'MA', code: '' })
 
+  const vivo = useMontato()
+
   const load = useCallback(async () => {
     setLoading(true)
     try {
@@ -76,14 +96,15 @@ function DipendentiTab({ onToast }) {
         rolesApi.getAll(),
         turniApi.getRegole().catch(() => []),
       ])
+      if (!vivo.current) return
       setEmployees(emps)
       setRoles(rls)
       const rMap = {}
       for (const r of regoleRows) rMap[r.employee_id] = r
       setRegoleMap(rMap)
-    } catch(e) { onToast({ type: 'err', text: e.message }) }
-    finally { setLoading(false) }
-  }, [])
+    } catch(e) { if (vivo.current) onToast({ type: 'err', text: e.message }) }
+    finally { if (vivo.current) setLoading(false) }
+  }, [onToast, vivo])
 
   useEffect(() => { load() }, [load])
 
@@ -446,12 +467,17 @@ function RuoliTab({ onToast }) {
 
   const PRESET_COLORS = ['#6366f1','#3b82f6','#10b981','#f59e0b','#ec4899','#8b5cf6','#ef4444','#64748b','#f97316','#06b6d4']
 
+  const vivo = useMontato()
+
   const load = useCallback(async () => {
     setLoading(true)
-    try { setRoles(await rolesApi.getAll()) }
-    catch(e) { onToast({ type: 'err', text: e.message }) }
-    finally { setLoading(false) }
-  }, [])
+    try {
+      const r = await rolesApi.getAll()
+      if (vivo.current) setRoles(r)
+    }
+    catch(e) { if (vivo.current) onToast({ type: 'err', text: e.message }) }
+    finally { if (vivo.current) setLoading(false) }
+  }, [onToast, vivo])
 
   useEffect(() => { load() }, [load])
 
@@ -577,12 +603,17 @@ function KpiConfigTab({ onToast }) {
   })
   const [periodoFilter, setPeriodoFilter] = useState(mesiDisp[0])
 
+  const vivo = useMontato()
+
   const load = useCallback(async () => {
     setLoading(true)
-    try { setTargets(await kpiApi.getTargets({ period: periodoFilter || undefined })) }
-    catch(e) { onToast({ type: 'err', text: e.message }) }
-    finally { setLoading(false) }
-  }, [periodoFilter])
+    try {
+      const t = await kpiApi.getTargets({ period: periodoFilter || undefined })
+      if (vivo.current) setTargets(t)
+    }
+    catch(e) { if (vivo.current) onToast({ type: 'err', text: e.message }) }
+    finally { if (vivo.current) setLoading(false) }
+  }, [periodoFilter, onToast, vivo])
 
   useEffect(() => { load() }, [load])
 
@@ -711,15 +742,29 @@ function DatabaseTab({ onToast }) {
   const [rows,     setRows]     = useState([])
   const [loading,  setLoading]  = useState(false)
   const [cols,     setCols]     = useState([])
+  const [totale,   setTotale]   = useState(null)
+  const vivo = useMontato()
+
+  const LIMITE = 100
 
   const loadTable = async (key) => {
-    setSelected(key); setLoading(true)
+    setSelected(key); setLoading(true); setTotale(null)
     try {
-      const data = await adminApi.queryTable(key, 100)
+      // Il conteggio esatto serve a rendere onesto il pannello: "100 righe"
+      // su una tabella da 114.650 senza dire di quante è una fetta sembra
+      // l'intero contenuto della tabella.
+      const [data, { count, error: errCount }] = await Promise.all([
+        adminApi.queryTable(key, LIMITE),
+        supabase.from(key).select('*', { count: 'exact', head: true }),
+      ])
+      if (!vivo.current) return
       setRows(data)
       setCols(data.length > 0 ? Object.keys(data[0]).filter(k => k !== 'xml_raw') : [])
-    } catch(e) { onToast({ type: 'err', text: e.message }) }
-    finally { setLoading(false) }
+      // Un conteggio non disponibile resta `null` e la UI lo dichiara: meglio
+      // "prime 100 righe" che un totale inventato.
+      setTotale(errCount ? null : count)
+    } catch(e) { if (vivo.current) onToast({ type: 'err', text: e.message }) }
+    finally { if (vivo.current) setLoading(false) }
   }
 
   const fmt = (v) => {
@@ -760,7 +805,7 @@ function DatabaseTab({ onToast }) {
             </thead>
             <tbody className="divide-y divide-gray-50">
               {rows.map((row, i) => (
-                <tr key={i} className="hover:bg-gray-50/50">
+                <tr key={row?.id ?? `riga-${i}`} className="hover:bg-gray-50/50">
                   {cols.map(c => (
                     <td key={c} className="px-3 py-2 text-gray-700 whitespace-nowrap">{fmt(row[c])}</td>
                   ))}
@@ -768,7 +813,15 @@ function DatabaseTab({ onToast }) {
               ))}
             </tbody>
           </table>
-          <p className="text-xs text-gray-400 text-center py-2">{rows.length} righe (max 100)</p>
+          <p className="text-xs text-center py-2 text-gray-400">
+            {totale != null && totale > rows.length ? (
+              <span className="text-amber-600 font-medium">
+                mostrate le prime {rows.length.toLocaleString('it-IT')} righe di {totale.toLocaleString('it-IT')} — anteprima, non il contenuto completo
+              </span>
+            ) : (
+              <>{rows.length.toLocaleString('it-IT')} righe{totale == null && ` (anteprima, max ${LIMITE})`}</>
+            )}
+          </p>
         </div>
       )}
     </div>
@@ -1026,12 +1079,17 @@ function SediTab({ onToast }) {
   const [addForm,  setAddForm]  = useState({ code: '', name: '', city: '', color: '#6366f1' })
   const [copying,  setCopying]  = useState(null)
 
+  const vivo = useMontato()
+
   const load = useCallback(async () => {
     setLoading(true)
-    try { setSedi(await sediApi.getAll()) }
-    catch(e) { onToast({ type: 'err', text: e.message }) }
-    finally { setLoading(false) }
-  }, [])
+    try {
+      const s = await sediApi.getAll()
+      if (vivo.current) setSedi(s)
+    }
+    catch(e) { if (vivo.current) onToast({ type: 'err', text: e.message }) }
+    finally { if (vivo.current) setLoading(false) }
+  }, [onToast, vivo])
 
   useEffect(() => { load() }, [load])
 
@@ -1251,6 +1309,8 @@ function MemoriaTab({ onToast }) {
   const [saving,      setSaving]      = useState(false)
   const [expandJson,  setExpandJson]  = useState({})
 
+  const vivo = useMontato()
+
   const load = useCallback(async () => {
     setLoading(true)
     try {
@@ -1260,10 +1320,10 @@ function MemoriaTab({ onToast }) {
         .order('sezione')
         .order('chiave')
       if (error) throw error
-      setRows(data || [])
-    } catch (e) { onToast({ type: 'err', text: e.message }) }
-    finally { setLoading(false) }
-  }, [])
+      if (vivo.current) setRows(data || [])
+    } catch (e) { if (vivo.current) onToast({ type: 'err', text: e.message }) }
+    finally { if (vivo.current) setLoading(false) }
+  }, [onToast, vivo])
 
   useEffect(() => { load() }, [load])
 
@@ -1489,6 +1549,7 @@ function SyncTab({ onToast }) {
   const [modules,    setModules]    = useState([])
   const [deployInfo, setDeployInfo] = useState(null)
   const [deploying,  setDeploying]  = useState(false)
+  const vivo = useMontato()
 
   const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || ''
   const PROJECT_REF  = SUPABASE_URL.match(/https:\/\/([^.]+)\./)?.[1] || ''
@@ -1512,6 +1573,7 @@ function SyncTab({ onToast }) {
           return { table: tbl, count: error ? null : count, error: error?.message }
         })
       )
+      if (!vivo.current) return
       setTableStats(results.map(r => r.value || { table: '?', count: null, error: 'unknown' }))
 
       // Fix: la tabella reale è "modules" (modules_config non esiste)
@@ -1520,11 +1582,11 @@ function SyncTab({ onToast }) {
         .select('id, name, description, enabled')
         .order('name')
       if (errMods) throw errMods
-      if (mods) setModules(mods)
+      if (mods && vivo.current) setModules(mods)
 
-    } catch (e) { onToast({ type: 'err', text: e.message }) }
-    finally { setLoading(false) }
-  }, [])
+    } catch (e) { if (vivo.current) onToast({ type: 'err', text: e.message }) }
+    finally { if (vivo.current) setLoading(false) }
+  }, [onToast, vivo])
 
   useEffect(() => { load() }, [load])
 
@@ -1813,6 +1875,7 @@ function UnioneDoppioniTab({ onToast }) {
   const [searchB, setSearchB] = useState('')
   const [selA,    setSelA]    = useState(null)
   const [selB,    setSelB]    = useState(null)
+  const vivo = useMontato()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -1825,41 +1888,54 @@ function UnioneDoppioniTab({ onToast }) {
       if (errEmps) throw errEmps
       if (errMaps) throw errMaps
 
-      // Operatori distinti da kpi_revenues
-      const { data: kvRows } = await supabase
-        .from('kpi_revenues')
-        .select('op,sede')
-        .order('op')
-      const opSet = {}
-      for (const r of kvRows || []) {
+      // Operatori distinti da kpi_revenues.
+      // La query era senza range e ordinata per `op`: PostgREST ne restituiva
+      // 1000 righe (tetto server, non aggirabile dal client), quindi gli
+      // operatori in fondo all'alfabeto non comparivano mai e questa tab
+      // perdeva silenziosamente le coppie che li riguardavano.
+      const kvRows = await fetchPaged(
+        () => supabase.from('kpi_revenues').select('id,op,sede'),
+        'id'
+      )
+      const opSet = new Map()
+      for (const r of kvRows) {
         const k = `${r.sede}|${r.op}`
-        if (!opSet[k]) opSet[k] = { operatore: r.op, sede: r.sede }
+        if (!opSet.has(k)) opSet.set(k, { operatore: r.op, sede: r.sede })
       }
 
+      if (!vivo.current) return
       setEmployees(emps || [])
       setMappings(maps || [])
-      setOperators(Object.values(opSet))
-    } catch (e) { onToast({ type: 'err', text: e.message }) }
-    finally { setLoading(false) }
-  }, [])
+      setOperators([...opSet.values()].sort((a, b) => String(a.operatore ?? '').localeCompare(String(b.operatore ?? ''), 'it')))
+    } catch (e) { if (vivo.current) onToast({ type: 'err', text: e.message }) }
+    finally { if (vivo.current) setLoading(false) }
+  }, [onToast, vivo])
 
   useEffect(() => { load() }, [load])
 
   // ── Rileva coppie automaticamente ──────────────────────────────────────
   const autoPairs = useMemo(() => {
     const pairs = []
-    const activeEmps = employees.filter(e => e.active)
+    const sedeDi = (e) => e.sede || (e.location === 'MAMELI' ? 'MA' : 'PN')
+
+    // Il confronto ha senso solo fra dipendenti della STESSA sede, ma prima si
+    // percorreva comunque l'intero prodotto cartesiano scartando le coppie di
+    // sedi diverse dentro il ciclo — a ogni cambio di `employees`. Raggruppare
+    // prima riduce il lavoro alla somma dei quadrati per sede.
+    const perSede = new Map()
+    for (const e of employees) {
+      if (!e.active) continue
+      const s = sedeDi(e)
+      if (!perSede.has(s)) perSede.set(s, [])
+      perSede.get(s).push(e)
+    }
 
     // 1. Employee ↔ Employee: stessa sede + nomi simili
-    for (let i = 0; i < activeEmps.length; i++) {
-      for (let j = i + 1; j < activeEmps.length; j++) {
-        const a = activeEmps[i], b = activeEmps[j]
-        const sedeA = a.sede || (a.location === 'MAMELI' ? 'MA' : 'PN')
-        const sedeB = b.sede || (b.location === 'MAMELI' ? 'MA' : 'PN')
-        if (sedeA !== sedeB) continue
-        const score = nomeSimilarity(a.name, b.name)
-        if (score >= 50) {
-          pairs.push({ tipo: 'emp-emp', keep: a, remove: b, score, sede: sedeA })
+    for (const [sede, emps] of perSede) {
+      for (let i = 0; i < emps.length; i++) {
+        for (let j = i + 1; j < emps.length; j++) {
+          const score = nomeSimilarity(emps[i].name, emps[j].name)
+          if (score >= 50) pairs.push({ tipo: 'emp-emp', keep: emps[i], remove: emps[j], score, sede })
         }
       }
     }
@@ -1870,11 +1946,10 @@ function UnioneDoppioniTab({ onToast }) {
 
     for (const op of unmappedOps) {
       let best = null, bestScore = 0
-      for (const emp of activeEmps) {
-        const sedeEmp = emp.sede || (emp.location === 'MAMELI' ? 'MA' : 'PN')
-        if (sedeEmp !== op.sede) continue
+      for (const emp of perSede.get(op.sede) ?? []) {
         // Controlla anche buste_paga_name come alias
         const names = [emp.name, emp.buste_paga_name].filter(Boolean)
+        if (!names.length) continue   // Math.max() su array vuoto darebbe -Infinity
         const score = Math.max(...names.map(n => nomeSimilarity(n, op.operatore)))
         if (score > bestScore && score >= 45) { bestScore = score; best = emp }
       }
@@ -1888,59 +1963,94 @@ function UnioneDoppioniTab({ onToast }) {
   }, [employees, mappings, operators])
 
   // ── Esegui merge ───────────────────────────────────────────────────────
+  //
+  // Il merge è la sola operazione DISTRUTTIVA del pannello: sposta mappature,
+  // buste paga e turni da un dipendente all'altro e ne disattiva uno. Prima
+  // nessuna delle scritture controllava `error`, e il client Supabase non
+  // rigetta mai: una singola update bloccata da RLS non interrompeva la
+  // sequenza, il toast diceva "✅ Unione completata" e i dati restavano
+  // spezzati a metà — con le buste paga su un profilo e i turni sull'altro.
+  //
+  // Non esistono transazioni lato client, quindi il meglio ottenibile è:
+  // fermarsi al PRIMO errore e dire esplicitamente quali passi erano già
+  // andati a buon fine, così il merge può essere ripreso a mano.
   const executeMerge = async (keep, remove) => {
     setMerging(true)
     const tipo = preview.tipo
+    const fatti = []
+
+    /** Esegue un passo del merge; lancia con l'etichetta del passo se fallisce. */
+    const passo = async (etichetta, esegui) => {
+      const { error } = await esegui()
+      if (error) {
+        const err = new Error(`passo "${etichetta}" fallito: ${error.message}`)
+        err.passiCompletati = [...fatti]
+        throw err
+      }
+      fatti.push(etichetta)
+    }
+
     try {
       if (tipo === 'emp-emp') {
-        // Trasferisci mappature operatore
-        await supabase.from('employee_operator_mapping')
-          .update({ employee_id: keep.id })
-          .eq('employee_id', remove.id)
-        // Trasferisci buste paga
-        await supabase.from('buste_paga')
-          .update({ employee_id: keep.id })
-          .eq('employee_id', remove.id)
-        // Trasferisci turni
-        await supabase.from('shifts')
-          .update({ employee_id: keep.id, employee_name: keep.name })
-          .eq('employee_id', remove.id)
-        // Imposta alias nome (buste_paga_name) se non già presente
+        await passo('trasferimento mappature operatore', () =>
+          supabase.from('employee_operator_mapping')
+            .update({ employee_id: keep.id })
+            .eq('employee_id', remove.id))
+
+        await passo('trasferimento buste paga', () =>
+          supabase.from('buste_paga')
+            .update({ employee_id: keep.id })
+            .eq('employee_id', remove.id))
+
+        await passo('trasferimento turni', () =>
+          supabase.from('shifts')
+            .update({ employee_id: keep.id, employee_name: keep.name })
+            .eq('employee_id', remove.id))
+
         if (!keep.buste_paga_name && keep.name !== remove.name) {
-          await supabase.from('employees')
-            .update({ buste_paga_name: remove.name })
-            .eq('id', keep.id)
+          await passo('impostazione alias buste_paga_name', () =>
+            supabase.from('employees')
+              .update({ buste_paga_name: remove.name })
+              .eq('id', keep.id))
         }
-        // Disattiva il profilo secondario
-        await supabase.from('employees')
-          .update({ active: false })
-          .eq('id', remove.id)
+
+        // Per ultima: finché il profilo secondario resta attivo lo stato è
+        // recuperabile, quindi va disattivato solo a trasferimenti riusciti.
+        await passo('disattivazione profilo secondario', () =>
+          supabase.from('employees')
+            .update({ active: false })
+            .eq('id', remove.id))
 
         setMergedIds(prev => new Set([...prev, remove.id]))
         onToast({ type: 'ok', text: `✅ Unione completata: ${keep.name} ← ${remove.name}` })
 
       } else if (tipo === 'op-emp') {
-        // Collega operatore al dipendente tramite employee_operator_mapping
-        const { data: existing } = await supabase
+        const { data: existing, error: errExisting } = await supabase
           .from('employee_operator_mapping')
           .select('id')
           .eq('op_name_ipratico', remove.operatore)
           .eq('sede', remove.sede)
           .maybeSingle()
+        // Senza questo controllo un errore diventava `existing = undefined`,
+        // cioè "non esiste": il ramo insert partiva e violava l'unicità.
+        if (errExisting) throw new Error(`lettura mappatura esistente fallita: ${errExisting.message}`)
 
         if (existing) {
-          await supabase.from('employee_operator_mapping')
-            .update({ employee_id: keep.id, verified: true })
-            .eq('id', existing.id)
+          await passo('aggiornamento mappatura operatore', () =>
+            supabase.from('employee_operator_mapping')
+              .update({ employee_id: keep.id, verified: true })
+              .eq('id', existing.id))
         } else {
-          await supabase.from('employee_operator_mapping')
-            .insert({ op_name_ipratico: remove.operatore, sede: remove.sede, employee_id: keep.id, verified: true })
+          await passo('creazione mappatura operatore', () =>
+            supabase.from('employee_operator_mapping')
+              .insert({ op_name_ipratico: remove.operatore, sede: remove.sede, employee_id: keep.id, verified: true }))
         }
-        // Imposta buste_paga_name = nome operatore se serve per match
+
         if (!keep.buste_paga_name && keep.name !== remove.operatore) {
-          await supabase.from('employees')
-            .update({ buste_paga_name: remove.operatore })
-            .eq('id', keep.id)
+          await passo('impostazione alias buste_paga_name', () =>
+            supabase.from('employees')
+              .update({ buste_paga_name: remove.operatore })
+              .eq('id', keep.id))
         }
 
         const opKey = `${remove.sede}|${remove.operatore}`
@@ -1951,7 +2061,13 @@ function UnioneDoppioniTab({ onToast }) {
       setPreview(null)
       load()
     } catch (e) {
-      onToast({ type: 'err', text: 'Errore merge: ' + e.message })
+      const completati = e.passiCompletati?.length
+        ? ` Passi già applicati (da verificare a mano): ${e.passiCompletati.join(', ')}.`
+        : ' Nessuna modifica applicata.'
+      onToast({ type: 'err', text: `❌ Merge interrotto — ${e.message}.${completati}` })
+      // Rilettura obbligatoria: dopo un merge parziale lo stato a schermo non
+      // corrisponde più a quello a DB.
+      load()
     } finally {
       setMerging(false)
     }
@@ -2037,7 +2153,13 @@ function UnioneDoppioniTab({ onToast }) {
             <AlertCircle size={15} className="text-orange-500"/> Doppioni da verificare
           </h3>
 
-          {visiblePairs.map((pair, i) => {
+          {visiblePairs.map((pair) => {
+            // Lista ordinata per score e filtrata su `mergedIds`: con key={i} le
+            // card scivolavano di posizione a ogni merge e React riusava lo
+            // stato della card precedente su una coppia diversa.
+            const chiave = pair.tipo === 'emp-emp'
+              ? `emp-${pair.keep.id}-${pair.remove.id}`
+              : `op-${pair.keep.id}-${pair.remove.sede}-${pair.remove.operatore}`
             const sedeColor = pair.sede === 'MA' ? 'bg-blue-100 text-blue-700' : 'bg-emerald-100 text-emerald-700'
             const isOpEmp   = pair.tipo === 'op-emp'
             const leftName  = pair.keep.name
@@ -2046,7 +2168,7 @@ function UnioneDoppioniTab({ onToast }) {
             const rightSub  = isOpEmp ? `Operatore iPratico · ${pair.remove.sede}` : `${pair.remove.role || '—'} · ${pair.remove.sede || (pair.remove.location === 'MAMELI' ? 'MA' : 'PN')}`
 
             return (
-              <div key={i}
+              <div key={chiave}
                 className="bg-white rounded-2xl border border-orange-100 shadow-sm overflow-hidden hover:shadow-md transition-shadow">
                 {/* Intestazione card */}
                 <div className="flex items-center justify-between px-4 py-2 bg-orange-50 border-b border-orange-100">
@@ -2254,16 +2376,31 @@ const TABS = [
   { id: 'sync',       label: 'Sync & Deploy', icon: Cloud,      sub: 'Vercel, Supabase, moduli CRM' },
 ]
 
+const TAB_DEFAULT = 'dipendenti'
+const TAB_IDS = new Set(TABS.map(t => t.id))
+
 export default function AdminPanel() {
   const { tab } = useParams()
   const navigate = useNavigate()
-  const activeTab = tab || 'dipendenti'
+  // `tab || default` copriva solo l'assenza del segmento: con un id inesistente
+  // — /admin/pippo, o un vecchio bookmark su una tab rinominata — nessuna delle
+  // condizioni sotto era vera e l'area contenuti restava semplicemente vuota,
+  // senza spiegazione. Un id non valido deve ricadere sul default.
+  const tabValida = tab && TAB_IDS.has(tab)
+  const activeTab = tabValida ? tab : TAB_DEFAULT
   const [toast, setToast] = useState(null)
 
-  const showToast = (msg) => {
+  useEffect(() => {
+    if (tab && !TAB_IDS.has(tab)) navigate(`/admin/${TAB_DEFAULT}`, { replace: true })
+  }, [tab, navigate])
+
+  // useCallback obbligatorio: i tab figli mettono `onToast` fra le dipendenze
+  // dei loro `load`, e una funzione ricreata a ogni render li farebbe rifare
+  // la fetch in ciclo.
+  const showToast = useCallback((msg) => {
     setToast(msg)
     setTimeout(() => setToast(null), 4000)
-  }
+  }, [])
 
   return (
     <div className="space-y-5">

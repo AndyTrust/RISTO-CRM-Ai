@@ -157,9 +157,11 @@ async function loadMensileOperatori(sede) {
 
 // ── Carica target salvati ────────────────────────────────────────────────────
 async function loadTargetSalvati(sede) {
-  let q = supabase.from('target_venduto_operatori').select('*')
-  if (sede) q = q.eq('sede', sede)
-  const rows = await sbq(q)
+  const rows = await sbqAll(() => {
+    let q = supabase.from('target_venduto_operatori').select('*').order('id', { ascending: true })
+    if (sede) q = q.eq('sede', sede)
+    return q
+  })
   const map = {}
   for (const r of rows) {
     map[`${r.sede}||${r.operatore}||${r.anno}-${String(r.mese).padStart(2,'0')}`] = r
@@ -220,13 +222,18 @@ async function loadFatturatoOperatori(sede, from, to) {
 }
 
 async function loadDailyChiusure(sede, from, to) {
-  let q = supabase.from('chiusure_giornaliere')
-    .select('data, sede, totale_venduto_ipratico, coperti, coperto_medio')
-  if (sede) q = q.eq('sede', sede)
-  if (from) q = q.gte('data', from)
-  if (to)   q = q.lte('data', to)
-  q = q.order('data', { ascending: true })
-  return sbq(q)
+  // chiusure_giornaliere ha già superato le 1000 righe: senza paginazione i
+  // giorni più recenti sparivano dal grafico giornaliero.
+  const rows = await sbqAll(() => {
+    let q = supabase.from('chiusure_giornaliere')
+      .select('id, data, sede, totale_venduto_ipratico, coperti, coperto_medio')
+      .order('id', { ascending: true })   // chiave univoca: `data` si ripete su due sedi
+    if (sede) q = q.eq('sede', sede)
+    if (from) q = q.gte('data', from)
+    if (to)   q = q.lte('data', to)
+    return q
+  })
+  return rows.sort((a, b) => String(a.data).localeCompare(String(b.data)))
 }
 
 function eur(n) { return n != null ? `€ ${Number(n).toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—' }
@@ -234,10 +241,12 @@ function fmt(n) { return n != null ? Number(n).toLocaleString('it-IT') : '—' }
 
 // ─── Previsioni giornaliere (tabella previsioni_giornaliere) ────────────────
 async function loadPrevisioni(from, to) {
-  let q = supabase.from('previsioni_giornaliere').select('*')
-  if (from) q = q.gte('data', from)
-  if (to)   q = q.lte('data', to)
-  return sbq(q)
+  return sbqAll(() => {
+    let q = supabase.from('previsioni_giornaliere').select('*').order('id', { ascending: true })
+    if (from) q = q.gte('data', from)
+    if (to)   q = q.lte('data', to)
+    return q
+  })
 }
 
 // ── Tab Obiettivi Team ────────────────────────────────────────────────────
@@ -519,12 +528,18 @@ function TabTarget({ sede, from, to }) {
 
 // ── Matrice Categorie Media (storico ultimi 3 mesi, solo valorizzati) ───────
 async function loadMatriceCategorieMedia(sede, refAnno, refMese) {
-  let q = supabase.from('venduto_camerieri')
-    .select('sede, operatore, data_inizio, categoria, quantita, totale')
-    .not('operatore', 'ilike', '%pienissimo%')
-    .range(0, 19999)
-  if (sede) q = q.eq('sede', sede)
-  const rows = await sbq(q)
+  // `.range(0, 19999)` NON alzava il cap PostgREST (verificato: il server
+  // risponde 1000 righe qualunque sia il limite richiesto), quindi su una
+  // tabella da 19.396 righe questa media era calcolata su una frazione dei
+  // dati — e la frazione più VECCHIA, per via dell'ordinamento. Serve sbqAll.
+  const rows = await sbqAll(() => {
+    let q = supabase.from('venduto_camerieri')
+      .select('id, sede, operatore, data_inizio, categoria, quantita, totale')
+      .not('operatore', 'ilike', '%pienissimo%')
+      .order('id', { ascending: true })
+    if (sede) q = q.eq('sede', sede)
+    return q
+  })
 
   const meseCorrenteKey = `${refAnno}-${String(refMese).padStart(2,'0')}`
 

@@ -12,6 +12,8 @@
  */
 import React, { useEffect, useState, useMemo } from 'react'
 import supabase from '../supabase'
+import { fetchPagedInfo } from '../api/paged'
+import { useOrdinamento, IconaOrdine, BottoneCsv, NotaCopertura } from '../lib/tabella'
 import {
   BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
@@ -113,17 +115,13 @@ function BarTooltip({ active, payload, label }) {
 }
 
 function Tabella({ rows }) {
-  const [sortKey, setSortKey] = useState('n_prenotazioni')
-  const [sortDir, setSortDir] = useState('desc')
-  const sorted = useMemo(() => [...rows].sort((a, b) => {
-    const av = a[sortKey] ?? '', bv = b[sortKey] ?? ''
-    if (typeof av === 'number') return sortDir === 'asc' ? av - bv : bv - av
-    return sortDir === 'asc' ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av))
-  }), [rows, sortKey, sortDir])
-  const toggleSort = k => { if (sortKey === k) setSortDir(d => d === 'asc' ? 'desc' : 'asc'); else { setSortKey(k); setSortDir('desc') } }
+  // useOrdinamento ordina in entrambe le direzioni e tiene i valori mancanti in
+  // coda invece di trattarli come 0/stringa vuota.
+  const { righeOrdinate: sorted, colonna: sortKey, direzione: sortDir, propsTh } =
+    useOrdinamento(rows, 'n_prenotazioni', 'desc')
   const Th = ({ k, label }) => (
-    <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide cursor-pointer select-none hover:text-gray-800" onClick={() => toggleSort(k)}>
-      <span className="flex items-center gap-1">{label}{sortKey === k ? (sortDir === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />) : <ChevronDown size={12} className="text-gray-300" />}</span>
+    <th {...propsTh(k)} className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide cursor-pointer select-none hover:text-gray-800">
+      <span className="flex items-center gap-1">{label}<IconaOrdine colonna={k} colonnaAttiva={sortKey} direzione={sortDir} /></span>
     </th>
   )
   if (!sorted.length) return <div className="text-center py-12 text-gray-400 text-sm">Nessun dato disponibile per il periodo selezionato.</div>
@@ -141,8 +139,10 @@ function Tabella({ rows }) {
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-50">
-          {sorted.map((r, i) => (
-            <tr key={i} className="hover:bg-gray-50">
+          {sorted.map((r) => (
+            // key sull'id della riga: con key={index} in una tabella ordinabile
+            // React riusa la riga sbagliata a ogni cambio di ordinamento.
+            <tr key={r.id} className="hover:bg-gray-50">
               <td className="px-3 py-2 text-gray-700 whitespace-nowrap">{r.periodo || datIt(r.data_inizio)}</td>
               <td className="px-3 py-2">
                 <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${r.sede === 'MA' ? 'bg-violet-100 text-violet-700' : 'bg-emerald-100 text-emerald-700'}`}>{r.sede}</span>
@@ -170,6 +170,7 @@ export default function PrenotazioniBI() {
   const [prenotazioni, setPrenotazioni] = useState([])
   const [clientiStats, setClientiStats] = useState([])
   const [chiusure, setChiusure] = useState([]) // chiusure_giornaliere per coperto medio reale
+  const [troncato, setTroncato] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -179,36 +180,48 @@ export default function PrenotazioniBI() {
     setError(null)
     ;(async () => {
       try {
+        // `.range(0, 4999)` NON alzava il cap PostgREST di 1000 righe: era un
+        // finto bypass. Tutte e tre le letture vengono aggregate lato client
+        // (KPI, canali, coperto medio), quindi devono essere paginate davvero.
+
         // prenotazioni_summary — overlap filter robusto: il record [data_inizio,data_fine]
         // si sovrappone con il periodo [from,to] se data_inizio<=to AND data_fine>=from.
-        let qP = supabase.from('prenotazioni_summary').select('*')
-        if (sede !== 'all') qP = qP.eq('sede', sede)
-        if (dates.to) qP = qP.lte('data_inizio', dates.to)
-        if (dates.from) qP = qP.gte('data_fine', dates.from)
-        qP = qP.range(0, 4999)
+        const buildP = () => {
+          let q = supabase.from('prenotazioni_summary').select('*')
+          if (sede !== 'all') q = q.eq('sede', sede)
+          if (dates.to) q = q.lte('data_inizio', dates.to)
+          if (dates.from) q = q.gte('data_fine', dates.from)
+          return q
+        }
 
         // clienti_stats — filtrato per i periodi (YYYY-MM) toccati dal range + sede
         const periodi = periodiInRange(dates.from, dates.to)
-        let qC = supabase.from('clienti_stats').select('*').eq('grouping_tipo', 'provenienza')
-        if (sede !== 'all') qC = qC.eq('sede', sede)
-        if (periodi.length) qC = qC.in('periodo', periodi)
-        qC = qC.range(0, 4999)
+        const buildC = () => {
+          let q = supabase.from('clienti_stats').select('*').eq('grouping_tipo', 'provenienza')
+          if (sede !== 'all') q = q.eq('sede', sede)
+          if (periodi.length) q = q.in('periodo', periodi)
+          return q
+        }
 
         // chiusure_giornaliere — coperto medio reale del periodo per stima € no-show
-        let qG = supabase.from('chiusure_giornaliere').select('sede, data, coperti, coperto_medio, totale_venduto_ipratico')
-        if (sede !== 'all') qG = qG.eq('sede', sede)
-        if (dates.from) qG = qG.gte('data', dates.from)
-        if (dates.to) qG = qG.lte('data', dates.to)
-        qG = qG.range(0, 4999)
+        const buildG = () => {
+          let q = supabase.from('chiusure_giornaliere').select('id, sede, data, coperti, coperto_medio, totale_venduto_ipratico')
+          if (sede !== 'all') q = q.eq('sede', sede)
+          if (dates.from) q = q.gte('data', dates.from)
+          if (dates.to) q = q.lte('data', dates.to)
+          return q
+        }
 
-        const [rP, rC, rG] = await Promise.all([qP, qC, qG])
-        if (rP.error) throw rP.error
-        if (rC.error) throw rC.error
-        if (rG.error) throw rG.error
+        const [rP, rC, rG] = await Promise.all([
+          fetchPagedInfo(buildP, 'id'),
+          fetchPagedInfo(buildC, 'id'),
+          fetchPagedInfo(buildG, 'id'),
+        ])
         if (!cancelled) {
-          setPrenotazioni(rP.data ?? [])
-          setClientiStats(rC.data ?? [])
-          setChiusure(rG.data ?? [])
+          setPrenotazioni(rP.righe)
+          setClientiStats(rC.righe)
+          setChiusure(rG.righe)
+          setTroncato(rP.troncato || rC.troncato || rG.troncato)
         }
       } catch (e) {
         if (!cancelled) setError(e.message || String(e))
@@ -244,7 +257,9 @@ export default function PrenotazioniBI() {
     const impattoNS = copertoMedioReale != null ? persNS * copertoMedioReale : null
     return {
       totPren, totPers,
-      noShowPct: totPren > 0 ? ((totNS / totPren) * 100).toFixed(1) : '0.0',
+      // Senza prenotazioni il tasso non è "0,0%" (che significherebbe "nessun
+      // no-show", cioè un risultato ottimo): semplicemente non è calcolabile.
+      noShowPct: totPren > 0 ? ((totNS / totPren) * 100).toFixed(1) : null,
       totNS, persNS, persPren, impattoNS,
     }
   }, [prenotazioni, copertoMedioReale])
@@ -277,14 +292,21 @@ export default function PrenotazioniBI() {
   // Confronto per sede (vista globale)
   const perSede = useMemo(() => {
     if (sede !== 'all') return []
+    // `r.sede === 'PN' ? 'PN' : 'MA'` attribuiva a Mameli QUALSIASI sede
+    // sconosciuta o nulla. Ora le righe non riconosciute finiscono in un secchio
+    // separato, dichiarato sotto le card invece che spalmato su MA.
     const m = { MA: { pren: 0, pers: 0, ns: 0 }, PN: { pren: 0, pers: 0, ns: 0 } }
+    const ignote = { pren: 0, pers: 0, ns: 0, sedi: new Set() }
     prenotazioni.forEach(r => {
-      const s = r.sede === 'PN' ? 'PN' : 'MA'
-      m[s].pren += r.n_prenotazioni || 0
-      m[s].pers += r.n_persone || 0
-      if (r.stato === 'no_show') m[s].ns += r.n_prenotazioni || 0
+      const dest = m[r.sede] ?? ignote
+      if (dest === ignote) ignote.sedi.add(r.sede == null ? '(vuota)' : String(r.sede))
+      dest.pren += r.n_prenotazioni || 0
+      dest.pers += r.n_persone || 0
+      if (r.stato === 'no_show') dest.ns += r.n_prenotazioni || 0
     })
-    return ['MA', 'PN'].map(s => ({ sede: s, nome: SEDE_LABEL[s], ...m[s] }))
+    const righe = ['MA', 'PN'].map(s => ({ sede: s, nome: SEDE_LABEL[s], ...m[s] }))
+    righe.ignote = ignote.pren > 0 ? { ...ignote, sedi: Array.from(ignote.sedi) } : null
+    return righe
   }, [prenotazioni, sede])
 
   // Trend per giorno settimana — solo se i record sono giornalieri (data_inizio==data_fine)
@@ -309,7 +331,7 @@ Periodo: ${dates.from} → ${dates.to}
 KPI:
 - Tot. Prenotazioni: ${fmt(kpi.totPren)}
 - Tot. Persone: ${fmt(kpi.totPers)}
-- Tasso No-Show: ${kpi.noShowPct}% (${fmt(kpi.totNS)} prenotazioni, ${fmt(kpi.persNS)} persone)
+- Tasso No-Show: ${kpi.noShowPct != null ? `${kpi.noShowPct}%` : 'non calcolabile (nessuna prenotazione)'} (${fmt(kpi.totNS)} prenotazioni, ${fmt(kpi.persNS)} persone)
 - Impatto € no-show: ${kpi.impattoNS != null ? eur(kpi.impattoNS) : 'non calcolabile (manca coperto medio reale)'}
 - Coperto medio reale periodo: ${copertoMedioReale != null ? eur2(copertoMedioReale) : 'n/d'}
 - Persone medie/prenotazione: ${kpi.persPren}
@@ -368,8 +390,9 @@ Righe prenotazioni: ${prenotazioni.length}`, [kpi, sede, dates, pieCanali, preno
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <KPICard icon={CalendarDays} label="Tot. Prenotazioni" value={fmt(kpi.totPren)} sub="nel periodo" color="#7c3aed" />
             <KPICard icon={Users} label="Tot. Persone" value={fmt(kpi.totPers)} sub="coperti prenotati" color="#10b981" />
-            <KPICard icon={XCircle} label="Tasso No-Show" value={`${kpi.noShowPct}%`}
-              sub={`${fmt(kpi.totNS)} prenot. / ${fmt(kpi.persNS)} persone`} color="#ef4444" />
+            <KPICard icon={XCircle} label="Tasso No-Show" value={kpi.noShowPct != null ? `${kpi.noShowPct}%` : '—'}
+              sub={kpi.noShowPct != null ? `${fmt(kpi.totNS)} prenot. / ${fmt(kpi.persNS)} persone` : 'nessuna prenotazione nel periodo'}
+              color="#ef4444" />
             <KPICard icon={UtensilsCrossed} label="Impatto € No-Show"
               value={kpi.impattoNS != null ? eur(kpi.impattoNS) : 'n/d'}
               sub={copertoMedioReale != null ? `${fmt(kpi.persNS)} pers. × ${eur2(copertoMedioReale)}` : 'coperto medio non disponibile'}
@@ -402,6 +425,12 @@ Righe prenotazioni: ${prenotazioni.length}`, [kpi, sede, dates, pieCanali, preno
                   </div>
                 ))}
               </div>
+              {perSede.ignote && (
+                <p className="text-[11px] text-amber-600 mt-2">
+                  ⚠ {fmt(perSede.ignote.pren)} prenotazioni con sede non riconosciuta
+                  ({perSede.ignote.sedi.join(', ')}) NON sono attribuite a nessuna delle due sedi.
+                </p>
+              )}
             </div>
           )}
 
@@ -442,7 +471,7 @@ Righe prenotazioni: ${prenotazioni.length}`, [kpi, sede, dates, pieCanali, preno
                 <ResponsiveContainer width="100%" height={220}>
                   <PieChart>
                     <Pie data={pieCanali} cx="50%" cy="50%" innerRadius={55} outerRadius={90} dataKey="value" nameKey="name" paddingAngle={3}>
-                      {pieCanali.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
+                      {pieCanali.map((c, i) => <Cell key={c.name} fill={COLORS[i % COLORS.length]} />)}
                     </Pie>
                     <Tooltip content={<PieTooltip />} />
                     <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 11 }}
@@ -480,10 +509,25 @@ Righe prenotazioni: ${prenotazioni.length}`, [kpi, sede, dates, pieCanali, preno
 
           {/* Tabella riepilogo */}
           <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-            <h2 className="text-sm font-bold text-gray-800 mb-4">
-              Riepilogo Prenotazioni
-              <span className="ml-2 text-xs font-normal text-gray-400">({prenotazioni.length} righe — periodo {dates.from} → {dates.to})</span>
-            </h2>
+            <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
+              <h2 className="text-sm font-bold text-gray-800">
+                Riepilogo Prenotazioni
+                <span className="ml-2 text-xs font-normal text-gray-400">({prenotazioni.length} righe — periodo {dates.from} → {dates.to})</span>
+              </h2>
+              <BottoneCsv righe={prenotazioni} nomeFile="prenotazioni" colonne={[
+                { chiave: 'periodo', etichetta: 'Periodo' },
+                { chiave: 'data_inizio', etichetta: 'Data inizio' },
+                { chiave: 'data_fine', etichetta: 'Data fine' },
+                { chiave: 'sede', etichetta: 'Sede' },
+                { chiave: 'turno', etichetta: 'Turno' },
+                { chiave: 'stato', etichetta: 'Stato' },
+                { chiave: 'canale', etichetta: 'Canale' },
+                { chiave: 'n_prenotazioni', etichetta: 'Prenotazioni' },
+                { chiave: 'n_persone', etichetta: 'Persone' },
+              ]} />
+            </div>
+            <NotaCopertura righe={prenotazioni.length} da={dates.from} a={dates.to}
+              fonte="prenotazioni_summary" troncato={troncato} />
             <Tabella rows={prenotazioni} />
           </div>
         </>

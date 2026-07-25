@@ -5,8 +5,10 @@
  * Mostra: NPS medio, score 5 dimensioni, trend mensile, canali, % tornerà,
  * feedback negativi recenti, filtri sede + periodo.
  */
-import React, { useEffect, useMemo, useState, useCallback } from 'react'
+import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import supabase from '../supabase'
+import { fetchPagedInfo } from '../api/paged'
+import { BottoneCsv, NotaCopertura } from '../lib/tabella'
 import PageStatsWidget from '../components/PageStatsWidget'
 import {
   Star, MessageSquare, TrendingUp, Users, Calendar, MapPin,
@@ -22,6 +24,19 @@ const PIE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4
 
 const fmtN = (v, d=1) => (v == null || !isFinite(v)) ? '—' : Number(v).toFixed(d)
 const fmtPct = (v, d=0) => (v == null || !isFinite(v)) ? '—' : `${(Number(v) * 100).toFixed(d)}%`
+
+// toISOString() formatta in UTC: di sera, in fuso italiano, "oggi" diventa ieri.
+const isoLocale = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+
+// setMonth(getMonth()-N) va in overflow a fine mese (dal 31 ago meno 6 mesi si
+// finisce al 3 marzo): qui il giorno viene limitato all'ultimo del mese target.
+function meseMeno(data, n) {
+  const giorno = data.getDate()
+  const x = new Date(data.getFullYear(), data.getMonth() - n, 1)
+  const ultimo = new Date(x.getFullYear(), x.getMonth() + 1, 0).getDate()
+  x.setDate(Math.min(giorno, ultimo))
+  return x
+}
 
 // NPS classification helpers (per dimensione 0-10)
 function classifyNps(score) {
@@ -40,47 +55,51 @@ function calcNpsScore(arr) {
 }
 
 export default function SondaggiPage() {
-  const today = new Date()
-  const [from, setFrom] = useState(() => {
-    const d = new Date(); d.setMonth(d.getMonth() - 3); return d.toISOString().slice(0, 10)
-  })
-  const [to, setTo]     = useState(today.toISOString().slice(0, 10))
+  const [from, setFrom] = useState(() => isoLocale(meseMeno(new Date(), 3)))
+  const [to, setTo]     = useState(() => isoLocale(new Date()))
   const [sede, setSede] = useState('Tutte')
   const [data, setData] = useState([])
+  const [troncato, setTroncato] = useState(false)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState(null)
 
+  // Identifica l'ultima richiesta partita: scarta le risposte obsolete e vale
+  // come guardia di unmount (il cleanup dell'effect lo incrementa).
+  const richiestaRef = useRef(0)
+
   const loadData = useCallback(async () => {
+    const mia = ++richiestaRef.current
     setLoading(true); setErr(null)
     try {
-      // Le righe alimentano NPS e medie: un troncamento le falsa. `.limit(5000)`
-      // NON alza il cap PostgREST di 1000 righe (la tabella ne ha già ~1.200),
-      // quindi su periodi lunghi l'NPS era calcolato su un sottoinsieme.
-      // Solo `.range()` pagina davvero.
-      const PAGINA = 1000
-      const rows = []
-      for (let i = 0; i < 20000; i += PAGINA) {
-        let q = supabase.from('sondaggi_strutturati')
-          .select('*')
+      // Le righe alimentano NPS e medie: un troncamento le falsa. La vecchia
+      // paginazione manuale era sequenziale (fino a 20 round-trip in serie) e
+      // senza guardia di annullamento; fetchPaged scarica le pagine in parallelo.
+      const build = () => {
+        let q = supabase.from('sondaggi_strutturati').select('*')
           .gte('data_prenotazione', from)
           .lte('data_prenotazione', to)
-          .order('data_prenotazione', { ascending: false })
-          .range(i, i + PAGINA - 1)
         if (sede !== 'Tutte') q = q.eq('sede', sede)
-        const { data: batch, error } = await q
-        if (error) throw error
-        rows.push(...(batch || []))
-        if ((batch || []).length < PAGINA) break
+        return q
       }
-      setData(rows)
+      const { righe, troncato: tr } = await fetchPagedInfo(build, 'id')
+      if (mia !== richiestaRef.current) return
+      // L'ordine per data serve solo alla UI: la paginazione ordina per `id`,
+      // che è l'unica colonna univoca (con `data_prenotazione`, che ha molti
+      // duplicati, al confine fra due pagine si perderebbero righe).
+      righe.sort((a, b) => String(b.data_prenotazione || '').localeCompare(String(a.data_prenotazione || '')))
+      setData(righe)
+      setTroncato(tr)
     } catch (e) {
-      setErr(e.message || String(e))
+      if (mia === richiestaRef.current) setErr(e.message || String(e))
     } finally {
-      setLoading(false)
+      if (mia === richiestaRef.current) setLoading(false)
     }
   }, [from, to, sede])
 
-  useEffect(() => { loadData() }, [loadData])
+  useEffect(() => {
+    loadData()
+    return () => { richiestaRef.current++ }
+  }, [loadData])
 
   // ── KPI principali ────────────────────────────────────────────────────
   const kpi = useMemo(() => {
@@ -91,20 +110,33 @@ export default function SondaggiPage() {
       const vals = data.map(d => d[key]).filter(v => v != null && isFinite(v))
       return vals.length === 0 ? null : vals.reduce((s, v) => s + (+v), 0) / vals.length
     }
+    const nRisposte = (key) => data.filter(d => d[key] != null && isFinite(d[key])).length
+    // "Tornerà" è una domanda facoltativa: dividere per data.length faceva
+    // contare come "non tornerà" anche chi semplicemente non ha risposto.
+    const conRispostaTornera = data.filter(d => d.tornera === true || d.tornera === false).length
     const torneranno = data.filter(d => d.tornera === true).length
+    const conRispostaPromo = data.filter(d => d.vuole_promo === true || d.vuole_promo === false).length
     const promo = data.filter(d => d.vuole_promo === true).length
     const conFeedback = data.filter(d => d.feedback_negativo && d.feedback_negativo.trim()).length
     return {
       n: data.length,
       nps,
+      nNps:          npsArr.filter(v => isFinite(v)).length,
       avgNps:        avg('nps'),
       avgSala:       avg('sala'),
       avgPulizia:    avg('pulizia'),
       avgQualita:    avg('qualita_piatti'),
       avgPrezzo:     avg('qualita_prezzo'),
       avgAtmosfera:  avg('atmosfera'),
-      pctTorneranno: data.length > 0 ? torneranno / data.length : 0,
-      pctPromo:      data.length > 0 ? promo / data.length : 0,
+      nSala:         nRisposte('sala'),
+      nPulizia:      nRisposte('pulizia'),
+      nQualita:      nRisposte('qualita_piatti'),
+      nPrezzo:       nRisposte('qualita_prezzo'),
+      nAtmosfera:    nRisposte('atmosfera'),
+      pctTorneranno: conRispostaTornera > 0 ? torneranno / conRispostaTornera : null,
+      nTornera:      conRispostaTornera,
+      pctPromo:      conRispostaPromo > 0 ? promo / conRispostaPromo : null,
+      nPromo:        conRispostaPromo,
       nFeedback:     conFeedback,
     }
   }, [data])
@@ -147,40 +179,61 @@ export default function SondaggiPage() {
   }, [data])
 
   // ── Radar score 5 dimensioni ──────────────────────────────────────────
-  const radarData = useMemo(() => {
+  // `kpi.avgSala || 0` trasformava una dimensione MAI rilevata in 0/10, cioè
+  // "pessimo", indistinguibile da "non raccolto". Le dimensioni senza risposte
+  // vengono escluse dal radar e dichiarate a parte.
+  const radarTutte = useMemo(() => {
     if (!kpi) return []
     return [
-      { dim: 'Sala',       value: kpi.avgSala || 0 },
-      { dim: 'Pulizia',    value: kpi.avgPulizia || 0 },
-      { dim: 'Qualità ★',  value: kpi.avgQualita || 0 },
-      { dim: 'Prezzo',     value: kpi.avgPrezzo || 0 },
-      { dim: 'Atmosfera',  value: kpi.avgAtmosfera || 0 },
+      { dim: 'Sala',       value: kpi.avgSala,      n: kpi.nSala },
+      { dim: 'Pulizia',    value: kpi.avgPulizia,   n: kpi.nPulizia },
+      { dim: 'Qualità ★',  value: kpi.avgQualita,   n: kpi.nQualita },
+      { dim: 'Prezzo',     value: kpi.avgPrezzo,    n: kpi.nPrezzo },
+      { dim: 'Atmosfera',  value: kpi.avgAtmosfera, n: kpi.nAtmosfera },
     ]
   }, [kpi])
+  const radarData    = useMemo(() => radarTutte.filter(d => d.value != null), [radarTutte])
+  const radarMancanti = useMemo(() => radarTutte.filter(d => d.value == null).map(d => d.dim), [radarTutte])
 
   // ── Distribuzione NPS (promoter/passive/detractor) ────────────────────
   const npsDist = useMemo(() => {
-    const c = { promoter: 0, passive: 0, detractor: 0 }
+    const c = { promoter: 0, passive: 0, detractor: 0, totale: 0 }
     for (const r of data) {
       const cl = classifyNps(r.nps)
-      if (cl) c[cl]++
+      if (cl) { c[cl]++; c.totale++ }
     }
     return c
   }, [data])
 
   // ── Feedback negativi recenti ─────────────────────────────────────────
-  const feedbackNeg = useMemo(() => {
-    return data
-      .filter(r => r.feedback_negativo && r.feedback_negativo.trim().length > 5)
-      .slice(0, 30)
-      .map(r => ({
-        id: r.id, sede: r.sede,
-        data: r.data_prenotazione,
-        nps: r.nps,
-        text: r.feedback_negativo.trim(),
-        tornera: r.tornera,
-      }))
-  }, [data])
+  // Lo `.slice(0, 30)` stava PRIMA del conteggio: il contatore in intestazione
+  // mostrava al massimo 30 anche con 200 feedback negativi. Ora si conta tutto
+  // e si taglia solo la lista mostrata, dicendolo.
+  const feedbackNegTutti = useMemo(() => data
+    .filter(r => r.feedback_negativo && r.feedback_negativo.trim().length > 5)
+    .map(r => ({
+      id: r.id, sede: r.sede,
+      data: r.data_prenotazione,
+      nps: r.nps,
+      text: r.feedback_negativo.trim(),
+      tornera: r.tornera,
+    })), [data])
+  const feedbackNeg = useMemo(() => feedbackNegTutti.slice(0, 30), [feedbackNegTutti])
+
+  const colonneCsv = useMemo(() => ([
+    { chiave: 'sede', etichetta: 'Sede' },
+    { chiave: 'data_prenotazione', etichetta: 'Data prenotazione' },
+    { chiave: 'nps', etichetta: 'NPS (0-10)' },
+    { chiave: 'sala', etichetta: 'Sala' },
+    { chiave: 'pulizia', etichetta: 'Pulizia' },
+    { chiave: 'qualita_piatti', etichetta: 'Qualità piatti' },
+    { chiave: 'qualita_prezzo', etichetta: 'Qualità/prezzo' },
+    { chiave: 'atmosfera', etichetta: 'Atmosfera' },
+    { chiave: 'canale_conoscenza', etichetta: 'Canale' },
+    { chiave: 'tornera', etichetta: 'Tornerà', valore: r => (r.tornera == null ? null : r.tornera ? 'sì' : 'no') },
+    { chiave: 'vuole_promo', etichetta: 'Vuole promo', valore: r => (r.vuole_promo == null ? null : r.vuole_promo ? 'sì' : 'no') },
+    { chiave: 'feedback_negativo', etichetta: 'Feedback negativo' },
+  ]), [])
 
   return (
     <>
@@ -194,6 +247,7 @@ export default function SondaggiPage() {
             <h1 className="text-2xl font-bold text-gray-900">Sondaggi Clienti</h1>
             <span className="text-xs text-gray-500">NPS, score dimensioni, trend, canali, feedback</span>
             <div className="flex-1" />
+            <BottoneCsv righe={data} colonne={colonneCsv} nomeFile="sondaggi" />
             <button onClick={loadData} disabled={loading}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-gray-200 text-sm hover:bg-gray-50">
               <RefreshCw size={13} className={loading ? 'animate-spin' : ''} /> Ricarica
@@ -229,7 +283,7 @@ export default function SondaggiPage() {
               ].map(p => (
                 <button key={p.label} onClick={() => {
                   const t = new Date(); const f = new Date(); f.setDate(f.getDate() - p.d)
-                  setTo(t.toISOString().slice(0,10)); setFrom(f.toISOString().slice(0,10))
+                  setTo(isoLocale(t)); setFrom(isoLocale(f))
                 }} className="text-xs px-2 py-1 rounded border border-gray-200 hover:bg-gray-50">{p.label}</button>
               ))}
             </div>
@@ -248,14 +302,18 @@ export default function SondaggiPage() {
 
           {/* KPI row */}
           {kpi ? (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-              <KPI label="NPS Score" value={fmtN(kpi.nps, 1)} sub={`media: ${fmtN(kpi.avgNps, 1)}/10`}
-                icon={Star} color={kpi.nps >= 50 ? 'green' : kpi.nps >= 0 ? 'amber' : 'red'} />
-              <KPI label="Qualità piatti" value={`${fmtN(kpi.avgQualita)}/10`} icon={Star} color="blue" />
-              <KPI label="Tornerà" value={fmtPct(kpi.pctTorneranno, 0)} sub="% clienti soddisfatti"
-                icon={Repeat} color="emerald" />
-              <KPI label="Vuole promo" value={fmtPct(kpi.pctPromo, 0)} sub={`${kpi.nFeedback} feedback scritti`}
-                icon={Mail} color="purple" />
+            <div className="mb-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <KPI label="NPS Score" value={fmtN(kpi.nps, 1)} sub={`media: ${fmtN(kpi.avgNps, 1)}/10 · ${kpi.nNps} risposte`}
+                  icon={Star} color={kpi.nps >= 50 ? 'green' : kpi.nps >= 0 ? 'amber' : 'red'} />
+                <KPI label="Qualità piatti" value={kpi.avgQualita == null ? '—' : `${fmtN(kpi.avgQualita)}/10`}
+                  sub={`${kpi.nQualita} risposte`} icon={Star} color="blue" />
+                <KPI label="Tornerà" value={fmtPct(kpi.pctTorneranno, 0)} sub={`su ${kpi.nTornera} che hanno risposto`}
+                  icon={Repeat} color="emerald" />
+                <KPI label="Vuole promo" value={fmtPct(kpi.pctPromo, 0)} sub={`${kpi.nFeedback} feedback scritti`}
+                  icon={Mail} color="purple" />
+              </div>
+              <NotaCopertura righe={kpi.n} da={from} a={to} fonte="sondaggi_strutturati" troncato={troncato} />
             </div>
           ) : !loading && data.length === 0 && (
             <div className="bg-white border border-gray-200 rounded-xl p-8 text-center text-gray-500">
@@ -270,26 +328,41 @@ export default function SondaggiPage() {
                 <h3 className="font-semibold text-sm text-gray-800 mb-2 flex items-center gap-2">
                   <Activity size={15} className="text-violet-600" /> Score per Dimensione (media 0-10)
                 </h3>
-                <ResponsiveContainer width="100%" height={260}>
-                  <RadarChart data={radarData}>
-                    <PolarGrid stroke="#e5e7eb" />
-                    <PolarAngleAxis dataKey="dim" tick={{ fontSize: 12 }} />
-                    <PolarRadiusAxis angle={90} domain={[0, 10]} tick={{ fontSize: 10 }} />
-                    <Radar name="Score" dataKey="value" stroke="#8b5cf6" fill="#a78bfa" fillOpacity={0.5} />
-                    <Tooltip formatter={(v) => `${(+v).toFixed(2)}/10`} />
-                  </RadarChart>
-                </ResponsiveContainer>
+                {radarData.length === 0 ? (
+                  <p className="text-gray-400 text-sm italic py-10 text-center">Nessuna dimensione rilevata nel periodo.</p>
+                ) : (
+                  <ResponsiveContainer width="100%" height={260}>
+                    <RadarChart data={radarData}>
+                      <PolarGrid stroke="#e5e7eb" />
+                      <PolarAngleAxis dataKey="dim" tick={{ fontSize: 12 }} />
+                      <PolarRadiusAxis angle={90} domain={[0, 10]} tick={{ fontSize: 10 }} />
+                      <Radar name="Score" dataKey="value" stroke="#8b5cf6" fill="#a78bfa" fillOpacity={0.5} />
+                      <Tooltip formatter={(v, n, p) => `${(+v).toFixed(2)}/10 (${p?.payload?.n ?? 0} risposte)`} />
+                    </RadarChart>
+                  </ResponsiveContainer>
+                )}
+                {radarMancanti.length > 0 && (
+                  <p className="text-[11px] text-amber-600 mt-1">
+                    Non rilevate nel periodo (escluse dal grafico, non valgono 0): {radarMancanti.join(', ')}
+                  </p>
+                )}
               </div>
               <div className="bg-white border border-gray-200 rounded-xl p-4">
                 <h3 className="font-semibold text-sm text-gray-800 mb-2 flex items-center gap-2">
                   <ThumbsUp size={15} className="text-emerald-600" /> Distribuzione NPS
                 </h3>
                 <div className="space-y-2 mt-4">
-                  <NpsBar label="Promoter (9-10)" count={npsDist.promoter} total={kpi.n} color="emerald" />
-                  <NpsBar label="Passive (7-8)"   count={npsDist.passive}   total={kpi.n} color="amber" />
-                  <NpsBar label="Detractor (0-6)" count={npsDist.detractor} total={kpi.n} color="red" />
+                  {/* La base è il numero di NPS effettivamente compilati, non il
+                      totale sondaggi: altrimenti le tre barre non sommano a 100%
+                      e la quota mancante resta invisibile. */}
+                  <NpsBar label="Promoter (9-10)" count={npsDist.promoter} total={npsDist.totale} color="emerald" />
+                  <NpsBar label="Passive (7-8)"   count={npsDist.passive}   total={npsDist.totale} color="amber" />
+                  <NpsBar label="Detractor (0-6)" count={npsDist.detractor} total={npsDist.totale} color="red" />
                 </div>
                 <div className="mt-4 pt-3 border-t border-gray-100 text-xs text-gray-500">
+                  Base: {npsDist.totale} sondaggi con NPS compilato su {kpi.n} totali
+                  {kpi.n - npsDist.totale > 0 && <span className="text-amber-600"> ({kpi.n - npsDist.totale} senza NPS, esclusi)</span>}.
+                  <br />
                   NPS = % Promoter − % Detractor.
                   Soglie: <span className="text-emerald-600 font-medium">&gt;50 eccellente</span> ·
                   <span className="text-amber-600 font-medium"> 0-50 buono</span> ·
@@ -313,9 +386,9 @@ export default function SondaggiPage() {
                   <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11 }} domain={[0, 10]} label={{ value: 'Media voti', angle: 90, position: 'insideRight', style: { fontSize: 10 } }} />
                   <Tooltip />
                   <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <Line yAxisId="left" type="monotone" dataKey="nps_score" stroke="#10b981" strokeWidth={2} name="NPS Score" dot={{ r: 4 }} />
-                  <Line yAxisId="right" type="monotone" dataKey="avg_qualita" stroke="#3b82f6" strokeWidth={2} name="Qualità piatti" strokeDasharray="4 2" dot={{ r: 3 }} />
-                  <Line yAxisId="right" type="monotone" dataKey="avg_sala" stroke="#8b5cf6" strokeWidth={2} name="Sala" strokeDasharray="4 2" dot={{ r: 3 }} />
+                  <Line yAxisId="left" type="monotone" dataKey="nps_score" stroke="#10b981" strokeWidth={2} name="NPS Score" dot={{ r: 4 }} connectNulls={false} />
+                  <Line yAxisId="right" type="monotone" dataKey="avg_qualita" stroke="#3b82f6" strokeWidth={2} name="Qualità piatti" strokeDasharray="4 2" dot={{ r: 3 }} connectNulls={false} />
+                  <Line yAxisId="right" type="monotone" dataKey="avg_sala" stroke="#8b5cf6" strokeWidth={2} name="Sala" strokeDasharray="4 2" dot={{ r: 3 }} connectNulls={false} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -332,7 +405,7 @@ export default function SondaggiPage() {
                   <ResponsiveContainer width="100%" height={250}>
                     <PieChart>
                       <Pie data={canali} dataKey="value" nameKey="name" outerRadius={90} label={(e) => `${e.name.substring(0, 12)} (${e.value})`}>
-                        {canali.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+                        {canali.map((c, i) => <Cell key={c.name} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
                       </Pie>
                       <Tooltip />
                     </PieChart>
@@ -344,23 +417,32 @@ export default function SondaggiPage() {
               <div className="bg-white border border-gray-200 rounded-xl p-4">
                 <h3 className="font-semibold text-sm text-gray-800 mb-2 flex items-center gap-2">
                   <ThumbsDown size={15} className="text-red-600" /> Feedback Negativi Recenti
-                  <span className="text-xs text-gray-400 ml-1">({feedbackNeg.length})</span>
+                  <span className="text-xs text-gray-400 ml-1">({feedbackNegTutti.length})</span>
                 </h3>
                 <div className="max-h-[280px] overflow-y-auto space-y-2">
-                  {feedbackNeg.length === 0 ? (
+                  {feedbackNegTutti.length === 0 ? (
                     <p className="text-emerald-600 text-sm italic">✓ Nessun feedback negativo nel periodo!</p>
-                  ) : feedbackNeg.map(f => (
-                    <div key={f.id} className="p-2 rounded-lg bg-red-50 border border-red-100">
-                      <div className="flex items-center gap-2 mb-1 text-xs">
-                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${f.sede === 'MA' ? 'bg-red-200 text-red-800' : 'bg-blue-200 text-blue-800'}`}>{f.sede}</span>
-                        <span className="text-gray-500">{f.data}</span>
-                        {f.nps != null && <span className={`px-1.5 py-0.5 rounded ${f.nps <= 6 ? 'bg-red-200 text-red-700' : 'bg-amber-200 text-amber-700'}`}>NPS {f.nps}</span>}
-                        {f.tornera === false && <span className="text-red-600 text-[10px]">❌ non torna</span>}
-                        {f.tornera === true && <span className="text-emerald-600 text-[10px]">↻ torna</span>}
-                      </div>
-                      <p className="text-xs text-gray-700 leading-snug">{f.text}</p>
-                    </div>
-                  ))}
+                  ) : (
+                    <>
+                      {feedbackNeg.map(f => (
+                        <div key={f.id} className="p-2 rounded-lg bg-red-50 border border-red-100">
+                          <div className="flex items-center gap-2 mb-1 text-xs">
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${f.sede === 'MA' ? 'bg-red-200 text-red-800' : 'bg-blue-200 text-blue-800'}`}>{f.sede}</span>
+                            <span className="text-gray-500">{f.data}</span>
+                            {f.nps != null && <span className={`px-1.5 py-0.5 rounded ${f.nps <= 6 ? 'bg-red-200 text-red-700' : 'bg-amber-200 text-amber-700'}`}>NPS {f.nps}</span>}
+                            {f.tornera === false && <span className="text-red-600 text-[10px]">❌ non torna</span>}
+                            {f.tornera === true && <span className="text-emerald-600 text-[10px]">↻ torna</span>}
+                          </div>
+                          <p className="text-xs text-gray-700 leading-snug">{f.text}</p>
+                        </div>
+                      ))}
+                      {feedbackNegTutti.length > feedbackNeg.length && (
+                        <p className="text-[11px] text-gray-400 text-center py-1">
+                          mostro i 30 più recenti di {feedbackNegTutti.length} — esporta in CSV per tutti
+                        </p>
+                      )}
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -407,16 +489,16 @@ function KPI({ label, value, sub, icon: Icon, color = 'blue' }) {
 }
 
 function NpsBar({ label, count, total, color }) {
-  const pct = total > 0 ? (count / total) * 100 : 0
+  const pct = total > 0 ? (count / total) * 100 : null
   const bg = { emerald: 'bg-emerald-500', amber: 'bg-amber-500', red: 'bg-red-500' }
   return (
     <div>
       <div className="flex items-center justify-between text-xs mb-1">
         <span className="font-medium text-gray-700">{label}</span>
-        <span className="text-gray-500">{count} <span className="text-gray-400">({pct.toFixed(0)}%)</span></span>
+        <span className="text-gray-500">{count} <span className="text-gray-400">({pct == null ? '—' : `${pct.toFixed(0)}%`})</span></span>
       </div>
       <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-        <div className={`h-full ${bg[color]} transition-all`} style={{ width: `${pct}%` }} />
+        <div className={`h-full ${bg[color]} transition-all`} style={{ width: `${pct ?? 0}%` }} />
       </div>
     </div>
   )

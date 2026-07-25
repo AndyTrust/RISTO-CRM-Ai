@@ -1,9 +1,11 @@
-import React, { useEffect, useState, useMemo } from 'react'
+import React, { useEffect, useState, useMemo, useCallback } from 'react'
 import {
   employees as empApi, venduto as vendutoApi, turni as turniApi,
   admin as adminApi, operatorMapping as mappingApi, repartiApi,
 } from '../api/client'
 import supabase from '../supabase'
+import { fetchPaged } from '../api/paged'
+import { fmtEur, fmtNum, useOrdinamento, IconaOrdine, BottoneCsv } from '../lib/tabella'
 import {
   UserPlus, Power, Pencil, X, Check, Users, Search,
   ArrowLeftRight, Calendar, MapPin, TrendingUp, ChevronRight,
@@ -22,6 +24,17 @@ const RUOLI_DEFAULT = [
   'Responsabile','Cameriere','Commis','Cuoco','Aiuto Cuoco','Chef',
   'Lavapiatti','Barista','Cassiere','Manager','Amministrazione','Altro',
 ]
+
+/**
+ * Data di oggi YYYY-MM-DD nel fuso LOCALE.
+ * `new Date().toISOString()` è UTC: dopo le 22:00 italiane (ora legale) il
+ * turno inserito "oggi" veniva pre-datato a ieri — proprio nell'orario in cui
+ * si chiude la cena e si registrano i turni.
+ */
+function oggiLocale() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
 
 function Avatar({ name, color }) {
   return (
@@ -418,8 +431,7 @@ export function EmployeeForm({ initial, reparti, ruoliDB, onSave, onClose }) {
 
 // ─── Modal: Inserimento turno rapido ──────────────────────────────────────
 function TurnoRapidoModal({ emp, onClose, onSaved }) {
-  const today = new Date().toISOString().split('T')[0]
-  const [form, setForm] = useState({ date: today, turno: 'Cena', ore: '8', note: '' })
+  const [form, setForm] = useState({ date: oggiLocale(), turno: 'Cena', ore: '8', note: '' })
   const [saving, setSaving] = useState(false)
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
@@ -605,29 +617,35 @@ function RuoliModal({ ruoli, onClose, onRefresh }) {
 
   const COLORI = ['#6366f1','#ef4444','#f59e0b','#10b981','#3b82f6','#8b5cf6','#f97316','#06b6d4','#ec4899','#6b7280']
 
+  // Il client Supabase non rigetta mai: il try/catch non vedeva NULLA e ogni
+  // scrittura respinta (RLS, vincolo unico) passava per riuscita.
   const handleAdd = async () => {
     if (!nuovoRuolo.trim()) return
     setSaving(true)
-    try {
-      await supabase.from('roles').insert({ name: nuovoRuolo.trim(), color: nuovoColore, description: descrizione || null })
-      setNuovoRuolo(''); setDescrizione('')
-      onRefresh()
-    } catch(e) { alert('Errore: '+e.message) }
+    const { error } = await supabase.from('roles')
+      .insert({ name: nuovoRuolo.trim(), color: nuovoColore, description: descrizione || null })
     setSaving(false)
+    if (error) { alert('Ruolo non creato: ' + error.message); return }
+    setNuovoRuolo(''); setDescrizione('')
+    onRefresh()
   }
 
   const handleDelete = async (id, name) => {
     if (!window.confirm(`Eliminare il ruolo "${name}"? I dipendenti che lo usano non verranno modificati.`)) return
     setDeleting(id)
-    try {
-      await supabase.from('roles').delete().eq('id', id)
-      onRefresh()
-    } catch(e) { alert('Errore: '+e.message) }
+    // `.select()` per distinguere "cancellato" da "0 righe toccate": una
+    // delete bloccata da RLS non produce errore.
+    const { data, error } = await supabase.from('roles').delete().eq('id', id).select('id')
     setDeleting(null)
+    if (error) { alert('Ruolo non eliminato: ' + error.message); return }
+    if (!data?.length) { alert('Ruolo non eliminato: nessuna riga rimossa (permessi?).'); return }
+    onRefresh()
   }
 
   const handleToggle = async (id, active) => {
-    await supabase.from('roles').update({ active: !active }).eq('id', id)
+    const { data, error } = await supabase.from('roles').update({ active: !active }).eq('id', id).select('id')
+    if (error) { alert('Stato ruolo non aggiornato: ' + error.message); return }
+    if (!data?.length) { alert('Stato ruolo non aggiornato: nessuna riga modificata (permessi?).'); return }
     onRefresh()
   }
 
@@ -696,30 +714,59 @@ function CostiSection({ emps, onClose }) {
   const [filterSede, setFilterSede] = useState('ALL')
   const CCNL = CCNL_MULT
 
-  const displayed = useMemo(() => {
+  // Righe "piatte": i valori mostrati sono anche quelli su cui si ordina e
+  // che finiscono nel CSV, così le tre viste non possono divergere.
+  const righe = useMemo(() => {
     return emps
       .filter(e => e.active && (filterSede === 'ALL' || e.sede === filterSede))
       .filter(e => e.bustaPaga || e.ore_contratto > 0)
-      .sort((a,b) => {
-        const ca = a.bustaPaga?.costo_azienda || (a.bustaPaga?.netto||0)*CCNL
-        const cb = b.bustaPaga?.costo_azienda || (b.bustaPaga?.netto||0)*CCNL
-        return cb - ca
+      .map(e => {
+        const bp = e.bustaPaga
+        const netto = parseFloat(bp?.netto) || 0
+        const costo = parseFloat(bp?.costo_azienda) || (netto ? netto * CCNL : 0)
+        const split = e.sede_split_ma ?? 100
+        return {
+          id: e.id,
+          nome: e.name,
+          ruolo: e.role || '',
+          reparto: e.reparto?.nome || '',
+          sede: e.sede,
+          // null, non 0: "nessuna busta paga" non è "costo zero".
+          netto: netto || null,
+          costo: costo || null,
+          ma: costo ? costo * (split / 100) : null,
+          pn: costo ? costo * ((100 - split) / 100) : null,
+          ore: bp?.ore_mensili != null ? Number(bp.ore_mensili) : null,
+          pt: bp?.percentuale_pt != null
+            ? parseFloat(bp.percentuale_pt)
+            : (netto >= 1400 ? 100 : netto >= 1100 ? 75 : netto >= 800 ? 62.5 : netto > 0 ? 50 : null),
+        }
       })
-  }, [emps, filterSede])
+  }, [emps, filterSede, CCNL])
 
-  const totale = useMemo(() => displayed.reduce((acc, e) => {
-    const netto = parseFloat(e.bustaPaga?.netto||0)
-    const costo = parseFloat(e.bustaPaga?.costo_azienda||0) || (netto*CCNL)
-    const split = e.sede_split_ma??100
-    return {
-      netto: acc.netto + netto,
-      costo: acc.costo + costo,
-      ma: acc.ma + costo*(split/100),
-      pn: acc.pn + costo*((100-split)/100),
-    }
-  }, {netto:0,costo:0,ma:0,pn:0}), [displayed])
+  const { righeOrdinate, colonna, direzione, propsTh } = useOrdinamento(righe, 'costo', 'desc')
 
-  const fmt = n => `€${Math.round(n).toLocaleString('it-IT')}`
+  const totale = useMemo(() => righe.reduce((acc, r) => ({
+    netto: acc.netto + (r.netto || 0),
+    costo: acc.costo + (r.costo || 0),
+    ma:    acc.ma    + (r.ma    || 0),
+    pn:    acc.pn    + (r.pn    || 0),
+  }), { netto: 0, costo: 0, ma: 0, pn: 0 }), [righe])
+
+  const COLONNE_CSV = [
+    { chiave: 'nome',    etichetta: 'Dipendente' },
+    { chiave: 'ruolo',   etichetta: 'Ruolo' },
+    { chiave: 'reparto', etichetta: 'Reparto' },
+    { chiave: 'sede',    etichetta: 'Sede' },
+    { chiave: 'pt',      etichetta: 'PT %' },
+    { chiave: 'netto',   etichetta: 'Netto mese' },
+    { chiave: 'costo',   etichetta: 'Costo azienda' },
+    { chiave: 'ma',      etichetta: 'Quota MA' },
+    { chiave: 'pn',      etichetta: 'Quota PN' },
+    { chiave: 'ore',     etichetta: 'Ore mese' },
+  ]
+
+  const fmt = n => fmtEur(n, { decimali: 0 })
 
   return (
     <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
@@ -734,6 +781,7 @@ function CostiSection({ emps, onClose }) {
               </button>
             ))}
           </div>
+          <BottoneCsv righe={righeOrdinate} colonne={COLONNE_CSV} nomeFile="costi_dipendenti" />
           <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400"><X size={16}/></button>
         </div>
       </div>
@@ -745,8 +793,8 @@ function CostiSection({ emps, onClose }) {
           {label:'Totale costo az.', val:fmt(totale.costo), color:'text-red-600'},
           {label:'Quota MA', val:fmt(totale.ma), color:'text-blue-600'},
           {label:'Quota PN', val:fmt(totale.pn), color:'text-emerald-600'},
-        ].map((t,i) => (
-          <div key={i} className="p-4 text-center border-r last:border-r-0">
+        ].map(t => (
+          <div key={t.label} className="p-4 text-center border-r last:border-r-0">
             <p className="text-xs text-gray-400">{t.label}</p>
             <p className={`text-lg font-bold ${t.color}`}>{t.val}</p>
           </div>
@@ -758,47 +806,49 @@ function CostiSection({ emps, onClose }) {
         <table className="w-full min-w-[700px]">
           <thead>
             <tr className="border-b text-xs text-gray-400 uppercase tracking-wider">
-              <th className="text-left px-4 py-2">Dipendente</th>
-              <th className="text-center px-3 py-2">Sede</th>
-              <th className="text-center px-3 py-2">PT%</th>
-              <th className="text-right px-3 py-2">Netto/mese</th>
-              <th className="text-right px-3 py-2">Costo az.</th>
-              <th className="text-right px-3 py-2">Quota MA</th>
-              <th className="text-right px-3 py-2">Quota PN</th>
-              <th className="text-center px-3 py-2">H/mese</th>
+              {[
+                { c: 'nome',  l: 'Dipendente', a: 'text-left px-4' },
+                { c: 'sede',  l: 'Sede',       a: 'text-center px-3' },
+                { c: 'pt',    l: 'PT%',        a: 'text-center px-3' },
+                { c: 'netto', l: 'Netto/mese', a: 'text-right px-3' },
+                { c: 'costo', l: 'Costo az.',  a: 'text-right px-3' },
+                { c: 'ma',    l: 'Quota MA',   a: 'text-right px-3' },
+                { c: 'pn',    l: 'Quota PN',   a: 'text-right px-3' },
+                { c: 'ore',   l: 'H/mese',     a: 'text-center px-3' },
+              ].map(h => {
+                const th = propsTh(h.c)
+                return (
+                  <th key={h.c} {...th} className={`${h.a} py-2 ${th.className}`}>
+                    {h.l}<IconaOrdine colonna={h.c} colonnaAttiva={colonna} direzione={direzione} />
+                  </th>
+                )
+              })}
             </tr>
           </thead>
           <tbody>
-            {displayed.map(emp => {
-              const bp    = emp.bustaPaga
-              const netto = parseFloat(bp?.netto||0)
-              const costo = parseFloat(bp?.costo_azienda||0) || (netto*CCNL)
-              const split = emp.sede_split_ma??100
-              const ma    = costo*(split/100)
-              const pn    = costo*((100-split)/100)
-              const pt    = bp?.percentuale_pt || (netto>=1400?100:netto>=1100?75:netto>=800?62.5:50)
-              return (
-                <tr key={emp.id} className="border-b hover:bg-gray-50/50 text-sm">
-                  <td className="px-4 py-2.5">
-                    <p className="font-medium text-gray-900">{emp.name}</p>
-                    <p className="text-xs text-gray-400">{emp.role} · {emp.reparto?.nome||'N/A'}</p>
-                  </td>
-                  <td className="px-3 py-2.5 text-center">
-                    <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${SEDE_COLOR[emp.sede]||'bg-gray-100 text-gray-600'}`}>{emp.sede}</span>
-                  </td>
-                  <td className="px-3 py-2.5 text-center">
-                    <span className={`text-xs font-bold px-1.5 py-0.5 rounded-full ${pt>=100?'bg-blue-100 text-blue-700':pt>=75?'bg-purple-100 text-purple-700':'bg-amber-100 text-amber-700'}`}>
-                      {pt}%
+            {righeOrdinate.map(r => (
+              <tr key={r.id} className="border-b hover:bg-gray-50/50 text-sm">
+                <td className="px-4 py-2.5">
+                  <p className="font-medium text-gray-900">{r.nome}</p>
+                  <p className="text-xs text-gray-400">{r.ruolo} · {r.reparto || 'N/A'}</p>
+                </td>
+                <td className="px-3 py-2.5 text-center">
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${SEDE_COLOR[r.sede]||'bg-gray-100 text-gray-600'}`}>{r.sede}</span>
+                </td>
+                <td className="px-3 py-2.5 text-center">
+                  {r.pt == null ? <span className="text-gray-300">—</span> : (
+                    <span className={`text-xs font-bold px-1.5 py-0.5 rounded-full ${r.pt>=100?'bg-blue-100 text-blue-700':r.pt>=75?'bg-purple-100 text-purple-700':'bg-amber-100 text-amber-700'}`}>
+                      {r.pt}%
                     </span>
-                  </td>
-                  <td className="px-3 py-2.5 text-right font-medium">{netto>0?fmt(netto):'—'}</td>
-                  <td className="px-3 py-2.5 text-right font-bold text-red-600">{costo>0?fmt(costo):'—'}</td>
-                  <td className="px-3 py-2.5 text-right text-blue-600">{ma>0?fmt(ma):'—'}</td>
-                  <td className="px-3 py-2.5 text-right text-emerald-600">{pn>0?fmt(pn):'—'}</td>
-                  <td className="px-3 py-2.5 text-center text-gray-500">{bp?.ore_mensili||'—'}</td>
-                </tr>
-              )
-            })}
+                  )}
+                </td>
+                <td className="px-3 py-2.5 text-right font-medium">{fmt(r.netto)}</td>
+                <td className="px-3 py-2.5 text-right font-bold text-red-600">{fmt(r.costo)}</td>
+                <td className="px-3 py-2.5 text-right text-blue-600">{fmt(r.ma)}</td>
+                <td className="px-3 py-2.5 text-right text-emerald-600">{fmt(r.pn)}</td>
+                <td className="px-3 py-2.5 text-center text-gray-500">{fmtNum(r.ore)}</td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
@@ -1091,8 +1141,10 @@ function DuplicatiSection({ emps, onMerge }) {
       )}
 
       <div className="space-y-2">
-        {duplicates.map(([a, b], i) => (
-          <div key={i} className="card p-3 border border-orange-100 bg-orange-50/40">
+        {/* key dagli id della coppia: l'elenco si ricalcola a ogni modifica
+            dell'anagrafica, con key={indice} le righe si mescolavano. */}
+        {duplicates.map(([a, b]) => (
+          <div key={`${a.id}|${b.id}`} className="card p-3 border border-orange-100 bg-orange-50/40">
             <div className="flex items-center gap-3 flex-wrap">
               <div className="flex-1 flex items-center gap-3">
                 <div className="text-center">
@@ -1125,6 +1177,7 @@ export default function Employees() {
   const [unverifiedMappings, setUnverifiedMappings] = useState([])
   const [reparti, setReparti]       = useState([])
   const [loading, setLoading]       = useState(true)
+  const [errore, setErrore]         = useState(null)   // guasti di caricamento, visibili in pagina
   const [ruoliDB, setRuoliDB]       = useState([])
   const [bustePagaMap, setBustePagaMap] = useState({})
   const [regoleMap, setRegoleMap]   = useState({})
@@ -1146,8 +1199,17 @@ export default function Employees() {
   const [showBulkReparto, setShowBulkReparto] = useState(false)
 
   // ─── Load ───────────────────────────────────────────────────────────────
-  const load = async () => {
+  // `vivoRef` sostituisce il vecchio `load()` senza guardia: cambiare pagina
+  // durante il caricamento produceva setState su un componente smontato.
+  const vivoRef = React.useRef(true)
+  useEffect(() => {
+    vivoRef.current = true
+    return () => { vivoRef.current = false }
+  }, [])
+
+  const load = useCallback(async () => {
     setLoading(true)
+    setErrore(null)
     try {
       const [empsData, vData, unverified, repartData] = await Promise.all([
         empApi.getAll(),
@@ -1155,45 +1217,56 @@ export default function Employees() {
         mappingApi.getUnverified().catch(() => []),
         repartiApi.getAll().catch(() => []),
       ])
+      if (!vivoRef.current) return
       setEmps(empsData)
       setVendutoOps(vData)
       setUnverifiedMappings(unverified)
       setReparti(repartData)
 
-      // Carica buste paga (ultima per ogni dipendente)
-      const { data: bpData } = await supabase
-        .from('buste_paga')
-        .select('*')
-        .order('anno', { ascending: false })
-        .order('mese', { ascending: false })
+      // Buste paga: 936 righe oggi e in crescita. Senza paginazione PostgREST
+      // ne restituisce 1000 senza errore e, ordinando per anno/mese, i cedolini
+      // più vecchi sparirebbero silenziosamente — ma sono proprio quelli che
+      // servono per i dipendenti senza busta recente.
+      // fetchPaged impone un ordine per colonna UNIVOCA (`id`): l'ordine per
+      // anno/mese si applica dopo, in memoria.
+      const bpData = await fetchPaged(
+        () => supabase.from('buste_paga').select('*'),
+        'id'
+      )
       const bpMap = {}
-      for (const bp of bpData || []) {
+      for (const bp of [...bpData].sort((a, b) => (b.anno - a.anno) || (b.mese - a.mese))) {
         if (!bpMap[bp.employee_id]) bpMap[bp.employee_id] = bp
       }
-      setBustePagaMap(bpMap)
 
-      // Carica ruoli dal DB
-      const { data: rolesData } = await supabase
+      // Ruoli: tabella piccola, ma l'errore va comunque letto — il client
+      // Supabase non rigetta e un blocco RLS diventerebbe "nessun ruolo".
+      const { data: rolesData, error: errRuoli } = await supabase
         .from('roles')
         .select('*')
         .order('name')
-      setRuoliDB(rolesData || [])
+      if (errRuoli) throw errRuoli
 
-      // Carica regole dipendenti (ore contratto)
-      const { data: regoleData } = await supabase
-        .from('employee_regole')
-        .select('*')
+      // Regole dipendenti (ore contratto)
+      const regoleData = await fetchPaged(
+        () => supabase.from('employee_regole').select('*'),
+        'id'
+      )
       const rMap = {}
-      for (const r of regoleData || []) rMap[r.employee_id] = r
+      for (const r of regoleData) rMap[r.employee_id] = r
+
+      if (!vivoRef.current) return
+      setBustePagaMap(bpMap)
+      setRuoliDB(rolesData || [])
       setRegoleMap(rMap)
     } catch (err) {
       console.error(err)
+      if (vivoRef.current) setErrore(err?.message || String(err))
     } finally {
-      setLoading(false)
+      if (vivoRef.current) setLoading(false)
     }
-  }
+  }, [])
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [load])
 
   // ── Cross-page reactivity: ricarica se un'altra tab modifica un dipendente ─
   useEffect(() => {
@@ -1202,7 +1275,7 @@ export default function Employees() {
     }
     window.addEventListener('storage', onStorage)
     return () => window.removeEventListener('storage', onStorage)
-  }, [])
+  }, [load])
 
   // ─── Arricchisci dipendenti con dati venduto + buste paga + regole ──────
   const enriched = useMemo(() => {
@@ -1272,12 +1345,15 @@ export default function Employees() {
       const newId = res?.id
       // Se ore passate al create → upsert regole separatamente
       if (newId && (form.ore_contratto_mensili || form.ore_settimanali)) {
-        await supabase.from('employee_regole').upsert({
+        const { error } = await supabase.from('employee_regole').upsert({
           employee_id:           newId,
           ore_contratto_mensili: parseInt(form.ore_contratto_mensili) || null,
           ore_settimanali:       parseInt(form.ore_settimanali)       || null,
           updated_at:            new Date().toISOString(),
         }, { onConflict: 'employee_id' })
+        // Il dipendente è già stato creato: senza questo throw le ore
+        // sparivano in silenzio e il form si chiudeva come se fosse tutto ok.
+        if (error) throw new Error(`Dipendente creato, ma ore contratto NON salvate: ${error.message}`)
       }
     }
     setShowForm(false); setEditing(null); load()
@@ -1381,7 +1457,10 @@ export default function Employees() {
           ruoli={ruoliDB}
           onClose={() => setShowRuoli(false)}
           onRefresh={async () => {
-            const { data } = await supabase.from('roles').select('*').order('name')
+            const { data, error } = await supabase.from('roles').select('*').order('name')
+            // Senza questo controllo un errore azzerava la lista ruoli e la
+            // tendina del form restava vuota senza spiegazione.
+            if (error) { setErrore('Ruoli non ricaricati: ' + error.message); return }
             setRuoliDB(data || [])
           }}
         />
@@ -1425,6 +1504,21 @@ export default function Employees() {
           </button>
         </div>
       </div>
+
+      {/* Errore di caricamento: prima finiva solo in console e la pagina
+          mostrava "Nessun dipendente trovato" come se il DB fosse vuoto. */}
+      {errore && (
+        <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm flex items-start gap-2">
+          <AlertCircle size={15} className="mt-0.5 shrink-0"/>
+          <div className="flex-1">
+            <p className="font-medium">Dati non caricati correttamente</p>
+            <p className="text-xs">{errore}</p>
+          </div>
+          <button onClick={load} className="btn-secondary text-xs flex items-center gap-1.5">
+            <RefreshCw size={12}/> Riprova
+          </button>
+        </div>
+      )}
 
       {/* Barra filtri */}
       <div className="flex flex-wrap gap-3 items-center">
@@ -1511,8 +1605,10 @@ export default function Employees() {
                 </h2>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                {unmatchedOps.map((op, i) => (
-                  <div key={i} className="card p-3 border border-dashed border-amber-200 bg-amber-50">
+                {/* sede+operatore identifica la riga: l'elenco è filtrato e si
+                    ricalcola, quindi l'indice non è una identità stabile. */}
+                {unmatchedOps.map(op => (
+                  <div key={`${op.sede}|${op.operatore}`} className="card p-3 border border-dashed border-amber-200 bg-amber-50">
                     <div className="flex items-center gap-3">
                       <div className="w-8 h-8 rounded-full bg-amber-200 flex items-center justify-center text-amber-700 text-sm font-bold flex-shrink-0">
                         {op.operatore?.charAt(0) || '?'}

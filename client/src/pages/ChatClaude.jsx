@@ -7,9 +7,10 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react'
 import supabase from '../supabase'
 import useClaudeAI, { buildCrmContext, saveMemory, loadMemory } from '../hooks/useClaudeAI'
+import { BottoneCsv } from '../lib/tabella'
 import {
   Bot, Plus, Trash2, Send, Database, Copy, Check, Brain,
-  ChevronDown, BookMarked, X, Loader2, Settings2
+  ChevronDown, BookMarked, X, Loader2, Settings2, AlertCircle
 } from 'lucide-react'
 
 const MODELS = [
@@ -102,33 +103,59 @@ function MsgBubble({ msg, isStreaming = false }) {
 }
 
 // ─── Pannello Memoria ─────────────────────────────────────────────────────────
-function MemoryPanel({ onClose }) {
+function MemoryPanel({ onClose, onCambiata }) {
   const [memories, setMemories] = useState([])
   const [loading, setLoading] = useState(true)
+  const [errore, setErrore] = useState(null)
   const [filterSezione, setFilterSezione] = useState(null)
   const [editing, setEditing] = useState(null)
   const [editVal, setEditVal] = useState('')
+  const [versione, setVersione] = useState(0)   // trigger di ricarica dopo scrittura
 
-  const load = async () => {
+  useEffect(() => {
+    // Guardia di unmount: chiudere il pannello mentre la lettura è in volo
+    // non deve produrre setState su un componente smontato.
+    let annullato = false
     setLoading(true)
-    try {
-      const data = await loadMemory(filterSezione)
-      setMemories(data)
-    } catch(e) { console.error(e) }
-    finally { setLoading(false) }
-  }
-
-  useEffect(() => { load() }, [filterSezione])
+    setErrore(null)
+    loadMemory(filterSezione)
+      .then(d => { if (!annullato) setMemories(d) })
+      .catch(e => {
+        if (annullato) return
+        // Prima l'errore finiva solo in console e il pannello mostrava
+        // "Nessuna memoria salvata": un blocco RLS era indistinguibile da
+        // una memoria vuota.
+        setErrore(e?.message || String(e))
+        setMemories([])
+      })
+      .finally(() => { if (!annullato) setLoading(false) })
+    return () => { annullato = true }
+  }, [filterSezione, versione])
 
   const del = async (id) => {
-    await supabase.from('crm_memory').delete().eq('id', id)
-    load()
+    setErrore(null)
+    // `.select()` sulla delete restituisce le righe realmente cancellate:
+    // senza, una delete bloccata da RLS non dà errore e l'utente vede
+    // sparire la voce dalla lista solo perché ricarichiamo… e riappare.
+    const { data, error } = await supabase.from('crm_memory').delete().eq('id', id).select('id')
+    if (error) { setErrore(`Eliminazione non riuscita: ${error.message}`); return }
+    if (!data?.length) { setErrore('Eliminazione non eseguita: nessuna riga rimossa (permessi?).'); return }
+    setVersione(v => v + 1)
+    onCambiata?.()
   }
 
   const save = async (m) => {
-    await supabase.from('crm_memory').update({ valore: editVal, updated_at: new Date().toISOString() }).eq('id', m.id)
+    setErrore(null)
+    const { data, error } = await supabase
+      .from('crm_memory')
+      .update({ valore: editVal, updated_at: new Date().toISOString() })
+      .eq('id', m.id)
+      .select('id')
+    if (error) { setErrore(`Salvataggio non riuscito: ${error.message}`); return }
+    if (!data?.length) { setErrore('Salvataggio non eseguito: nessuna riga aggiornata (permessi?).'); return }
     setEditing(null)
-    load()
+    setVersione(v => v + 1)
+    onCambiata?.()
   }
 
   const grouped = SEZIONI_MEMORIA.map(s => ({
@@ -145,8 +172,27 @@ function MemoryPanel({ onClose }) {
             <h2 className="font-semibold">Memoria CRM</h2>
             <span className="badge badge-gray">{memories.length} voci</span>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={18}/></button>
+          <div className="flex items-center gap-2">
+            <BottoneCsv
+              righe={memories}
+              colonne={[
+                { chiave: 'sezione',    etichetta: 'Sezione' },
+                { chiave: 'chiave',     etichetta: 'Chiave' },
+                { chiave: 'valore',     etichetta: 'Valore', valore: m => m.valore ?? (m.valore_json ? JSON.stringify(m.valore_json) : '') },
+                { chiave: 'updated_at', etichetta: 'Aggiornato' },
+              ]}
+              nomeFile="memoria_crm"
+            />
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={18}/></button>
+          </div>
         </div>
+
+        {errore && (
+          <div className="mx-4 mt-3 p-2.5 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs flex items-start gap-2">
+            <AlertCircle size={13} className="mt-0.5 shrink-0"/>
+            <span>{errore}</span>
+          </div>
+        )}
 
         {/* Filtri sezione */}
         <div className="flex gap-1.5 px-4 py-2 border-b overflow-x-auto">
@@ -164,7 +210,7 @@ function MemoryPanel({ onClose }) {
 
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {loading && <p className="text-center text-gray-400 text-sm py-4">Caricamento...</p>}
-          {!loading && memories.length === 0 && (
+          {!loading && !errore && memories.length === 0 && (
             <div className="text-center py-8">
               <Brain size={32} className="mx-auto text-gray-200 mb-2"/>
               <p className="text-gray-400 text-sm">Nessuna memoria salvata ancora.</p>
@@ -223,8 +269,23 @@ export default function ChatClaude() {
   const [showMemory, setShowMemory]   = useState(false)
   const [loadingCtx, setLoadingCtx]   = useState(false)
   const [memCount, setMemCount]       = useState(0)
+  const [memErr, setMemErr]           = useState(null)
   const messagesEndRef = useRef(null)
   const textareaRef = useRef(null)
+  // Guardia di unmount + annullamento dello stream in volo.
+  const montatoRef = useRef(true)
+  const abortRef   = useRef(null)
+
+  useEffect(() => {
+    // Riassegnato a ogni mount: con StrictMode il componente viene montato,
+    // smontato e rimontato, e un flag impostato solo nel cleanup resterebbe
+    // false per sempre bloccando ogni setState successivo.
+    montatoRef.current = true
+    return () => {
+      montatoRef.current = false
+      abortRef.current?.abort()
+    }
+  }, [])
 
   // Sessioni in localStorage (niente backend Express necessario)
   const saveSessions = (s) => { localStorage.setItem('crm_chat_sessions', JSON.stringify(s)); setSessions(s) }
@@ -232,18 +293,32 @@ export default function ChatClaude() {
     try { return JSON.parse(localStorage.getItem('crm_chat_sessions') || '[]') } catch { return [] }
   }
   const loadMsgs = (id) => {
-    try { return JSON.parse(localStorage.getItem(`crm_chat_msgs_${id}`) || '[]') } catch { return [] }
+    try {
+      const raw = JSON.parse(localStorage.getItem(`crm_chat_msgs_${id}`) || '[]')
+      // I messaggi salvati prima di questa versione non hanno `id`: gliene
+      // assegniamo uno stabile qui, così la lista non ha mai bisogno di
+      // key={indice} (che durante lo streaming fa riconciliare male React).
+      return raw.map((m, i) => (m?.id ? m : { ...m, id: `${id}#${i}` }))
+    } catch { return [] }
   }
   const saveMsgs = (id, msgs) => localStorage.setItem(`crm_chat_msgs_${id}`, JSON.stringify(msgs))
+
+  /** Conteggio voci in memoria. L'errore va mostrato: "0 voci" non è la stessa
+   *  cosa di "non sono riuscito a contarle". */
+  const aggiornaMemCount = useCallback(async () => {
+    const { count, error } = await supabase.from('crm_memory').select('*', { count: 'exact', head: true })
+    if (!montatoRef.current) return
+    if (error) { setMemErr('Memoria non leggibile: ' + error.message); return }
+    setMemErr(null)
+    setMemCount(count || 0)
+  }, [])
 
   useEffect(() => {
     const s = loadSessions()
     setSessions(s)
     if (s.length > 0) { setCurrentId(s[0].id); setMessages(loadMsgs(s[0].id)) }
-    // Conta memoria
-    supabase.from('crm_memory').select('*', { count: 'exact', head: true })
-      .then(({ count }) => setMemCount(count || 0))
-  }, [])
+    aggiornaMemCount()
+  }, [aggiornaMemCount])
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, streamText])
 
@@ -279,10 +354,19 @@ export default function ChatClaude() {
     setStreamText('')
     setError(null)
 
-    const userMsg = { role: 'user', content, created_at: new Date().toISOString() }
+    // id stabile: la lista dei messaggi cresce in append durante lo streaming
+    // e React deve poter riconoscere le bolle già montate.
+    const nuovoId = () => (crypto.randomUUID ? crypto.randomUUID() : `msg-${Date.now()}-${Math.random()}`)
+
+    const userMsg = { id: nuovoId(), role: 'user', content, created_at: new Date().toISOString() }
     const newMsgs = [...messages, userMsg]
     setMessages(newMsgs)
     saveMsgs(currentId, newMsgs)
+
+    // Un solo stream per volta, annullabile allo smontaggio del componente.
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
 
     try {
       // Costruisce system prompt con contesto dati
@@ -290,7 +374,7 @@ export default function ChatClaude() {
       if (useDbContext) {
         setLoadingCtx(true)
         const ctx = await buildCrmContext()
-        setLoadingCtx(false)
+        if (montatoRef.current) setLoadingCtx(false)
         systemPrompt += `\n\n---\n## DATI ATTUALI CRM\n${ctx}`
       }
 
@@ -303,36 +387,47 @@ export default function ChatClaude() {
           model,
           max_tokens: 2048,
           stream: true,
-          onChunk: (text) => { fullText = text; setStreamText(text) },
+          signal: controller.signal,
+          onChunk: (text) => { fullText = text; if (montatoRef.current) setStreamText(text) },
         }
       )
 
+      if (controller.signal.aborted) return
+
       // Analizza e salva memoria
       const saved = await parseAndSaveMemoryCommands(fullText)
-      if (saved.length > 0) setMemCount(prev => prev + saved.length)
+      if (saved.length > 0 && montatoRef.current) setMemCount(prev => prev + saved.length)
 
       const assistantMsg = {
+        id: nuovoId(),
         role: 'assistant',
         content: fullText,
         saved_memory: saved,
         created_at: new Date().toISOString(),
       }
       const finalMsgs = [...newMsgs, assistantMsg]
-      setMessages(finalMsgs)
+      // La persistenza va fatta comunque: se l'utente cambia pagina a metà
+      // risposta, la conversazione deve restare completa in localStorage.
       saveMsgs(currentId, finalMsgs)
+      if (montatoRef.current) setMessages(finalMsgs)
 
       // Aggiorna titolo sessione con prima domanda
       if (newMsgs.length === 1) {
         const title = content.substring(0, 45) + (content.length > 45 ? '…' : '')
         const updated = loadSessions().map(s => s.id === currentId ? { ...s, title } : s)
-        saveSessions(updated)
+        if (montatoRef.current) saveSessions(updated)
+        else localStorage.setItem('crm_chat_sessions', JSON.stringify(updated))
       }
     } catch (err) {
-      setError(err.message)
+      if (err?.name === 'AbortError') return
+      if (montatoRef.current) setError(err.message)
     } finally {
-      setStreaming(false)
-      setStreamText('')
-      setLoadingCtx(false)
+      if (abortRef.current === controller) abortRef.current = null
+      if (montatoRef.current) {
+        setStreaming(false)
+        setStreamText('')
+        setLoadingCtx(false)
+      }
     }
   }
 
@@ -352,7 +447,12 @@ export default function ChatClaude() {
 
   return (
     <div className="flex h-[calc(100vh-7rem)] gap-4">
-      {showMemory && <MemoryPanel onClose={() => { setShowMemory(false); supabase.from('crm_memory').select('*',{count:'exact',head:true}).then(({count})=>setMemCount(count||0)) }} />}
+      {showMemory && (
+        <MemoryPanel
+          onClose={() => { setShowMemory(false); aggiornaMemCount() }}
+          onCambiata={aggiornaMemCount}
+        />
+      )}
 
       {/* ── SIDEBAR ── */}
       <div className="w-60 flex-shrink-0 flex flex-col gap-2">
@@ -370,6 +470,12 @@ export default function ChatClaude() {
             )}
           </button>
         </div>
+
+        {memErr && (
+          <p className="text-[10px] text-red-600 flex items-start gap-1 px-0.5">
+            <AlertCircle size={11} className="mt-0.5 shrink-0"/> {memErr}
+          </p>
+        )}
 
         {/* Modello */}
         <div className="card p-2.5">
@@ -441,9 +547,11 @@ export default function ChatClaude() {
               </button>
             )}
             <div className="grid grid-cols-2 gap-2 max-w-lg">
-              {SUGGESTIONS.map((s, i) => (
-                <button key={i}
-                  onClick={() => { newSession(); setTimeout(() => setInput(s), 100) }}
+              {SUGGESTIONS.map(s => (
+                <button key={s}
+                  /* Niente setTimeout: React raggruppa i due setState nello
+                     stesso render e il timer poteva scattare dopo l'unmount. */
+                  onClick={() => { newSession(); setInput(s) }}
                   className="text-left p-3 rounded-xl border border-gray-200 hover:border-violet-300 hover:bg-violet-50 text-xs text-gray-600 transition-all">
                   {s}
                 </button>
@@ -490,7 +598,7 @@ export default function ChatClaude() {
                   <span className="text-xs">Suggerimento: "Ricorda che..." per salvare in memoria</span>
                 </div>
               )}
-              {messages.map((m, i) => <MsgBubble key={i} msg={m}/>)}
+              {messages.map(m => <MsgBubble key={m.id} msg={m}/>)}
               {streaming && <MsgBubble msg={{ role: 'assistant', content: streamText }} isStreaming/>}
               {error && (
                 <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-600 flex items-start gap-2">

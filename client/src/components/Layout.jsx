@@ -64,6 +64,9 @@ const NAV_GROUPS = [
     items: [
       { id: 'costi_fissi',    path: '/costi-fissi',    icon: Wallet,    label: 'Costi Fissi',       desc: 'Affitti, consulenze, oneri (editabile)', alwaysEnabled: true },
       { id: 'fornitori',      path: '/fornitori',      icon: Building2, label: 'Fornitori & Fatture', desc: 'Fatture, costi, riconciliazione' },
+      // Voce nuova: le analisi che 114.650 righe di dettaglio fattura rendono
+      // possibili per la prima volta (prezzi per articolo, merceologico, sedi).
+      { id: 'costi_prezzi',   path: '/costi-prezzi',   icon: Coins,     label: 'Costi & Prezzi BI', desc: 'Marginalità sedi, prezzi articoli, 7 anni', alwaysEnabled: true },
       { id: 'contabilita_bi', path: '/contabilita-bi', icon: BarChart3, label: 'Contabilità BI',    desc: 'BE, margini, proiezioni', alwaysEnabled: true },
       { id: 'kpi_config',     path: '/kpi-config',     icon: Target,    label: 'Target & BE',       desc: 'Break-even, target, bonus', alwaysEnabled: true },
     ]

@@ -8,8 +8,10 @@
  *  - Riepilogo totali per sede
  *  - Duplica da mese precedente
  */
-import React, { useEffect, useState, useMemo, useCallback } from 'react'
+import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import { costiFissiApi, fattureCategorieApi } from '../api/client'
+import { BottoneCsv, NotaCopertura } from '../lib/tabella'
+import useAnniDisponibili from '../hooks/useAnniDisponibili'
 import {
   Home, Plus, Edit3, Save, X, Trash2, TrendingUp, Copy,
   RefreshCw, ChevronRight, AlertCircle, Calendar, Euro
@@ -243,22 +245,40 @@ export default function CostiFissiPage() {
   const [rows, setRows] = useState([])
   const [categorie, setCategorie] = useState([])
   const [loading, setLoading] = useState(true)
+  const [errore, setErrore] = useState(null)
   const [modalOpen, setModalOpen] = useState(false)
   const [istatOpen, setIstatOpen] = useState(false)
 
+  const richiestaRef = useRef(0)
+
   const load = useCallback(async () => {
-    setLoading(true)
+    const mia = ++richiestaRef.current
+    setLoading(true); setErrore(null)
     try {
       const [list, cat] = await Promise.all([
         costiFissiApi.listArricchita({ sede: sedeF === 'ALL' ? null : sedeF, anno: annoF }),
         fattureCategorieApi.list(),
       ])
+      if (mia !== richiestaRef.current) return
       setRows(list)
       setCategorie(cat)
-    } finally { setLoading(false) }
+    } catch (e) {
+      // Prima c'era try/finally SENZA catch e nessuno stato d'errore: un
+      // fallimento diventava una unhandled rejection invisibile e la pagina
+      // restava con la tabella vuota, indistinguibile da "nessun costo fisso".
+      if (mia !== richiestaRef.current) return
+      setErrore(e?.message || String(e))
+      setRows([])
+    } finally {
+      if (mia === richiestaRef.current) setLoading(false)
+    }
   }, [sedeF, annoF])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    load()
+    // Invalida la richiesta in volo: nessun setState dopo lo smontaggio.
+    return () => { richiestaRef.current++ }
+  }, [load])
 
   const handleDelete = async (id, desc) => {
     if (!window.confirm(`Eliminare la voce "${desc}"?`)) return
@@ -282,19 +302,44 @@ export default function CostiFissiPage() {
 
   const totaliMese = useMemo(() => {
     const tot = Array(12).fill(0)
+    // Un mese senza NESSUNA voce e un mese che somma zero sono due cose diverse:
+    // `conVoci` permette di mostrare "—" solo nel primo caso.
+    const conVoci = Array(12).fill(false)
     const totSede = { MA: Array(12).fill(0), PN: Array(12).fill(0) }
+    const mesiSede = { MA: Array(12).fill(false), PN: Array(12).fill(false) }
     for (const r of rows) {
       const i = r.mese - 1
+      if (i < 0 || i > 11) continue
       tot[i] += parseFloat(r.importo)||0
-      if (totSede[r.sede]) totSede[r.sede][i] += parseFloat(r.importo)||0
+      conVoci[i] = true
+      if (totSede[r.sede]) { totSede[r.sede][i] += parseFloat(r.importo)||0; mesiSede[r.sede][i] = true }
     }
-    return { tot, totSede }
+    return { tot, conVoci, totSede, mesiSede }
   }, [rows])
 
   const totAnno = totaliMese.tot.reduce((s,v) => s+v, 0)
 
-  const annoOpzioni = []
-  for (let y = new Date().getFullYear()+1; y >= 2023; y--) annoOpzioni.push(y)
+  // Media sui mesi effettivamente presenti a DB: dirla "media mese" senza
+  // specificarlo faceva sembrare 12 mesi una serie che magari ne copre 4.
+  const mediaSede = (code) => {
+    const n = totaliMese.mesiSede[code].filter(Boolean).length
+    const somma = totaliMese.totSede[code].reduce((s,v)=>s+v,0)
+    return { valore: n > 0 ? somma / n : null, mesi: n, somma }
+  }
+  const mediaMA = mediaSede('MA')
+  const mediaPN = mediaSede('PN')
+
+  // Anni realmente presenti a DB: il 2023 cablato nascondeva i costi 2019-2022.
+  // L'anno prossimo resta selezionabile perché le voci ricorrenti si pianificano
+  // in anticipo.
+  const { anni: anniDb } = useAnniDisponibili('costi_fissi', 'anno', { tipo: 'anno' })
+  const annoOpzioni = useMemo(() => {
+    const set = new Set(anniDb)
+    set.add(new Date().getFullYear())
+    set.add(new Date().getFullYear() + 1)
+    set.add(annoF)
+    return Array.from(set).sort((a, b) => b - a)
+  }, [anniDb, annoF])
 
   return (
     <div className="p-5 space-y-5 max-w-7xl mx-auto">
@@ -316,6 +361,19 @@ export default function CostiFissiPage() {
           <button onClick={load} className="btn-ghost p-2 text-gray-500 rounded-xl border border-gray-200">
             <RefreshCw size={14}/>
           </button>
+          <BottoneCsv righe={pivot.flatMap(p => MESI.map((m, i) => ({
+            sede: p.sede, descrizione: p.descrizione, categoria: p.categoria_nome,
+            ricorrente: p.ricorrente ? 'sì' : 'no', anno: annoF, mese: m,
+            importo: p.mesi[i+1]?.importo ?? null,
+          })).filter(r => r.importo != null))} nomeFile={`costi_fissi_${annoF}`} colonne={[
+            { chiave: 'sede', etichetta: 'Sede' },
+            { chiave: 'descrizione', etichetta: 'Voce' },
+            { chiave: 'categoria', etichetta: 'Categoria' },
+            { chiave: 'ricorrente', etichetta: 'Ricorrente' },
+            { chiave: 'anno', etichetta: 'Anno' },
+            { chiave: 'mese', etichetta: 'Mese' },
+            { chiave: 'importo', etichetta: 'Importo €' },
+          ]} />
           <button onClick={() => setIstatOpen(true)} className="px-3 py-1.5 border border-amber-300 text-amber-700 rounded-xl text-sm font-medium hover:bg-amber-50 flex items-center gap-1.5">
             <TrendingUp size={14}/> ISTAT
           </button>
@@ -325,6 +383,14 @@ export default function CostiFissiPage() {
         </div>
       </div>
 
+      {errore && (
+        <div className="bg-red-50 border border-red-200 rounded-2xl px-4 py-3 flex items-center gap-2">
+          <AlertCircle size={16} className="text-red-500 flex-shrink-0"/>
+          <p className="text-sm text-red-700"><strong>Errore nel caricamento:</strong> {errore}</p>
+          <button onClick={load} className="ml-auto text-xs text-red-600 hover:underline">Riprova</button>
+        </div>
+      )}
+
       {/* KPI strip */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div className="bg-white border border-gray-100 rounded-2xl p-4">
@@ -333,15 +399,22 @@ export default function CostiFissiPage() {
         </div>
         <div className="bg-red-50 border border-red-100 rounded-2xl p-4">
           <p className="text-xs text-red-500 uppercase tracking-wide">Sede MA</p>
-          <p className="text-2xl font-bold text-red-700 mt-1">{eur(totaliMese.totSede.MA.reduce((s,v)=>s+v,0))}</p>
-          <p className="text-xs text-red-500 mt-0.5">media mese {eur(totaliMese.totSede.MA.reduce((s,v)=>s+v,0)/(totaliMese.totSede.MA.filter(v=>v>0).length||1))}</p>
+          <p className="text-2xl font-bold text-red-700 mt-1">{eur(mediaMA.somma)}</p>
+          <p className="text-xs text-red-500 mt-0.5">
+            {mediaMA.mesi > 0 ? <>media sui {mediaMA.mesi} mesi valorizzati {eur(mediaMA.valore)}</> : 'nessun mese valorizzato'}
+          </p>
         </div>
         <div className="bg-blue-50 border border-blue-100 rounded-2xl p-4">
           <p className="text-xs text-blue-500 uppercase tracking-wide">Sede PN</p>
-          <p className="text-2xl font-bold text-blue-700 mt-1">{eur(totaliMese.totSede.PN.reduce((s,v)=>s+v,0))}</p>
-          <p className="text-xs text-blue-500 mt-0.5">media mese {eur(totaliMese.totSede.PN.reduce((s,v)=>s+v,0)/(totaliMese.totSede.PN.filter(v=>v>0).length||1))}</p>
+          <p className="text-2xl font-bold text-blue-700 mt-1">{eur(mediaPN.somma)}</p>
+          <p className="text-xs text-blue-500 mt-0.5">
+            {mediaPN.mesi > 0 ? <>media sui {mediaPN.mesi} mesi valorizzati {eur(mediaPN.valore)}</> : 'nessun mese valorizzato'}
+          </p>
         </div>
       </div>
+
+      <NotaCopertura righe={rows.length} fonte="v_costi_fissi_arricchiti"
+        extra={`anno ${annoF} · sedi ${sedeF === 'ALL' ? 'MA+PN' : sedeF}`} />
 
       {/* Tabella pivot */}
       <div className="bg-white border border-gray-100 rounded-2xl overflow-hidden">
@@ -377,7 +450,7 @@ export default function CostiFissiPage() {
                     {MESI.map((_,i) => {
                       const c = p.mesi[i+1]
                       return (
-                        <td key={i} className="px-1 py-1 text-right border-l border-gray-50">
+                        <td key={MESI[i]} className="px-1 py-1 text-right border-l border-gray-50">
                           {c ? <CellaImporto value={c.importo} id={c.id} onSaved={load}/> : <span className="text-gray-300 text-[10px]">—</span>}
                         </td>
                       )
@@ -404,7 +477,11 @@ export default function CostiFissiPage() {
                 <tr className="bg-violet-50 border-t-2 border-violet-200 font-bold">
                   <td className="px-3 py-2 sticky left-0 bg-violet-50 z-10 text-violet-700" colSpan={3}>TOTALE MESE</td>
                   {totaliMese.tot.map((v,i) => (
-                    <td key={i} className="px-1.5 py-2 text-right text-violet-700 text-[11px]">{v > 0 ? eur(v) : '—'}</td>
+                    // "—" solo se il mese non ha voci: un totale realmente 0
+                    // (voce azzerata) va mostrato come € 0, non come dato assente.
+                    <td key={MESI[i]} className="px-1.5 py-2 text-right text-violet-700 text-[11px]">
+                      {totaliMese.conVoci[i] ? eur(v) : '—'}
+                    </td>
                   ))}
                   <td className="px-2 py-2 text-right text-violet-800 bg-violet-100">{eur(totAnno)}</td>
                   <td></td>

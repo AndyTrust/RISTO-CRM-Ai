@@ -1,6 +1,8 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import supabase from '../supabase'
+import { fetchPagedInfo } from '../api/paged'
+import { useOrdinamento, IconaOrdine, BottoneCsv, NotaCopertura, fmtEur, fmtNum, fmtPct } from '../lib/tabella'
 import PageAssistant from '../components/PageAssistant'
 import PeriodFilter from '../components/PeriodFilter'
 import {
@@ -90,11 +92,15 @@ const CustomScatterTooltip = ({ active, payload }) => {
   )
 }
 
+// toISOString() formatta in UTC: di sera, in fuso italiano, "oggi" diventa ieri
+// e il periodo di default perde l'ultima giornata di vendite.
+const isoLocale = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+
 export default function ProdottiBi() {
   const [, setParams] = useSearchParams()
   const today = new Date()
-  const firstOfMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1).toISOString().split('T')[0]
-  const todayStr = today.toISOString().split('T')[0]
+  const firstOfMonth = isoLocale(new Date(today.getFullYear(), today.getMonth() - 1, 1))
+  const todayStr = isoLocale(today)
 
   const [sede, setSede] = useState('MA')
   const [tipologia, setTipologia] = useState('ALL')
@@ -103,30 +109,42 @@ export default function ProdottiBi() {
   const [dateTo, setDateTo] = useState(todayStr)
   const handlePeriodChange = (pid, d) => { setPeriod(pid); if (d?.from) setDateFrom(d.from); if (d?.to) setDateTo(d.to) }
   const [data, setData] = useState([])
+  const [troncato, setTroncato] = useState(false)
+  const [nRighe, setNRighe] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
-  const [sortCol, setSortCol] = useState('importo_venduto')
-  const [sortDir, setSortDir] = useState('desc')
   const [search, setSearch] = useState('')
   const [catFilter, setCatFilter] = useState('ALL')
 
-  useEffect(() => { fetchData() }, [sede, tipologia, dateFrom, dateTo])
+  // Identifica l'ultima richiesta partita: scarta le risposte obsolete e vale
+  // come guardia di unmount (il cleanup dell'effect lo incrementa).
+  const richiestaRef = useRef(0)
 
-  async function fetchData() {
+  const fetchData = useCallback(async () => {
+    const mia = ++richiestaRef.current
     setLoading(true)
     setError(null)
     try {
-      // Filtro overlap: il blocco interseca il range selezionato
-      let q = supabase
-        .from('v_menu_engineering')
-        .select('*')
-        .gte('data_fine', dateFrom)
-        .lte('data_inizio', dateTo)
-        .range(0, 9999)
-      if (sede !== 'ALL') q = q.eq('sede', sede)
-      if (tipologia !== 'ALL') q = q.eq('tipologia', tipologia)
-      const { data: rows, error: err } = await q
-      if (err) throw err
+      // `.range(0, 9999)` NON alza il cap PostgREST di 1000 righe: la vista ne
+      // ha oltre 5.400 e l'aggregazione per prodotto usciva silenziosamente
+      // parziale. v_menu_engineering non ha una PK: la chiave di fatto è
+      // (sede, data_inizio, categoria, prodotto), quindi si ordina per le prime
+      // tre in build() e si lascia `prodotto` a fetchPaged — l'ordine complessivo
+      // così è univoco e la paginazione non salta né ripete righe.
+      const build = () => {
+        let q = supabase
+          .from('v_menu_engineering')
+          .select('*')
+          // Filtro overlap: il blocco interseca il range selezionato
+          .gte('data_fine', dateFrom)
+          .lte('data_inizio', dateTo)
+          .order('sede').order('data_inizio').order('categoria')
+        if (sede !== 'ALL') q = q.eq('sede', sede)
+        if (tipologia !== 'ALL') q = q.eq('tipologia', tipologia)
+        return q
+      }
+      const { righe: rows, troncato: tr } = await fetchPagedInfo(build, 'prodotto')
+      if (mia !== richiestaRef.current) return
       // Aggrega lato client per prodotto (il range può coprire più blocchi periodo)
       const map = {}
       ;(rows || []).forEach(r => {
@@ -175,13 +193,22 @@ export default function ProdottiBi() {
           : ksClass(d.quantita >= sogliaPop, (d.margine_unitario || 0) >= avgCM),
       })).sort((a, b) => b.importo_venduto - a.importo_venduto)
       setData(agg)
+      setNRighe(rows.length)
+      setTroncato(tr)
     } catch (e) {
+      if (mia !== richiestaRef.current) return
       setError(e.message)
       setData([])
     } finally {
-      setLoading(false)
+      if (mia === richiestaRef.current) setLoading(false)
     }
-  }
+  }, [sede, tipologia, dateFrom, dateTo])
+
+  useEffect(() => {
+    fetchData()
+    // Invalida la richiesta in volo: nessun setState dopo lo smontaggio.
+    return () => { richiestaRef.current++ }
+  }, [fetchData])
 
   const categories = useMemo(() => [...new Set(data.map(d => d.categoria).filter(Boolean))], [data])
 
@@ -191,11 +218,10 @@ export default function ProdottiBi() {
     return matchSearch && matchCat
   }), [data, search, catFilter])
 
-  const sorted = useMemo(() => [...filtered].sort((a, b) => {
-    const av = a[sortCol] ?? 0; const bv = b[sortCol] ?? 0
-    return sortDir === 'asc' ? (typeof av === 'string' ? av.localeCompare(bv) : av - bv)
-      : (typeof bv === 'string' ? bv.localeCompare(av) : bv - av)
-  }), [filtered, sortCol, sortDir])
+  // useOrdinamento tiene i valori mancanti SEMPRE in coda: con il vecchio
+  // `a[sortCol] ?? 0` i prodotti senza food cost risultavano i migliori del menu.
+  const { righeOrdinate: sorted, colonna: sortCol, direzione: sortDir, propsTh } =
+    useOrdinamento(filtered, 'importo_venduto', 'desc')
 
   const scatterData = useMemo(() => data
     .filter(d => d.quantita > 0 && d.food_cost_pct != null)
@@ -209,9 +235,12 @@ export default function ProdottiBi() {
     const totalRev = data.reduce((s,d)=>s+(d.importo_venduto||0),0)
     const fcRows = data.filter(d=>d.food_cost_pct!=null)
     const fcQty = fcRows.reduce((s,d)=>s+(d.quantita||0),0)
-    const avgFc = fcQty>0 ? fcRows.reduce((s,d)=>s+d.food_cost_pct*(d.quantita||0),0)/fcQty : 0
-    const highFc = data.filter(d=>(d.food_cost_pct??0)>30).length
-    return { topPcs, totalRev, avgFc, highFc }
+    const avgFc = fcQty>0 ? fcRows.reduce((s,d)=>s+d.food_cost_pct*(d.quantita||0),0)/fcQty : null
+    // `(d.food_cost_pct ?? 0) > 30` contava come "sotto soglia" i prodotti senza
+    // food cost: qui il conteggio parte solo dai prodotti che un food cost ce l'hanno.
+    const highFc = fcRows.filter(d => d.food_cost_pct > 30).length
+    const senzaFc = data.length - fcRows.length
+    return { topPcs, totalRev, avgFc, highFc, nConFc: fcRows.length, senzaFc }
   }, [data])
 
   const insights = useMemo(() => {
@@ -249,10 +278,17 @@ export default function ProdottiBi() {
     return m
   }, [categories])
 
-  function handleSort(col) {
-    if (sortCol === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
-    else { setSortCol(col); setSortDir('desc') }
-  }
+  const colonneCsv = useMemo(() => ([
+    { chiave: 'prodotto', etichetta: 'Prodotto' },
+    { chiave: 'categoria', etichetta: 'Categoria' },
+    { chiave: 'tipologia', etichetta: 'Tipologia' },
+    { chiave: 'quantita', etichetta: 'Quantità' },
+    { chiave: 'prezzo_medio', etichetta: 'Prezzo medio €', valore: r => (r.prezzo_medio == null ? null : +r.prezzo_medio.toFixed(2)) },
+    { chiave: 'importo_venduto', etichetta: 'Fatturato €', valore: r => (r.importo_venduto == null ? null : +r.importo_venduto.toFixed(2)) },
+    { chiave: 'food_cost_pct', etichetta: 'Food cost %', valore: r => (r.food_cost_pct == null ? null : +r.food_cost_pct.toFixed(1)) },
+    { chiave: 'margine_unitario', etichetta: 'Margine unitario €' },
+    { chiave: 'menu_class', etichetta: 'Classe menu' },
+  ]), [])
 
   const systemContext = useMemo(() => ({
     sede, tipologia, dateFrom, dateTo,
@@ -310,14 +346,19 @@ export default function ProdottiBi() {
       ) : (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           <KpiCard icon={Star} label="Top prodotto (pezzi)" color="indigo"
-            value={kpis.topPcs?.prodotto || '—'} sub={kpis.topPcs ? `${kpis.topPcs.quantita} pz venduti` : ''} />
+            value={kpis.topPcs?.prodotto || '—'} sub={kpis.topPcs ? `${fmtNum(kpis.topPcs.quantita)} pz venduti` : ''} />
           <KpiCard icon={TrendingUp} label="Revenue totale prodotti" color="green"
-            value={(kpis.totalRev||0).toLocaleString('it-IT',{style:'currency',currency:'EUR'})} sub={`su ${data.length} prodotti`} />
+            value={fmtEur(kpis.totalRev, { decimali: 2 })} sub={`su ${data.length} prodotti`} />
           <KpiCard icon={Package} label="Food cost medio" color="orange"
-            value={`${(kpis.avgFc||0).toFixed(1)}%`} sub="media ponderata" />
+            value={fmtPct(kpis.avgFc)} sub={`media ponderata su ${kpis.nConFc ?? 0} prodotti con food cost`} />
           <KpiCard icon={AlertTriangle} label="Prodotti FC > 30%" color="red"
-            value={kpis.highFc || 0} sub="da ottimizzare" />
+            value={kpis.highFc ?? 0} sub={kpis.senzaFc ? `${kpis.senzaFc} prodotti senza food cost, esclusi` : 'da ottimizzare'} />
         </div>
+      )}
+
+      {!loading && data.length > 0 && (
+        <NotaCopertura righe={nRighe} da={dateFrom} a={dateTo} fonte="v_menu_engineering" troncato={troncato}
+          extra={`${data.length} prodotti aggregati`} />
       )}
 
       {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-4 mb-6 text-sm">Errore: {error}</div>}
@@ -406,7 +447,7 @@ export default function ProdottiBi() {
                 tickFormatter={v=>v?.length>15?v.slice(0,14)+'…':v} />
               <Tooltip formatter={v=>Number(v ?? 0).toLocaleString('it-IT',{style:'currency',currency:'EUR'})} />
               <Bar dataKey="importo_venduto" name="Fatturato" radius={[0,4,4,0]}>
-                {top15.map((entry, i)=><Cell key={i} fill={catColorMap[entry.categoria]||'#6366f1'} />)}
+                {top15.map((entry)=><Cell key={`${entry.prodotto}||${entry.categoria}`} fill={catColorMap[entry.categoria]||'#6366f1'} />)}
                 <LabelList dataKey="importo_venduto" position="right" fontSize={10}
                   formatter={v=>`€${(v/1000).toFixed(1)}k`} />
               </Bar>
@@ -419,7 +460,10 @@ export default function ProdottiBi() {
       <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
         <div className="flex flex-wrap gap-3 items-center justify-between mb-4">
           <h2 className="text-base font-semibold text-gray-800 flex items-center gap-2">
-            <ArrowUpDown size={16} className="text-indigo-500" /> Tutti i Prodotti ({filtered.length})
+            <ArrowUpDown size={16} className="text-indigo-500" />
+            {/* Il titolo diceva "Tutti i Prodotti (N)" ma la tabella ne mostra 100:
+                il troncamento va dichiarato, non lasciato indovinare. */}
+            Prodotti — {filtered.length > 100 ? `prime 100 di ${filtered.length}` : `${filtered.length}`}
           </h2>
           <div className="flex gap-2 flex-wrap">
             <div className="relative">
@@ -432,6 +476,7 @@ export default function ProdottiBi() {
               <option value="ALL">Tutte le categorie</option>
               {categories.map(c=><option key={c} value={c}>{c}</option>)}
             </select>
+            <BottoneCsv righe={sorted} colonne={colonneCsv} nomeFile="prodotti_menu_engineering" etichetta="CSV (tutti)" />
           </div>
         </div>
         <div className="overflow-x-auto">
@@ -444,35 +489,38 @@ export default function ProdottiBi() {
                   {key:'importo_venduto',label:'Fatturato'},{key:'food_cost_pct',label:'Food Cost %'},
                   {key:'menu_class',label:'Classe'},
                 ].map(col=>(
-                  <th key={col.key} onClick={()=>handleSort(col.key)}
+                  <th key={col.key} {...propsTh(col.key)}
                     className="pb-2 pr-4 font-semibold text-gray-600 cursor-pointer hover:text-indigo-600 select-none whitespace-nowrap">
                     <span className="flex items-center gap-1">
                       {col.label}
-                      {sortCol===col.key&&(sortDir==='asc'?<ChevronUp size={12}/>:<ChevronDown size={12}/>)}
+                      <IconaOrdine colonna={col.key} colonnaAttiva={sortCol} direzione={sortDir} />
                     </span>
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {sorted.slice(0,100).map((row,i)=>{
+              {sorted.slice(0,100).map((row)=>{
                 const fc = row.food_cost_pct
                 const cls = row.menu_class || (fc!=null ? getClassLabel(fc) : 'n/a')
                 const badgeColor = (KS[cls] || KS['n/a']).bg
                 return (
-                  <tr key={i} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
+                  // La chiave è prodotto+categoria (la stessa dell'aggregazione):
+                  // con key={index} in una tabella ordinabile E filtrabile React
+                  // riusa la riga sbagliata a ogni cambio di ordine.
+                  <tr key={`${row.prodotto}||${row.categoria}`} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
                     <td className="py-2 pr-4 font-medium text-gray-800">{row.prodotto}</td>
                     <td className="py-2 pr-4">
                       <span className="text-xs px-2 py-0.5 rounded-full text-white"
                         style={{background:catColorMap[row.categoria]||'#6366f1'}}>{row.categoria}</span>
                     </td>
-                    <td className="py-2 pr-4 text-gray-700">{row.quantita}</td>
-                    <td className="py-2 pr-4 text-gray-700">{(row.prezzo_medio||0).toLocaleString('it-IT',{style:'currency',currency:'EUR'})}</td>
-                    <td className="py-2 pr-4 font-semibold text-gray-800">{(row.importo_venduto||0).toLocaleString('it-IT',{style:'currency',currency:'EUR'})}</td>
+                    <td className="py-2 pr-4 text-gray-700">{fmtNum(row.quantita)}</td>
+                    <td className="py-2 pr-4 text-gray-700">{fmtEur(row.prezzo_medio, { decimali: 2 })}</td>
+                    <td className="py-2 pr-4 font-semibold text-gray-800">{fmtEur(row.importo_venduto, { decimali: 2 })}</td>
                     <td className="py-2 pr-4">
                       {fc!=null
                         ? <span className={`font-semibold ${fc>30?'text-red-600':fc>25?'text-orange-500':'text-green-600'}`}>{fc.toFixed(1)}%</span>
-                        : <span className="text-gray-400">—</span>}
+                        : <span className="text-gray-400" title="Food cost non censito per questo prodotto">—</span>}
                     </td>
                     <td className="py-2 pr-4">
                       <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${badgeColor}`}>{cls?.toUpperCase()}</span>

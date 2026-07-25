@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { chiusure as chiusureApi, kpi as kpiApi, analytics as analyticsApi } from '../api/client'
 import supabase from '../supabase'
+import { fetchPaged } from '../api/paged'
 import {
   AreaChart, Area, BarChart, Bar, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart
@@ -105,8 +106,8 @@ function ChartTooltip({ active, payload, label }) {
   return (
     <div className="bg-white border border-gray-200 rounded-lg shadow-lg p-3 text-xs">
       <p className="font-semibold text-gray-700 mb-2">{label}</p>
-      {payload.map((p, i) => (
-        <div key={i} className="flex items-center gap-2 mb-0.5">
+      {payload.map(p => (
+        <div key={p.dataKey ?? p.name} className="flex items-center gap-2 mb-0.5">
           <div className="w-2 h-2 rounded-full" style={{ backgroundColor: p.color }} />
           <span className="text-gray-500">{p.name}:</span>
           <span className="font-medium">{p.dataKey?.includes('coperti') ? num(p.value) : eur(p.value)}</span>
@@ -133,7 +134,8 @@ export default function Dashboard() {
   // Customer Experience
   const [cxStats, setCxStats] = useState({ npsScore: null, avgNps: null, nSurveys: 0, tornera: 0, avgVoto: null, nReviews: 0, nNeg: 0 })
 
-  const load = useCallback(async (d) => {
+  const load = useCallback(async (d, segnalaAnnullato) => {
+    const vivo = () => !segnalaAnnullato?.()
     setLoading(true)
     try {
       const prev = prevPeriod(d.from, d.to)
@@ -157,6 +159,7 @@ export default function Dashboard() {
         kpiApi.quantum({ from: d.from, to: d.to }).catch(() => []),
       ])
 
+      if (!vivo()) return
       setCurrStats(Array.isArray(curr) ? curr : [])
       setPrevStats(Array.isArray(p) ? p : [])
 
@@ -202,22 +205,19 @@ export default function Dashboard() {
 
       // ── Customer Experience: NPS + Recensioni nel periodo ──
       try {
-        // `.range()` e non `.limit()`: il cap PostgREST è 1000 righe a
-        // prescindere dal limite richiesto, e queste righe vengono aggregate
-        // in NPS e voto medio. Con ~1.200 sondaggi a DB il `.limit(2000)`
-        // calcolava già l'NPS su un sottoinsieme, senza alcun errore visibile.
-        const [{ data: survRows, error: errSurv }, { data: revRows, error: errRev }] = await Promise.all([
-          supabase.from('sondaggi_strutturati')
-            .select('nps, tornera, data_prenotazione')
-            .gte('data_prenotazione', d.from).lte('data_prenotazione', d.to)
-            .range(0, 19999),
-          supabase.from('recensioni_pienissimo')
-            .select('voto, data_recensione')
-            .gte('data_recensione', d.from).lte('data_recensione', d.to)
-            .range(0, 19999),
+        // Paginazione VERA: né `.limit()` né `.range(0, 19999)` alzano il cap
+        // di 1000 righe del server. Queste righe vengono aggregate in NPS e
+        // voto medio, quindi su un periodo lungo l'NPS era calcolato su un
+        // sottoinsieme arbitrario senza alcun errore visibile.
+        const [survRows, revRows] = await Promise.all([
+          fetchPaged(() => supabase.from('sondaggi_strutturati')
+            .select('id, nps, tornera, data_prenotazione')
+            .gte('data_prenotazione', d.from).lte('data_prenotazione', d.to), 'id'),
+          // recensioni_pienissimo non ha `id`: la chiave univoca è id_recensione.
+          fetchPaged(() => supabase.from('recensioni_pienissimo')
+            .select('id_recensione, voto, data_recensione')
+            .gte('data_recensione', d.from).lte('data_recensione', d.to), 'id_recensione'),
         ])
-        if (errSurv) throw errSurv
-        if (errRev) throw errRev
         const npsVals = (survRows || []).map(r => r.nps).filter(v => v != null)
         const promoters = npsVals.filter(v => v >= 9).length
         const detractors = npsVals.filter(v => v <= 6).length
@@ -227,7 +227,7 @@ export default function Dashboard() {
         const voti = (revRows || []).map(r => Number(r.voto)).filter(v => Number.isFinite(v))
         const avgVoto = voti.length > 0 ? Math.round(voti.reduce((s, v) => s + v, 0) / voti.length * 100) / 100 : null
         const nNeg = voti.filter(v => v <= 3).length
-        setCxStats({ npsScore, avgNps, nSurveys: (survRows || []).length, tornera, avgVoto, nReviews: voti.length, nNeg })
+        if (vivo()) setCxStats({ npsScore, avgNps, nSurveys: (survRows || []).length, tornera, avgVoto, nReviews: voti.length, nNeg })
       } catch (cxErr) {
         console.warn('[Dashboard CX]', cxErr.message)
       }
@@ -235,11 +235,17 @@ export default function Dashboard() {
     } catch (e) {
       console.error(e)
     } finally {
-      setLoading(false)
+      if (vivo()) setLoading(false)
     }
   }, [])
 
-  useEffect(() => { load(dates) }, [dates])
+  useEffect(() => {
+    // Guardia di unmount: senza, cambiare rotta durante il caricamento produce
+    // setState su un componente già smontato.
+    let annullato = false
+    load(dates, () => annullato)
+    return () => { annullato = true }
+  }, [dates, load])
 
   const handleApply = (pid, d) => {
     setPeriod(pid)
@@ -265,13 +271,22 @@ export default function Dashboard() {
 
   const curr = aggr(currStats)
   const prev = aggr(prevStats)
+  // "Nessun dato" ≠ "venduto pari a zero". Prima bastava un totale a 0 (una
+  // giornata di chiusura reale, per esempio) perché la dashboard dichiarasse
+  // che i dati non c'erano. Ora si guarda se ESISTONO righe per il filtro.
+  const righeNelPeriodo = locFilter === 'ALL'
+    ? currStats.length
+    : currStats.filter(x => x.location === locFilter).length
 
   const deltaVenduto    = getDelta(curr.tot_venduto, prev.tot_venduto)
   const deltaCoperti    = getDelta(curr.tot_coperti, prev.tot_coperti)
   const deltaCM         = getDelta(curr.avg_coperto_medio, prev.avg_coperto_medio)
   const deltaScontrino  = getDelta(curr.avg_scontrino_medio, prev.avg_scontrino_medio)
 
-  const showNoData = !loading && !curr.tot_venduto && !curr.tot_coperti
+  const showNoData = !loading && righeNelPeriodo === 0
+  // Caso diverso e altrettanto reale: righe presenti ma tutte a zero (giorni
+  // di chiusura). Va detto, non confuso con l'assenza di dati.
+  const showTuttoZero = !loading && righeNelPeriodo > 0 && !curr.tot_venduto && !curr.tot_coperti
 
   // Filtra dati grafico per location
   const dailyFiltered = daily.map(d => {
@@ -321,6 +336,13 @@ export default function Dashboard() {
             {period === 'today' && 'I dati di oggi non sono ancora stati sincronizzati.'}
             {(period !== 'week' && period !== 'today') && 'Prova un altro periodo o verifica la sincronizzazione.'}
           </span>
+        </div>
+      )}
+
+      {showTuttoZero && (
+        <div className="bg-sky-50 border border-sky-200 rounded-xl px-4 py-3 flex items-center gap-3 text-sm">
+          <span className="text-sky-700 font-medium">ℹ️ I dati ci sono, ma il periodo è a zero.</span>
+          <span className="text-sky-600">Le chiusure esistono ({righeNelPeriodo} record) con venduto e coperti a 0: giornate di chiusura, non dati mancanti.</span>
         </div>
       )}
 
@@ -574,7 +596,9 @@ export default function Dashboard() {
                 const max = topCoperti[0]?.coperti_gestiti || 1
                 const pct = Math.round((op.coperti_gestiti / max) * 100)
                 return (
-                  <div key={i} className="flex items-center gap-3">
+                  // Chiave dai dati: la lista è filtrata per sede, con
+                  // `key={i}` React riusava la riga sbagliata cambiando filtro.
+                  <div key={`${op.location}-${op.operatore}`} className="flex items-center gap-3">
                     <span className="text-xs font-bold text-gray-300 w-5 text-right">#{i+1}</span>
                     <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${op.location === 'MAMELI' ? 'bg-indigo-100 text-indigo-700' : 'bg-emerald-100 text-emerald-700'}`}>
                       {op.location === 'MAMELI' ? 'MA' : 'PN'}

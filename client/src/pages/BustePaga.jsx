@@ -14,6 +14,10 @@ import PageAssistant from '../components/PageAssistant'
 import PageStatsWidget from '../components/PageStatsWidget'
 import { EmployeeForm } from './Employees'
 import { Settings as SettingsIcon } from 'lucide-react'
+import supabase from '../supabase'
+import { fetchPaged } from '../api/paged'
+import useAnniDisponibili from '../hooks/useAnniDisponibili'
+import { useOrdinamento, IconaOrdine, BottoneCsv } from '../lib/tabella'
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CONSTANTS & UTILS
@@ -42,10 +46,118 @@ const NUM  = new Intl.NumberFormat('it-IT', { maximumFractionDigits: 0 })
 const fmtEur  = v => typeof v === 'number' && isFinite(v) ? EUR.format(v)  : '—'
 const fmtEur0 = v => typeof v === 'number' && isFinite(v) ? EUR0.format(v) : '—'
 const fmtNum  = v => typeof v === 'number' && isFinite(v) ? NUM.format(v)  : '—'
+const fmtPctIt = (v, d = 2) => typeof v === 'number' && isFinite(v)
+  ? `${v.toLocaleString('it-IT', { minimumFractionDigits: d, maximumFractionDigits: d })}%`
+  : '—'
 
 const MESI_SHORT = ['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic']
 const MESI_FULL  = ['Gennaio','Febbraio','Marzo','Aprile','Maggio','Giugno',
                     'Luglio','Agosto','Settembre','Ottobre','Novembre','Dicembre']
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TARATURA COSTO PERSONALE — letta dal bilancio, non scritta a mano
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// I riquadri esplicativi di questa pagina riportavano anno e importi cablati
+// ("bilancio 2025: 976.512,68 / 737.300,62"). Un numero cablato dentro un testo
+// esplicativo invecchia in silenzio: quando arriva il bilancio successivo la
+// pagina continua a citare l'esercizio vecchio e nessuno se ne accorge.
+//
+// A DB convivono due schemi di bilancio con codici diversi per la stessa
+// informazione: il provvisorio contabile usa 67.01 (totale) e 67.01.01
+// (retribuzioni lorde), i depositati in formato CEE usano B9 e B9a. Si prova
+// l'uno e poi l'altro, così vale sempre l'esercizio più recente disponibile,
+// qualunque sia lo schema con cui è stato caricato.
+const SCHEMI_PERSONALE = [
+  { totale: '67.01', lorda: '67.01.01', componenti: ['67.01.01', '67.01.03', '67.01.07', '67.01.09', '67.01.11'] },
+  // B9cde raggruppa TFR + quiescenza + altri costi: elencare anche B9c/B9d/B9e
+  // conterebbe due volte le stesse quote.
+  { totale: 'B9',    lorda: 'B9a',      componenti: ['B9a', 'B9b', 'B9cde'] },
+]
+const CODICI_PERSONALE = [...new Set(SCHEMI_PERSONALE.flatMap(s => [s.totale, ...s.componenti]))]
+
+// Promise condivisa: il dato serve a tre riquadri diversi della stessa pagina e
+// non cambia durante la sessione, quindi si legge una volta sola.
+let _promessaBilancioPersonale = null
+
+async function caricaCostoPersonaleBilancio() {
+  if (_promessaBilancioPersonale) return _promessaBilancioPersonale
+
+  _promessaBilancioPersonale = (async () => {
+    const { data: testate, error } = await supabase
+      .from('bilanci').select('id,anno,tipo,societa').order('anno', { ascending: false })
+    // Il client Supabase non rigetta mai: senza leggere `error` un blocco RLS
+    // diventerebbe "nessun bilancio a DB", cioè un riquadro muto invece di un
+    // problema segnalato.
+    if (error) throw error
+    if (!testate?.length) return null
+
+    // Poche righe per bilancio (filtro sui codici), ma la lettura passa
+    // comunque da fetchPaged: il cap PostgREST di 1000 righe è lato server e
+    // nessun parametro del client lo alza.
+    const voci = await fetchPaged(
+      () => supabase.from('bilancio_voci')
+        .select('id,bilancio_id,codice_voce,descrizione,importo')
+        .in('codice_voce', CODICI_PERSONALE),
+      'id'
+    )
+
+    const perBilancio = new Map()
+    for (const v of voci) {
+      if (!perBilancio.has(v.bilancio_id)) perBilancio.set(v.bilancio_id, new Map())
+      perBilancio.get(v.bilancio_id).set(v.codice_voce, v)
+    }
+
+    // `testate` è già ordinata per anno decrescente: vince il primo esercizio
+    // che espone davvero sia il totale sia le retribuzioni lorde.
+    for (const b of testate) {
+      const vociBilancio = perBilancio.get(b.id)
+      if (!vociBilancio) continue
+      for (const schema of SCHEMI_PERSONALE) {
+        const totale = Number(vociBilancio.get(schema.totale)?.importo)
+        const lorda  = Number(vociBilancio.get(schema.lorda)?.importo)
+        if (!Number.isFinite(totale) || !Number.isFinite(lorda) || lorda <= 0) continue
+        return {
+          anno: b.anno, tipo: b.tipo, societa: b.societa,
+          totale, lorda,
+          moltiplicatore: totale / lorda,
+          componenti: schema.componenti
+            .map(c => vociBilancio.get(c))
+            .filter(Boolean)
+            .map(v => ({ codice: v.codice_voce, descrizione: v.descrizione, importo: Number(v.importo) })),
+        }
+      }
+    }
+    return null
+  })()
+
+  // Un errore non deve restare in cache: altrimenti un singolo blip di rete
+  // spegnerebbe i riquadri per tutta la sessione, senza possibilità di riprovare.
+  _promessaBilancioPersonale.catch(() => { _promessaBilancioPersonale = null })
+  return _promessaBilancioPersonale
+}
+
+/**
+ * Taratura del costo aziendale letta dal bilancio più recente a DB.
+ * @returns {{ dato: object|null, caricamento: boolean, errore: string|null }}
+ */
+function useCostoPersonaleBilancio() {
+  const [stato, setStato] = useState({ dato: null, caricamento: true, errore: null })
+  useEffect(() => {
+    let annullato = false
+    caricaCostoPersonaleBilancio()
+      .then(d => { if (!annullato) setStato({ dato: d, caricamento: false, errore: null }) })
+      .catch(e => { if (!annullato) setStato({ dato: null, caricamento: false, errore: e?.message || String(e) }) })
+    return () => { annullato = true }
+  }, [])
+  return stato
+}
+
+/** Testo unico per "come si calcola il costo aziendale", senza anni cablati. */
+function notaTaraturaCosto(bilancio) {
+  if (!bilancio) return `lorda × ${CCNL_MOLT_LORDA} (oneri c/azienda)`
+  return `lorda × ${CCNL_MOLT_LORDA} (tarato su bilancio ${bilancio.anno}${bilancio.tipo ? ` ${bilancio.tipo}` : ''})`
+}
 
 // ── Qualità dato ────────────────────────────────────────────────────────────
 function qualitaDato(c) {
@@ -63,6 +175,53 @@ const QUALITY = {
   previsione: { label: 'Previsione', sym: '⚡', cls: 'bg-amber-900/40 text-amber-300 border-amber-700',     dot: 'bg-amber-400' },
   stima:      { label: 'Stima',      sym: '~', cls: 'bg-red-900/40 text-red-300 border-red-700',            dot: 'bg-red-400' },
 }
+
+/** Chiave stabile di un cedolino: `id` a DB, altrimenti dipendente+periodo. */
+const chiaveCedolino = c => c?.id ?? `${c?.employee_name || ''}-${c?.anno}-${c?.mese}`
+
+// Colonne CSV condivise fra scheda dipendente e tab Cedolini: l'export deve
+// contenere i valori calcolati mostrati a schermo, non solo le colonne grezze.
+const COLONNE_CSV_CEDOLINI = [
+  { chiave: 'employee_name', etichetta: 'Dipendente' },
+  { chiave: 'sede',          etichetta: 'Sede' },
+  { chiave: 'anno',          etichetta: 'Anno' },
+  { chiave: 'mese',          etichetta: 'Mese', valore: c => MESI_FULL[(c.mese || 1) - 1] },
+  { chiave: 'netto',         etichetta: 'Netto', valore: c => parseFloat(c.netto) || null },
+  { chiave: 'totale_competenze', etichetta: 'Lorda', valore: c => parseFloat(c.totale_competenze) || null },
+  { chiave: 'costo_azienda', etichetta: 'Costo azienda',
+    valore: c => parseFloat(c.costo_azienda) || (parseFloat(c.netto) || 0) * COSTO_AZ_FALLBACK },
+  { chiave: 'fonte',         etichetta: 'Fonte', valore: c => QUALITY[qualitaDato(c)].label },
+  { chiave: 'file_name',     etichetta: 'File PDF' },
+]
+
+const COLONNE_CSV_DIPENDENTI = [
+  { chiave: 'employee_name',  etichetta: 'Dipendente' },
+  { chiave: 'sede',           etichetta: 'Sede' },
+  { chiave: 'stato',          etichetta: 'Stato' },
+  { chiave: 'qualifica',      etichetta: 'Qualifica' },
+  { chiave: 'percentuale_pt', etichetta: '% Part time' },
+  { chiave: 'ore_mensili',    etichetta: 'Ore/mese' },
+  { chiave: 'mesi',           etichetta: 'Mesi con cedolino' },
+  { chiave: 'totale_netto',   etichetta: 'Totale netto' },
+  { chiave: 'totale_lorda',   etichetta: 'Totale lorda' },
+  { chiave: 'totale_costo',   etichetta: 'Totale costo azienda' },
+]
+
+const COLONNE_CSV_TREND = [
+  { chiave: 'label',   etichetta: 'Mese' },
+  { chiave: 'nettoMA', etichetta: 'Netto MA' },
+  { chiave: 'nettoPN', etichetta: 'Netto PN' },
+  { chiave: 'costoMA', etichetta: 'Costo azienda MA' },
+  { chiave: 'costoPN', etichetta: 'Costo azienda PN' },
+  { chiave: 'dipMA',   etichetta: 'Dipendenti MA' },
+  { chiave: 'dipPN',   etichetta: 'Dipendenti PN' },
+]
+
+const COLONNE_CSV_COSTO = [
+  { chiave: 'label',   etichetta: 'Mese' },
+  { chiave: 'netto',   etichetta: 'Netto' },
+  { chiave: 'costoAz', etichetta: 'Costo azienda' },
+]
 
 function QualityBadge({ c, small = false }) {
   const q = qualitaDato(c)
@@ -100,6 +259,7 @@ function KpiCard({ label, value, sub, icon: Icon, color = 'blue' }) {
 function SchedaDipendente({ emp, onClose, employeeRecord, reparti }) {
   const cedolini = emp.cedolini
   const sorted = useMemo(() => [...cedolini].sort((a, b) => a.anno * 100 + a.mese - (b.anno * 100 + b.mese)), [cedolini])
+  const { dato: bilancio } = useCostoPersonaleBilancio()
 
   const stats = useMemo(() => {
     const certi    = cedolini.filter(c => qualitaDato(c) === 'certo').length
@@ -214,7 +374,14 @@ function SchedaDipendente({ emp, onClose, employeeRecord, reparti }) {
 
         {/* Tabella cedolini dettaglio */}
         <div className="px-6 pt-4 pb-2">
-          <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Cedolini dettaglio</h3>
+          <div className="flex items-center justify-between mb-3 gap-3">
+            <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Cedolini dettaglio</h3>
+            <BottoneCsv
+              righe={sorted}
+              colonne={COLONNE_CSV_CEDOLINI}
+              nomeFile={`cedolini_${(emp.employee_name || 'dipendente').replace(/\s+/g, '_').toLowerCase()}`}
+            />
+          </div>
           <div className="overflow-x-auto rounded-lg border border-gray-700">
             <table className="w-full text-xs">
               <thead className="bg-gray-800">
@@ -228,7 +395,7 @@ function SchedaDipendente({ emp, onClose, employeeRecord, reparti }) {
                 </tr>
               </thead>
               <tbody>
-                {sorted.map((c, i) => {
+                {sorted.map((c) => {
                   const netto = parseFloat(c.netto) || 0
                   const lorda = parseFloat(c.totale_competenze) || 0
                   const costo = parseFloat(c.costo_azienda) || (netto * COSTO_AZ_FALLBACK)
@@ -236,7 +403,9 @@ function SchedaDipendente({ emp, onClose, employeeRecord, reparti }) {
                   const costoAtteso = lorda > 0 ? lorda * CCNL_MOLT_LORDA : 0
                   const costoDeltaAlert = costoAtteso > 0 && Math.abs(costo - costoAtteso) > 50
                   return (
-                    <tr key={i} className="border-b border-gray-800 hover:bg-gray-800/30">
+                    // Chiave di dominio: la lista è riordinata a ogni render, con
+                    // l'indice React riuserebbe la riga sbagliata.
+                    <tr key={chiaveCedolino(c)} className="border-b border-gray-800 hover:bg-gray-800/30">
                       <td className="px-3 py-2 text-gray-300 whitespace-nowrap">{MESI_FULL[(c.mese || 1) - 1]} {c.anno}</td>
                       <td className="px-3 py-2 text-right text-emerald-400 font-semibold">{fmtEur(netto)}</td>
                       <td className="px-3 py-2 text-right text-blue-400">{lorda > 0 ? fmtEur(lorda) : <span className="text-gray-600">—</span>}</td>
@@ -371,22 +540,42 @@ function SchedaDipendente({ emp, onClose, employeeRecord, reparti }) {
           )
         })()}
 
-        {/* CCNL breakdown */}
+        {/* CCNL breakdown — voci e moltiplicatore letti dal bilancio a DB */}
         <div className="px-6 py-4">
           <div className="bg-gray-800/50 rounded-lg p-4">
-            <h4 className="text-xs font-semibold text-gray-300 mb-2 flex items-center gap-1.5"><Info size={12}/> Calcolo costo aziendale — tarato sul bilancio 2025</h4>
-            <div className="grid grid-cols-3 gap-x-4 gap-y-0.5 text-xs text-gray-400">
-              <span>Retrib. lorde: 737.300,62</span><span>Contributi INPS: 174.493,38</span><span>Quote TFR: 52.313,64</span>
-              <span>Altri enti prev.: 5.267,85</span><span>Premi INAIL: 7.137,19</span><span className="text-gray-300">Totale: 976.512,68</span>
-            </div>
-            <p className="mt-1.5 text-[11px] text-gray-500">
-              Fonte: conto economico voce 67.01 del bilancio provvisorio 2025. Il rapporto
-              976.512,68 / 737.300,62 dà il moltiplicatore reale, che incorpora gli esoneri
-              contributivi effettivamente applicati (es. Decontribuzione Sud). Le aliquote
-              nominali CCNL Turismo (38,57%) sovrastimavano il costo di ~4,6 punti.
-            </p>
+            <h4 className="text-xs font-semibold text-gray-300 mb-2 flex items-center gap-1.5">
+              <Info size={12}/> Calcolo costo aziendale
+              {bilancio && <span className="text-gray-500 font-normal">— tarato sul bilancio {bilancio.anno} ({bilancio.tipo})</span>}
+            </h4>
+            {bilancio ? (
+              <>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-0.5 text-xs text-gray-400">
+                  {bilancio.componenti.map(v => (
+                    <span key={v.codice} title={`${v.codice} — ${v.descrizione}`}>
+                      {v.descrizione}: {fmtEur(v.importo)}
+                    </span>
+                  ))}
+                  <span className="text-gray-300">Totale: {fmtEur(bilancio.totale)}</span>
+                </div>
+                <p className="mt-1.5 text-[11px] text-gray-500">
+                  Fonte: conto economico del bilancio {bilancio.tipo} {bilancio.anno}
+                  {bilancio.societa ? ` — ${bilancio.societa}` : ''}. Il rapporto
+                  {' '}{fmtEur(bilancio.totale)} / {fmtEur(bilancio.lorda)} dà il moltiplicatore reale
+                  ({bilancio.moltiplicatore.toFixed(4)}), che incorpora gli esoneri contributivi
+                  effettivamente applicati (es. Decontribuzione Sud). Le aliquote nominali
+                  CCNL Turismo (38,57%) sovrastimano il costo.
+                </p>
+              </>
+            ) : (
+              <p className="text-[11px] text-gray-500">
+                Moltiplicatore tarato sul rapporto fra costo totale del personale e retribuzioni
+                lorde dell'ultimo bilancio disponibile: incorpora gli esoneri contributivi
+                realmente applicati, che le aliquote nominali CCNL non considerano.
+                <span className="text-gray-600"> (voci di bilancio non leggibili in questo momento)</span>
+              </p>
+            )}
             <div className="mt-2 flex flex-wrap gap-4 text-xs">
-              <span className="text-gray-300">Totale c/azienda: <span className="text-white font-semibold">32.44% su lorda</span></span>
+              <span className="text-gray-300">Oneri c/azienda: <span className="text-white font-semibold">{fmtPctIt((CCNL_MOLT_LORDA - 1) * 100)} su lorda</span></span>
               <span className="text-gray-300">Formula: <span className="text-white font-semibold">costo = lorda × {CCNL_MOLT_LORDA}</span></span>
               {stats.totLorda > 0 && (
                 <span className="text-gray-300">Costo CCNL atteso: <span className="text-emerald-400 font-semibold">{fmtEur(costoCalcolato)}</span>
@@ -394,6 +583,16 @@ function SchedaDipendente({ emp, onClose, employeeRecord, reparti }) {
                 </span>
               )}
             </div>
+            {/* Il moltiplicatore in uso è replicato in BUSTE_PAGA/aggiorna_buste_paga.py:
+                se il bilancio si aggiorna e nessuno allinea la costante, il costo mostrato
+                smette di corrispondere al bilancio senza che nulla lo segnali. */}
+            {bilancio && Math.abs(bilancio.moltiplicatore - CCNL_MOLT_LORDA) > 0.005 && (
+              <p className="mt-2 text-[11px] text-amber-400">
+                ⚠ Il moltiplicatore in uso ({CCNL_MOLT_LORDA}) non coincide con quello del bilancio
+                {' '}{bilancio.anno} ({bilancio.moltiplicatore.toFixed(4)}): va riallineato qui e in
+                {' '}aggiorna_buste_paga.py.
+              </p>
+            )}
           </div>
         </div>
 
@@ -415,6 +614,10 @@ const PT_ORE_OPTS = [
 
 function AddModal({ employees, onSave, onClose }) {
   const now = new Date()
+  // Stessa fonte del selettore anno della pagina: due tendine con intervalli
+  // diversi nella stessa schermata (2024→oggi qui, 2023→oggi nei filtri)
+  // facevano sembrare mancanti anni che a DB c'erano, e viceversa.
+  const { anni: anniDb } = useAnniDisponibili('buste_paga', 'anno', { tipo: 'anno' })
   const [form, setForm] = useState({
     employee_id: '', employee_code: '', employee_name: '', sede: 'MA',
     anno: now.getFullYear(), mese: now.getMonth() + 1, netto: '',
@@ -496,7 +699,10 @@ function AddModal({ employees, onSave, onClose }) {
               <label className="text-xs text-gray-400 mb-1 block">Anno</label>
               <select className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
                 value={form.anno} onChange={e => set('anno', parseInt(e.target.value))}>
-                {Array.from({length:new Date().getFullYear()-2023},(_,i)=>2024+i).map(y => <option key={y} value={y}>{y}</option>)}
+                {/* L'anno selezionato entra sempre nell'elenco: si può inserire il
+                    primo cedolino di un anno che a DB ancora non esiste. */}
+                {[...new Set([form.anno, ...anniDb])].sort((a, b) => b - a)
+                  .map(y => <option key={y} value={y}>{y}</option>)}
               </select>
             </div>
             <div>
@@ -562,6 +768,7 @@ function AddModal({ employees, onSave, onClose }) {
 // TAB — RIEPILOGO
 // ═══════════════════════════════════════════════════════════════════════════
 function RiepilogoTab({ anno, mese, sedeFilter, riepilogo }) {
+  const { dato: bilancio } = useCostoPersonaleBilancio()
   const filtered = useMemo(() => {
     if (!riepilogo) return []
     let data = sedeFilter === 'Tutte' ? riepilogo : riepilogo.filter(r => r.sede === sedeFilter)
@@ -593,7 +800,7 @@ function RiepilogoTab({ anno, mese, sedeFilter, riepilogo }) {
     <div className="space-y-6">
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <KpiCard label="Totale Netto" value={fmtEur0(kpis.totNetto)} sub={periodoLabel} icon={DollarSign} color="green"/>
-        <KpiCard label="Costo Aziendale" value={fmtEur0(kpis.totCosto)} sub={`lorda × ${CCNL_MOLT_LORDA} (tarato su bilancio 2025)`} icon={TrendingUp} color="purple"/>
+        <KpiCard label="Costo Aziendale" value={fmtEur0(kpis.totCosto)} sub={notaTaraturaCosto(bilancio)} icon={TrendingUp} color="purple"/>
         <KpiCard label="N. Dipendenti" value={fmtNum(kpis.nDip)} sub={periodoLabel} icon={Users} color="blue"/>
         <KpiCard label="Media Dipendente" value={fmtEur0(kpis.media)} sub="Netto medio mensile" icon={User2} color="amber"/>
       </div>
@@ -630,12 +837,35 @@ function DipendentiTab({ cedolini, sedeFilter, anno, employees: employeesData = 
   const [ruoliDB, setRuoliDB]   = useState([])
   const [showEx, setShowEx]     = useState(false)  // mostra ex-dipendenti?
   const [allEmployees, setAllEmployees] = useState([])  // include anche inattivi
+  const [erroreAnagrafica, setErroreAnagrafica] = useState(null)
 
   useEffect(() => {
-    repartiApi.getAll().then(setReparti).catch(() => setReparti([]))
-    if (rolesApi?.getAll) rolesApi.getAll().then(setRuoliDB).catch(() => setRuoliDB([]))
-    // Carica TUTTI gli employees (anche inattivi) per badge ex-dipendente
-    empApi.getAll({}).then(setAllEmployees).catch(() => setAllEmployees([]))
+    // Guardia di unmount: chiudendo la tab durante il fetch, senza questa,
+    // le risposte arriverebbero su un componente già smontato.
+    let annullato = false
+    setErroreAnagrafica(null)
+    ;(async () => {
+      try {
+        const [rep, ruoli, emps] = await Promise.all([
+          repartiApi.getAll(),
+          rolesApi?.getAll ? rolesApi.getAll() : Promise.resolve([]),
+          // TUTTI gli employees (anche inattivi): serve per il badge ex-dipendente
+          empApi.getAll({}),
+        ])
+        if (annullato) return
+        setReparti(rep || [])
+        setRuoliDB(ruoli || [])
+        setAllEmployees(emps || [])
+      } catch (e) {
+        if (annullato) return
+        // Prima ogni catch faceva setState([]): un blocco RLS o una rete caduta
+        // diventavano "nessun reparto, nessun ex-dipendente", indistinguibili
+        // dal caso in cui davvero non c'è nulla.
+        setReparti([]); setRuoliDB([]); setAllEmployees([])
+        setErroreAnagrafica(e?.message || String(e))
+      }
+    })()
+    return () => { annullato = true }
   }, [])
 
   // Mappa nome cedolino → employee record (per matching anche con buste_paga_name)
@@ -705,12 +935,31 @@ function DipendentiTab({ cedolini, sedeFilter, anno, employees: employeesData = 
       return qualitaDato(c) === 'certo'
     }).length
     const totCed = sedeFilter === 'Tutte' ? cedolini.length : cedolini.filter(c => c.sede === sedeFilter).length
-    // Conta ex-dipendenti nascosti (TFR/ferie residue)
-    const nExNascosti = !showEx ? Object.values(byEmployee.reduce((acc, e) => acc, {})).length : 0
     return { ft, pt, certiTot, totCed }
-  }, [byEmployee, cedolini, sedeFilter, showEx])
+  }, [byEmployee, cedolini, sedeFilter])
 
   const selectedEmp = useMemo(() => selected ? byEmployee.find(e => e.employee_name === selected) : null, [selected, byEmployee])
+
+  // CSV: esporta esattamente ciò che è a schermo (stessi filtri sede/ricerca/ex)
+  const righeCsvDipendenti = useMemo(() => byEmployee.map(e => {
+    const totNetto = e.cedolini.reduce((s, c) => s + (parseFloat(c.netto) || 0), 0)
+    const totLorda = e.cedolini.reduce((s, c) => s + (parseFloat(c.totale_competenze) || 0), 0)
+    const totCosto = e.cedolini.reduce((s, c) => s + (parseFloat(c.costo_azienda) || (parseFloat(c.netto) || 0) * COSTO_AZ_FALLBACK), 0)
+    const rec = empByName[(e.employee_name || '').toUpperCase()]
+    return {
+      employee_name: e.employee_name,
+      sede: e.sede,
+      qualifica: e.qualifica || null,
+      percentuale_pt: e.percentuale_pt ?? null,
+      ore_mensili: e.ore_mensili ?? null,
+      mesi: e.cedolini.length,
+      totale_netto: +totNetto.toFixed(2),
+      // "0" e "non disponibile" non sono la stessa cosa: senza lorda si esporta vuoto
+      totale_lorda: totLorda > 0 ? +totLorda.toFixed(2) : null,
+      totale_costo: +totCosto.toFixed(2),
+      stato: rec && rec.active === false ? 'ex' : 'attivo',
+    }
+  }), [byEmployee, empByName])
 
   return (
     <div className="space-y-4">
@@ -748,6 +997,18 @@ function DipendentiTab({ cedolini, sedeFilter, anno, employees: employeesData = 
         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-red-400"></span><strong className="text-red-300">Stima</strong> — valore stimato (es. proiezione da gennaio), in attesa del PDF</span>
       </div>
 
+      {/* Anagrafica non leggibile: va detto, altrimenti gli ex-dipendenti e i
+          reparti risultano semplicemente "assenti" */}
+      {erroreAnagrafica && (
+        <div className="bg-red-900/20 border border-red-800 rounded-lg p-3 flex gap-2 text-sm text-red-300">
+          <AlertCircle size={16} className="flex-shrink-0 mt-0.5"/>
+          <div>
+            Anagrafica dipendenti/reparti non caricata: {erroreAnagrafica}.
+            I badge ex-dipendente e la ripartizione per reparto restano vuoti finché non si risolve.
+          </div>
+        </div>
+      )}
+
       {/* Search + toggle ex-dipendenti */}
       <div className="flex flex-wrap gap-3 items-center">
         <input type="text" placeholder="Cerca dipendente..."
@@ -758,6 +1019,7 @@ function DipendentiTab({ cedolini, sedeFilter, anno, employees: employeesData = 
             className="accent-amber-500"/>
           <span>Mostra ex-dipendenti (TFR/ferie residue)</span>
         </label>
+        <BottoneCsv righe={righeCsvDipendenti} colonne={COLONNE_CSV_DIPENDENTI} nomeFile={`dipendenti_${anno}`} />
       </div>
 
       {/* Cards */}
@@ -869,7 +1131,7 @@ function AnalisiTab({ cedolini, sedeFilter, anno }) {
     const byMese = {}
     for (const c of filtered) {
       const k = String(c.mese).padStart(2, '0')
-      if (!byMese[k]) byMese[k] = { label: MESI_SHORT[c.mese - 1], nettoMA: 0, nettoPN: 0, costoMA: 0, costoPN: 0, dipMA: new Set(), dipPN: new Set() }
+      if (!byMese[k]) byMese[k] = { chiave: k, mese: c.mese, label: MESI_SHORT[c.mese - 1], nettoMA: 0, nettoPN: 0, costoMA: 0, costoPN: 0, dipMA: new Set(), dipPN: new Set() }
       const netto = parseFloat(c.netto) || 0
       const costo = parseFloat(c.costo_azienda) || (netto * COSTO_AZ_FALLBACK)
       if (c.sede === 'MA') { byMese[k].nettoMA += netto; byMese[k].costoMA += costo; byMese[k].dipMA.add(c.employee_name) }
@@ -1040,7 +1302,10 @@ function AnalisiTab({ cedolini, sedeFilter, anno }) {
             </BarChart>
           </ResponsiveContainer>
 
-          <div className="mt-4 overflow-x-auto">
+          <div className="mt-4 flex justify-end">
+            <BottoneCsv righe={trendData} colonne={COLONNE_CSV_TREND} nomeFile={`trend_personale_${anno}`} />
+          </div>
+          <div className="mt-2 overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
                 <tr className="border-b border-gray-700">
@@ -1054,8 +1319,9 @@ function AnalisiTab({ cedolini, sedeFilter, anno }) {
                 </tr>
               </thead>
               <tbody>
-                {trendData.map((r, i) => (
-                  <tr key={i} className="border-b border-gray-800 hover:bg-gray-800/30">
+                {trendData.map((r) => (
+                  // Chiave = mese: l'indice cambia appena un mese resta senza cedolini
+                  <tr key={r.chiave} className="border-b border-gray-800 hover:bg-gray-800/30">
                     <td className="py-1.5 text-gray-300 font-medium">{r.label}</td>
                     <td className="py-1.5 text-right text-emerald-400">{fmtEur0(r.nettoMA)}</td>
                     <td className="py-1.5 text-right text-orange-400">{fmtEur0(r.nettoPN)}</td>
@@ -1208,6 +1474,7 @@ function AnalisiTab({ cedolini, sedeFilter, anno }) {
 // TAB — COSTO PERSONALE
 // ═══════════════════════════════════════════════════════════════════════════
 function CostoPersonaleTab({ costoMensile, sedeFilter }) {
+  const { dato: bilancio } = useCostoPersonaleBilancio()
   const chartData = useMemo(() => {
     if (!costoMensile) return []
     return (sedeFilter === 'Tutte' ? costoMensile : costoMensile.filter(c => c.sede === sedeFilter))
@@ -1227,7 +1494,15 @@ function CostoPersonaleTab({ costoMensile, sedeFilter }) {
         <AlertCircle size={18} className="text-blue-400 flex-shrink-0 mt-0.5"/>
         <div className="text-sm text-blue-300">
           <p className="font-medium">Costo Aziendale — CCNL Turismo Pubblici Esercizi</p>
-          <p className="text-xs mt-0.5 opacity-80">Formula: costo = lorda × {CCNL_MOLT_LORDA} (32,44% di oneri c/azienda, ricavato dalla voce 67.01 del bilancio 2025: 976.512,68 / 737.300,62). Fallback: netto × 1.79 quando lorda non disponibile.</p>
+          {/* Anno e importi arrivano dal bilancio a DB: cablati nel testo,
+              restavano fermi al 2025 anche dopo il deposito del bilancio nuovo. */}
+          <p className="text-xs mt-0.5 opacity-80">
+            Formula: costo = lorda × {CCNL_MOLT_LORDA} ({fmtPctIt((CCNL_MOLT_LORDA - 1) * 100)} di oneri c/azienda
+            {bilancio
+              ? `, ricavato dal costo del personale del bilancio ${bilancio.tipo} ${bilancio.anno}: ${fmtEur(bilancio.totale)} / ${fmtEur(bilancio.lorda)} = ${bilancio.moltiplicatore.toFixed(4)}`
+              : ', ricavato dal rapporto costo totale personale / retribuzioni lorde dell\'ultimo bilancio'}
+            ). Fallback: netto × {COSTO_AZ_FALLBACK} quando la lorda non è disponibile.
+          </p>
         </div>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -1237,7 +1512,10 @@ function CostoPersonaleTab({ costoMensile, sedeFilter }) {
       </div>
       {chartData.length > 0 && (
         <div className="bg-gray-900 rounded-lg p-6 border border-gray-800">
-          <h3 className="text-lg font-semibold mb-4 text-white">Trend Costi</h3>
+          <div className="flex items-center justify-between mb-4 gap-3">
+            <h3 className="text-lg font-semibold text-white">Trend Costi</h3>
+            <BottoneCsv righe={chartData} colonne={COLONNE_CSV_COSTO} nomeFile={`costo_personale_${sedeFilter}`} />
+          </div>
           <ResponsiveContainer width="100%" height={320}>
             <LineChart data={chartData}>
               <CartesianGrid strokeDasharray="3 3" stroke="#374151"/>
@@ -1267,35 +1545,58 @@ function DettaglioCedoliniTab({ cedolini, sedeFilter, meseFilter, onRefresh, emp
   const [saving, setSaving]       = useState(null)
   const [showAdd, setShowAdd]     = useState(false)
   const [deleting, setDeleting]   = useState(null)
+  const [erroreAzione, setErroreAzione] = useState(null)
 
-  const filtered = useMemo(() => {
+  // Le colonne calcolate (netto/lorda/costo/fonte) diventano campi veri: solo
+  // così l'ordinamento lavora sui numeri mostrati e non sulle stringhe grezze.
+  const righe = useMemo(() => {
     if (!cedolini) return []
     return cedolini.filter(c => {
       if (sedeFilter !== 'Tutte' && c.sede !== sedeFilter) return false
       if (meseFilter > 0 && c.mese !== meseFilter) return false
       if (search && !(c.employee_name || '').toLowerCase().includes(search.toLowerCase())) return false
       return true
-    }).sort((a, b) => {
-      const pA = a.anno * 100 + a.mese, pB = b.anno * 100 + b.mese
-      return pB - pA || (a.employee_name || '').localeCompare(b.employee_name || '')
+    }).map(c => {
+      const netto = parseFloat(c.netto) || 0
+      const lorda = parseFloat(c.totale_competenze) || 0
+      return {
+        ...c,
+        periodo:   c.anno * 100 + c.mese,
+        netto_num: netto,
+        // null, non 0: un cedolino senza lorda non è un cedolino con lorda zero,
+        // e useOrdinamento tiene i mancanti in coda in entrambe le direzioni.
+        lorda_num: lorda > 0 ? lorda : null,
+        costo_num: parseFloat(c.costo_azienda) || (netto * COSTO_AZ_FALLBACK),
+        fonte:     QUALITY[qualitaDato(c)].label,
+      }
     })
   }, [cedolini, sedeFilter, meseFilter, search])
 
+  const { righeOrdinate: filtered, colonna, direzione, propsTh } = useOrdinamento(righe, 'periodo', 'desc')
+
+  const TH = ({ col, children, align = 'left' }) => (
+    <th {...propsTh(col)} className={`px-3 py-3 text-${align} font-semibold text-gray-300 cursor-pointer select-none hover:text-white`}>
+      {children}<IconaOrdine colonna={col} colonnaAttiva={colonna} direzione={direzione} />
+    </th>
+  )
+
+  // Prima salvataggio ed eliminazione finivano in console.error: l'utente vedeva
+  // solo il valore tornare com'era, senza sapere che la scrittura era fallita.
   const saveNetto = async (id) => {
-    setSaving(id)
+    setSaving(id); setErroreAzione(null)
     try {
       await bp.update(id, { netto: parseFloat(editNetto) })
       setEditingId(null); setEditNetto('')
       onRefresh()
-    } catch(e) { console.error(e) }
+    } catch(e) { setErroreAzione(`Salvataggio netto non riuscito: ${e?.message || e}`) }
     finally { setSaving(null) }
   }
 
   const handleDelete = async (id) => {
     if (!window.confirm('Eliminare questo cedolino?')) return
-    setDeleting(id)
+    setDeleting(id); setErroreAzione(null)
     try { await bp.delete(id); onRefresh() }
-    catch(e) { console.error(e) }
+    catch(e) { setErroreAzione(`Eliminazione non riuscita: ${e?.message || e}`) }
     finally { setDeleting(null) }
   }
 
@@ -1306,6 +1607,13 @@ function DettaglioCedoliniTab({ cedolini, sedeFilter, meseFilter, onRefresh, emp
           a questo livello la promise tornerebbe risolta e onClose() scatterebbe
           comunque, facendo perdere all'utente i dati inseriti. */}
       {showAdd && <AddModal employees={employees} onSave={d => bp.insert(d).then(() => onRefresh())} onClose={() => setShowAdd(false)}/>}
+      {erroreAzione && (
+        <div className="bg-red-900/20 border border-red-800 rounded-lg p-3 flex gap-2 text-sm text-red-300">
+          <AlertCircle size={16} className="flex-shrink-0 mt-0.5"/>
+          <div className="flex-1">{erroreAzione}</div>
+          <button onClick={() => setErroreAzione(null)} className="opacity-60 hover:opacity-100"><X size={14}/></button>
+        </div>
+      )}
       <div className="flex gap-3 items-center">
         <input type="text" placeholder="Cerca dipendente..."
           value={search} onChange={e => setSearch(e.target.value)}
@@ -1314,28 +1622,33 @@ function DettaglioCedoliniTab({ cedolini, sedeFilter, meseFilter, onRefresh, emp
           className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium">
           <PlusCircle size={16}/> Aggiungi
         </button>
+        <BottoneCsv righe={filtered} colonne={COLONNE_CSV_CEDOLINI} nomeFile="cedolini" />
       </div>
       <div className="overflow-x-auto rounded-lg border border-gray-700">
         <table className="w-full text-sm">
           <thead className="bg-gray-800">
             <tr className="border-b border-gray-700">
-              <th className="px-3 py-3 text-left font-semibold text-gray-300">Dipendente</th>
-              <th className="px-3 py-3 text-left font-semibold text-gray-300">Sede</th>
-              <th className="px-3 py-3 text-left font-semibold text-gray-300">Mese</th>
-              <th className="px-3 py-3 text-right font-semibold text-gray-300">Netto</th>
-              <th className="px-3 py-3 text-right font-semibold text-gray-300 hidden md:table-cell">Lorda</th>
-              <th className="px-3 py-3 text-right font-semibold text-gray-300">Costo Az.</th>
-              <th className="px-3 py-3 text-center font-semibold text-gray-300">Fonte</th>
+              <TH col="employee_name">Dipendente</TH>
+              <TH col="sede">Sede</TH>
+              <TH col="periodo">Mese</TH>
+              <TH col="netto_num" align="right">Netto</TH>
+              <th {...propsTh('lorda_num')} className="px-3 py-3 text-right font-semibold text-gray-300 cursor-pointer select-none hover:text-white hidden md:table-cell">
+                Lorda<IconaOrdine colonna="lorda_num" colonnaAttiva={colonna} direzione={direzione} />
+              </th>
+              <TH col="costo_num" align="right">Costo Az.</TH>
+              <TH col="fonte" align="center">Fonte</TH>
               <th className="px-3 py-3 text-center font-semibold text-gray-300">Azioni</th>
             </tr>
           </thead>
           <tbody>
-            {filtered.map((c, i) => {
-              const netto   = parseFloat(c.netto) || 0
-              const lorda   = parseFloat(c.totale_competenze) || 0
-              const costoAz = parseFloat(c.costo_azienda) || (netto * COSTO_AZ_FALLBACK)
+            {filtered.map((c) => {
+              const netto   = c.netto_num
+              const lorda   = c.lorda_num ?? 0
+              const costoAz = c.costo_num
               return (
-                <tr key={c.id || i} className="border-b border-gray-700 hover:bg-gray-800/50 transition">
+                // Chiave di dominio: la tabella è ordinabile e filtrabile, con
+                // l'indice React riassocerebbe le righe sbagliate dopo un sort.
+                <tr key={chiaveCedolino(c)} className="border-b border-gray-700 hover:bg-gray-800/50 transition">
                   <td className="px-3 py-3 text-white font-medium">{c.employee_name}</td>
                   <td className="px-3 py-3">
                     <span className={`px-2 py-0.5 rounded text-xs font-semibold ${c.sede === 'MA' ? 'bg-red-900/30 text-red-300' : 'bg-blue-900/30 text-blue-300'}`}>{c.sede}</span>
@@ -1411,7 +1724,10 @@ export default function BustePaga({ startTab = 'riepilogo' }) {
   const [syncing,      setSyncing]      = useState(false)
   const [syncResult,   setSyncResult]   = useState(null)
 
-  const loadData = useCallback(async () => {
+  // `attivo()` è la guardia di unmount/cambio-anno: le risposte che tornano
+  // dopo che il componente è stato smontato (o dopo che l'utente ha già
+  // cambiato anno) non devono più scrivere sullo stato.
+  const loadData = useCallback(async (attivo = () => true) => {
     setLoading(true); setError(null)
     try {
       const [ried, costo, ced, emps] = await Promise.all([
@@ -1420,16 +1736,21 @@ export default function BustePaga({ startTab = 'riepilogo' }) {
         bp.getAll({ anno }),
         empApi.getAll({ active: 'true' }),
       ])
+      if (!attivo()) return
       setRiepilogo(ried)
       setCostoMensile(costo)
       setCedolini(ced)
       setEmployees(emps.map(e => ({ ...e, sede: e.sede || (e.location === 'MAMELI' ? 'MA' : 'PN') })))
     } catch(e) {
-      setError(e.message || 'Errore caricamento dati')
-    } finally { setLoading(false) }
+      if (attivo()) setError(e.message || 'Errore caricamento dati')
+    } finally { if (attivo()) setLoading(false) }
   }, [anno])
 
-  useEffect(() => { loadData() }, [loadData])
+  useEffect(() => {
+    let annullato = false
+    loadData(() => !annullato)
+    return () => { annullato = true }
+  }, [loadData])
 
   // Il sync PDF passa dal server Express LOCALE (serve il filesystem del Mac):
   // in produzione su Vercel non è raggiungibile, quindi il pulsante è disabilitato.
@@ -1470,6 +1791,27 @@ export default function BustePaga({ startTab = 'riepilogo' }) {
     return () => window.removeEventListener('storage', onStorage)
   }, [loadData])
 
+  // Anni realmente presenti in buste_paga. L'anno selezionato resta comunque in
+  // elenco: altrimenti, appena si apre un anno ancora senza cedolini, la tendina
+  // mostrerebbe un valore che non è fra le opzioni.
+  const { anni: anniDb, errore: erroreAnni } = useAnniDisponibili('buste_paga', 'anno', { tipo: 'anno' })
+  const anniSelezionabili = useMemo(
+    () => [...new Set([anno, ...anniDb])].sort((a, b) => b - a),
+    [anno, anniDb]
+  )
+
+  // useSedi può tornare vuoto (tabella `sedi` non leggibile): in quel caso le
+  // sedi si ricavano dai cedolini già caricati, così il filtro non resta muto.
+  const sediOpzioni = useMemo(() => {
+    const daHook = (sedi || [])
+      .map(s => ({ codice: s.codice ?? s.code, nome: s.nome ?? s.name ?? s.codice ?? s.code }))
+      .filter(s => s.codice)
+    if (daHook.length) return daHook
+    return [...new Set(cedolini.map(c => c.sede).filter(Boolean))]
+      .sort()
+      .map(codice => ({ codice, nome: codice }))
+  }, [sedi, cedolini])
+
   const previsioneInfo = useMemo(() => {
     const relevant = cedolini.filter(c => {
       if (sedeFilter !== 'Tutte' && c.sede !== sedeFilter) return false
@@ -1505,7 +1847,9 @@ export default function BustePaga({ startTab = 'riepilogo' }) {
             <p className="text-gray-400 mt-1">Gestione cedolini · Schede dipendenti · BI analisi costi</p>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={loadData} disabled={loading || syncing}
+            {/* Arrow function obbligatoria: passando `loadData` diretto,
+                l'evento click finirebbe nel parametro `attivo`. */}
+            <button onClick={() => loadData()} disabled={loading || syncing}
               className="flex items-center gap-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 text-gray-200 px-3 py-2 rounded-lg text-sm font-medium transition-colors">
               <RefreshCw size={14} className={loading ? 'animate-spin' : ''}/>
               {loading ? 'Carico...' : 'Ricarica'}
@@ -1549,10 +1893,13 @@ export default function BustePaga({ startTab = 'riepilogo' }) {
         <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4 mb-6 grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-2 flex items-center gap-2"><Calendar size={14}/> Anno</label>
+            {/* Anni reali a DB, non un intervallo cablato: qui c'era 2023→oggi
+                mentre la modale "Aggiungi cedolino" partiva dal 2024. */}
             <select value={anno} onChange={e => setAnno(Number(e.target.value))}
               className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
-              {Array.from({length:new Date().getFullYear()-2022},(_,i)=>2023+i).map(y => <option key={y} value={y}>{y}</option>)}
+              {anniSelezionabili.map(y => <option key={y} value={y}>{y}</option>)}
             </select>
+            {erroreAnni && <p className="text-[11px] text-amber-400 mt-1">Anni da DB non leggibili ({erroreAnni}): elenco di ripiego.</p>}
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-2 flex items-center gap-2"><Calendar size={14}/> Mese</label>
@@ -1567,7 +1914,7 @@ export default function BustePaga({ startTab = 'riepilogo' }) {
             <select value={sedeFilter} onChange={e => setSedeFilter(e.target.value)}
               className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
               <option value="Tutte">Tutte le sedi</option>
-              {sedi.map(s => <option key={s.codice} value={s.codice}>{s.nome}</option>)}
+              {sediOpzioni.map(s => <option key={s.codice} value={s.codice}>{s.nome}</option>)}
             </select>
           </div>
         </div>

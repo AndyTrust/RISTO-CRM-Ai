@@ -6,10 +6,13 @@
  *
  * Tutto modificabile direttamente: rotelle %, costi fissi inline.
  */
-import React, { useEffect, useMemo, useState, useCallback } from 'react'
+import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import supabase from '../supabase'
 import { repartiApi, costiFissiApi, chiusure as chiusureApi } from '../api/client'
+import { fetchPaged } from '../api/paged'
+import { BottoneCsv, NotaCopertura } from '../lib/tabella'
+import useAnniDisponibili from '../hooks/useAnniDisponibili'
 import PageStatsWidget from '../components/PageStatsWidget'
 import {
   Users, Building2, TrendingUp, AlertCircle, RefreshCw,
@@ -62,99 +65,135 @@ export default function AnalisiReparti() {
   }, [])
 
   // ── Quote ripartizione costi fissi per reparto (persistite su Supabase) ──
-  const [quoteFissi, setQuoteFissi] = useState({ Sala: 45, Cucina: 40, Amministrazione: 10, Marketing: 5 })
+  const QUOTE_DEFAULT = { Sala: 45, Cucina: 40, Amministrazione: 10, Marketing: 5 }
+  const [quoteFissi, setQuoteFissi] = useState(QUOTE_DEFAULT)
+  const [quoteCaricate, setQuoteCaricate] = useState(false)   // false ⇒ a schermo ci sono i default
   const [savingQuote, setSavingQuote] = useState(false)
+  const [quoteErr, setQuoteErr] = useState(null)
 
   // Carica quote da Supabase all'avvio
   useEffect(() => {
-    supabase.from('costi_fissi_quote_reparto')
-      .select('reparto_nome, quota_pct')
-      .eq('sede', 'ALL')
-      .then(({ data }) => {
-        if (data && data.length > 0) {
-          const next = {}
-          for (const r of data) next[r.reparto_nome] = Number(r.quota_pct)
-          setQuoteFissi(q => ({ ...q, ...next }))
-        }
-      })
+    let annullato = false
+    ;(async () => {
+      // `.then(({ data }) => ...)` senza `error`: con RLS che blocca la tabella
+      // restavano i default 45/40/10/5 e la pagina li mostrava come se fossero
+      // le quote salvate. Ora l'errore viene dichiarato in pagina.
+      const { data, error } = await supabase.from('costi_fissi_quote_reparto')
+        .select('reparto_nome, quota_pct')
+        .eq('sede', 'ALL')
+      if (annullato) return
+      if (error) { setQuoteErr(`Quote non caricate: ${error.message} — a schermo ci sono i valori di default`); return }
+      if (data && data.length > 0) {
+        const next = {}
+        for (const r of data) next[r.reparto_nome] = Number(r.quota_pct)
+        setQuoteFissi(q => ({ ...q, ...next }))
+      }
+      setQuoteCaricate(true)
+    })()
+    return () => { annullato = true }
   }, [])
 
   // Salva quote su Supabase quando cambiano (debounced 800ms)
   useEffect(() => {
+    // Finché la lettura iniziale non è andata a buon fine, i valori a schermo
+    // sono i default: salvarli sovrascriverebbe le quote vere a DB.
+    if (!quoteCaricate) return
+    let annullato = false
     const t = setTimeout(async () => {
       setSavingQuote(true)
-      try {
-        const rows = Object.entries(quoteFissi).map(([nome, pct]) => ({
-          sede: 'ALL', reparto_nome: nome, quota_pct: Number(pct) || 0,
-          updated_at: new Date().toISOString(),
-        }))
-        await supabase.from('costi_fissi_quote_reparto').upsert(rows, { onConflict: 'sede,reparto_nome' })
-      } catch (e) {
-        console.warn('[quote] save error:', e.message)
-      } finally {
-        setSavingQuote(false)
-      }
+      const rows = Object.entries(quoteFissi).map(([nome, pct]) => ({
+        sede: 'ALL', reparto_nome: nome, quota_pct: Number(pct) || 0,
+        updated_at: new Date().toISOString(),
+      }))
+      // supabase-js NON rigetta mai: senza leggere `error` il catch non scatta
+      // e un salvataggio fallito veniva mostrato come riuscito.
+      const { error } = await supabase.from('costi_fissi_quote_reparto')
+        .upsert(rows, { onConflict: 'sede,reparto_nome' })
+      if (annullato) return
+      setSavingQuote(false)
+      setQuoteErr(error ? `Quote NON salvate: ${error.message}` : null)
     }, 800)
-    return () => clearTimeout(t)
-  }, [quoteFissi])
+    return () => { annullato = true; clearTimeout(t) }
+  }, [quoteFissi, quoteCaricate])
+
+  const richiestaRef = useRef(0)
 
   const loadData = useCallback(async () => {
+    const mia = ++richiestaRef.current
     setLoading(true); setErr(null)
     try {
+      // Entrambe le viste venivano lette senza `.range()`: il cap PostgREST di
+      // 1000 righe le avrebbe troncate in silenzio. Il filtro anno+mese le tiene
+      // piccole, ma la paginazione toglie il limite implicito. Nessuna delle due
+      // ha una PK: con anno e mese fissati la chiave residua è (sede, reparto)
+      // per la prima e (sede) per la seconda, quindi si ordina su quelle.
       const [rep, alloc, fissi] = await Promise.all([
         repartiApi.getAll(),
-        supabase.from('v_costo_personale_per_reparto')
+        fetchPaged(() => supabase.from('v_costo_personale_per_reparto')
           .select('anno, mese, sede, reparto_id, reparto_nome, reparto_icona, n_attivi, n_ex, n_dipendenti, costo_attivi, costo_ex, costo_totale')
           .eq('anno', anno).eq('mese', mese)
-          .then(({ data, error }) => { if (error) throw error; return data || [] }),
+          .order('sede'), 'reparto_nome'),
         costiFissiApi.getMese?.({ anno, mese }) ??
-          supabase.from('v_costi_fissi_mensile')
+          fetchPaged(() => supabase.from('v_costi_fissi_mensile')
             .select('*')
-            .eq('anno', anno).eq('mese', mese)
-            .then(({ data, error }) => { if (error) throw error; return data || [] }),
+            .eq('anno', anno).eq('mese', mese), 'sede'),
       ])
       const from = `${anno}-${String(mese).padStart(2,'0')}-01`
+      // Mai `-31` cablato: in feb/apr/giu/set/nov Postgres restituisce 22008.
       const last = new Date(anno, mese, 0).getDate()
       const to   = `${anno}-${String(mese).padStart(2,'0')}-${String(last).padStart(2,'0')}`
-      const chius = await chiusureApi.getAll({ from, to, limit: 200 }).catch(() => [])
+      // limit 200 è sufficiente: al massimo 31 giorni × 2 sedi.
+      const chius = await chiusureApi.getAll({ from, to, limit: 200 })
 
+      if (mia !== richiestaRef.current) return
       setReparti(rep || [])
       setCostiAlloc(alloc || [])
       setCostiFissi(Array.isArray(fissi) ? fissi : [])
       setChiusureMese(chius || [])
     } catch (e) {
-      setErr(e.message || String(e))
+      if (mia === richiestaRef.current) setErr(e.message || String(e))
     } finally {
-      setLoading(false)
+      if (mia === richiestaRef.current) setLoading(false)
     }
   }, [anno, mese])
 
-  useEffect(() => { loadData() }, [loadData])
+  useEffect(() => {
+    loadData()
+    // Invalida la richiesta in volo: nessun setState dopo lo smontaggio.
+    return () => { richiestaRef.current++ }
+  }, [loadData])
 
   // ── Aggregati ──────────────────────────────────────────────────────────
   const allocFilt = useMemo(() => sede === 'Tutte' ? costiAlloc : costiAlloc.filter(r => r.sede === sede), [costiAlloc, sede])
 
   const costoFissoSede = useMemo(() => {
     const totBySede = { MA: 0, PN: 0 }
+    // Le righe con sede diversa da MA/PN venivano scartate in silenzio: qui
+    // vengono contate a parte e dichiarate sotto i KPI.
+    let scartati = 0, scartatoImporto = 0
     for (const r of costiFissi) {
-      const importo = parseFloat(r.importo) || 0
+      // v_costi_fissi_mensile espone `tot_costi_fissi`; `importo` resta per il
+      // caso in cui l'API costiFissiApi.getMese restituisca le righe grezze.
+      const importo = parseFloat(r.importo ?? r.tot_costi_fissi ?? 0) || 0
       if (totBySede[r.sede] != null) totBySede[r.sede] += importo
+      else { scartati++; scartatoImporto += importo }
     }
-    return totBySede
+    return { ...totBySede, _scartati: scartati, _scartatoImporto: scartatoImporto }
   }, [costiFissi])
 
   const venduto = useMemo(() => {
     const totBySede = { MA: 0, PN: 0 }
     let totCoperti = { MA: 0, PN: 0 }
+    let scartati = 0, scartatoImporto = 0
     for (const r of chiusureMese) {
       const importo = parseFloat(r.totale_venduto_ipratico ?? r.totale ?? 0) || 0
       const cop = parseInt(r.coperti) || 0
       if (totBySede[r.sede] != null) {
         totBySede[r.sede] += importo
         totCoperti[r.sede] += cop
-      }
+      } else { scartati++; scartatoImporto += importo }
     }
-    return { totBySede, totCoperti }
+    return { totBySede, totCoperti, scartati, scartatoImporto }
   }, [chiusureMese])
 
   // ── Tabella per reparto: somma personale + quota costi fissi ───────────
@@ -185,10 +224,19 @@ export default function AnalisiReparti() {
       ? (costoFissoSede.MA + costoFissoSede.PN)
       : (costoFissoSede[sede] || 0)
     return Object.values(byRep).map(row => {
-      const quotaPct = (quoteFissi[row.nome] ?? 0) / 100
+      // Un reparto senza quota configurata riceveva 0% di costi fissi senza che
+      // nulla lo dicesse: il flag `quota_mancante` lo rende visibile in tabella.
+      const quotaConfigurata = quoteFissi[row.nome]
+      const quotaPct = (quotaConfigurata ?? 0) / 100
       const costoFissoQuota = totFissi * quotaPct
       const costoTotale = row.costo_personale + costoFissoQuota
-      return { ...row, costo_fissi: costoFissoQuota, costo_totale: costoTotale, quota_pct: quoteFissi[row.nome] ?? 0 }
+      return {
+        ...row,
+        costo_fissi: costoFissoQuota,
+        costo_totale: costoTotale,
+        quota_pct: quotaConfigurata ?? 0,
+        quota_mancante: quotaConfigurata == null,
+      }
     }).sort((a, b) => b.costo_totale - a.costo_totale)
   }, [allocFilt, reparti, quoteFissi, costoFissoSede, sede])
 
@@ -200,6 +248,19 @@ export default function AnalisiReparti() {
   const marginePct = totVenduto > 0 ? margine / totVenduto : 0
 
   const quoteSum = Object.values(quoteFissi).reduce((s, v) => s + (+v || 0), 0)
+
+  // Anni realmente presenti nella vista costi personale (niente lista cablata).
+  const { anni: anniDisponibili } = useAnniDisponibili('v_costo_personale_per_reparto', 'anno', { tipo: 'anno' })
+
+  const colonneCsv = [
+    { chiave: 'nome', etichetta: 'Reparto' },
+    { chiave: 'n_dipendenti', etichetta: 'Dipendenti' },
+    { chiave: 'costo_personale', etichetta: 'Costo personale €', valore: r => +Number(r.costo_personale || 0).toFixed(2) },
+    { chiave: 'quota_pct', etichetta: 'Quota costi fissi %' },
+    { chiave: 'costo_fissi', etichetta: 'Quota costi fissi €', valore: r => +Number(r.costo_fissi || 0).toFixed(2) },
+    { chiave: 'costo_totale', etichetta: 'Costo totale €', valore: r => +Number(r.costo_totale || 0).toFixed(2) },
+    { chiave: 'pct_venduto', etichetta: '% su venduto', valore: r => (totVenduto > 0 ? +((r.costo_totale / totVenduto) * 100).toFixed(2) : null) },
+  ]
 
   return (
     <>
@@ -229,9 +290,11 @@ export default function AnalisiReparti() {
           <div className="bg-white border border-gray-200 rounded-xl p-3 mb-4 flex flex-wrap gap-3 items-end">
             <div>
               <label className="text-[11px] text-gray-500 block mb-0.5">Anno</label>
+              {/* Gli anni si chiedono ai dati: la lista fissa di 5 anni nascondeva
+                  lo storico più vecchio senza che dalla UI si potesse capirlo. */}
               <select value={anno} onChange={e => setAnno(parseInt(e.target.value))}
                 className="px-2 py-1 border border-gray-200 rounded text-sm">
-                {Array.from({length: 5}, (_, i) => today.getFullYear() - i).map(y => <option key={y} value={y}>{y}</option>)}
+                {(anniDisponibili.length ? anniDisponibili : [anno]).map(y => <option key={y} value={y}>{y}</option>)}
               </select>
             </div>
             <div>
@@ -255,6 +318,24 @@ export default function AnalisiReparti() {
           {err && (
             <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4 text-red-700 text-sm flex items-start gap-2">
               <AlertCircle size={16} className="mt-0.5" /> {err}
+            </div>
+          )}
+
+          {quoteErr && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-amber-800 text-sm flex items-start gap-2">
+              <AlertCircle size={16} className="mt-0.5" /> {quoteErr}
+            </div>
+          )}
+
+          {(venduto.scartati > 0 || costoFissoSede._scartati > 0) && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-amber-800 text-xs flex items-start gap-2">
+              <AlertCircle size={14} className="mt-0.5" />
+              <span>
+                Righe con sede diversa da MA/PN escluse dai totali:
+                {venduto.scartati > 0 && <> {venduto.scartati} chiusure ({fmtE(venduto.scartatoImporto)} di venduto)</>}
+                {venduto.scartati > 0 && costoFissoSede._scartati > 0 && ' ·'}
+                {costoFissoSede._scartati > 0 && <> {costoFissoSede._scartati} voci di costo fisso ({fmtE(costoFissoSede._scartatoImporto)})</>}.
+              </span>
             </div>
           )}
 
@@ -301,9 +382,14 @@ export default function AnalisiReparti() {
           {/* Tabella per reparto + grafici */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
             <div className="lg:col-span-2 bg-white border border-gray-200 rounded-xl p-4">
-              <h3 className="font-semibold text-sm text-gray-800 mb-3 flex items-center gap-2">
-                <Activity size={15} className="text-violet-600" /> Costi per Reparto
-              </h3>
+              <div className="flex items-center justify-between gap-2 flex-wrap mb-3">
+                <h3 className="font-semibold text-sm text-gray-800 flex items-center gap-2">
+                  <Activity size={15} className="text-violet-600" /> Costi per Reparto
+                </h3>
+                <BottoneCsv righe={perReparto} colonne={colonneCsv} nomeFile={`costi_reparto_${anno}_${String(mese).padStart(2,'0')}`} />
+              </div>
+              <NotaCopertura righe={costiAlloc.length} fonte="v_costo_personale_per_reparto + v_costi_fissi_mensile"
+                extra={`${MESI[mese-1]} ${anno} · sede ${sede}`} />
               {loading ? (
                 <div className="h-32 flex items-center justify-center text-gray-400">Caricamento...</div>
               ) : perReparto.length === 0 ? (
@@ -331,7 +417,15 @@ export default function AnalisiReparti() {
                           </td>
                           <td className="py-2 px-2 text-right text-gray-600">{r.n_dipendenti}</td>
                           <td className="py-2 px-2 text-right text-blue-600 font-medium">{fmtE(r.costo_personale)}</td>
-                          <td className="py-2 px-2 text-right text-amber-600">{fmtE(r.costo_fissi)}</td>
+                          <td className="py-2 px-2 text-right text-amber-600">
+                            {fmtE(r.costo_fissi)}
+                            {r.quota_mancante && (
+                              <span className="ml-1 text-[10px] text-amber-700 bg-amber-100 px-1 rounded"
+                                title="Nessuna quota configurata per questo reparto: riceve 0% dei costi fissi">
+                                0% non configurato
+                              </span>
+                            )}
+                          </td>
                           <td className="py-2 px-2 text-right text-violet-700 font-bold">{fmtE(r.costo_totale)}</td>
                           <td className="py-2 px-2 text-right text-gray-500">
                             {totVenduto > 0 ? PCT(r.costo_totale / totVenduto) : '—'}
@@ -368,8 +462,8 @@ export default function AnalisiReparti() {
                 <ResponsiveContainer width="100%" height={240}>
                   <PieChart>
                     <Pie data={perReparto} dataKey="costo_totale" nameKey="nome" outerRadius={80} label={(e) => `${e.nome.substring(0,4)}`}>
-                      {perReparto.map((e, i) => (
-                        <Cell key={i} fill={COLORS[e.nome] || COLORS._default} />
+                      {perReparto.map((e) => (
+                        <Cell key={e.reparto_id || e.nome} fill={COLORS[e.nome] || COLORS._default} />
                       ))}
                     </Pie>
                     <Tooltip formatter={(v) => fmtE(v)} />

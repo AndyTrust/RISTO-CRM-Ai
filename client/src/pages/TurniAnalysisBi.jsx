@@ -2,7 +2,9 @@
  * TurniAnalysisBi.jsx — Analisi Turni Pranzo/Cena BI
  *
  * Fonte di verità: chiusure_turni (sede, data, turno='pranzo'|'cena', incasso, quantita).
- * Copertura dati: 2025-01-02 → 2026-06-04 (chiusure_turni si ferma al 4 giugno 2026).
+ * Copertura dati: NON è una costante — viene letta a runtime (min/max di `data`),
+ * perché una data cablata nel codice smette di essere vera al primo import nuovo
+ * e continua a dichiarare in UI una copertura che non esiste più.
  * Quota costi: v_be_mensile.costi_totali (somma costi del mese) ripartita pro-rata.
  *
  * TUTTE le card/tabelle/grafici si ricalcolano su periodo (from/to) e sede (MA/PN/ALL).
@@ -10,6 +12,8 @@
  */
 import { useState, useEffect, useMemo } from 'react'
 import supabase from '../supabase'
+import { fetchPagedInfo } from '../api/paged'
+import { useOrdinamento, IconaOrdine, BottoneCsv, NotaCopertura } from '../lib/tabella'
 import PageAssistant from '../components/PageAssistant'
 import PeriodFilter from '../components/PeriodFilter'
 import {
@@ -20,10 +24,6 @@ import {
   Clock, TrendingUp, Users, DollarSign, CheckCircle,
   AlertCircle, Info, ArrowDownRight
 } from 'lucide-react'
-
-// Fix: la copertura di chiusure_turni non è più hardcoded — viene letta a runtime
-// (max(data) sulla tabella). Il valore qui sotto resta solo come fallback iniziale.
-const TURNI_COPERTURA_FALLBACK = '2026-06-04'
 
 const SEDE_OPTIONS = [
   { value: 'MA',  label: 'Mameli (CA)' },
@@ -36,6 +36,17 @@ const GIORNI = ['Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab', 'Dom']
 const eur = n => (Number(n) || 0).toLocaleString('it-IT', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 })
 const eur2 = n => (Number(n) || 0).toLocaleString('it-IT', { style: 'currency', currency: 'EUR', minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const num = n => (Number(n) || 0).toLocaleString('it-IT')
+
+/**
+ * Data locale in formato YYYY-MM-DD.
+ * `toISOString()` converte in UTC: in Italia (UTC+1/+2) la mezzanotte locale
+ * diventa le 22:00/23:00 del giorno PRECEDENTE, quindi "oggi" e "primo del mese"
+ * scivolavano indietro di un giorno e il periodo di default era sbagliato.
+ */
+const ymd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
+/** YYYY-MM-DD → GG/MM/AAAA, con segnaposto esplicito quando la data non c'è. */
+const itDate = s => (s ? s.split('-').reverse().join('/') : '—')
 
 // Giorni effettivi nell'intervallo [from, to] inclusi
 function daysInRange(from, to) {
@@ -104,8 +115,8 @@ function Empty({ msg }) {
 
 export default function TurniAnalysisBi() {
   const today = new Date()
-  const firstOfMonth = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split('T')[0]
-  const todayStr = today.toISOString().split('T')[0]
+  const firstOfMonth = ymd(new Date(today.getFullYear(), today.getMonth(), 1))
+  const todayStr = ymd(today)
 
   const [sede, setSede] = useState('MA')
   const [period, setPeriod] = useState('month')
@@ -117,16 +128,25 @@ export default function TurniAnalysisBi() {
   const [beRows, setBeRows] = useState([])     // v_be_mensile (costi mensili)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const [sortAsc, setSortAsc] = useState(false)
-  // Fix: data massima realmente presente in chiusure_turni (niente costante hardcoded)
-  const [coperturaFine, setCoperturaFine] = useState(TURNI_COPERTURA_FALLBACK)
+  const [troncato, setTroncato] = useState(false)
+  const [limiteRighe, setLimiteRighe] = useState(200)
+  // Copertura REALE di chiusure_turni (min/max di `data`), letta a runtime.
+  const [copertura, setCopertura] = useState({ da: null, a: null })
 
   useEffect(() => {
     let cancelled = false
     ;(async () => {
-      const { data, error } = await supabase.from('chiusure_turni')
-        .select('data').order('data', { ascending: false }).limit(1)
-      if (!cancelled && !error && data?.[0]?.data) setCoperturaFine(data[0].data)
+      // Due letture da 1 riga: è l'equivalente di min()/max() senza RPC dedicata.
+      const [minRes, maxRes] = await Promise.all([
+        supabase.from('chiusure_turni').select('data').order('data', { ascending: true }).limit(1),
+        supabase.from('chiusure_turni').select('data').order('data', { ascending: false }).limit(1),
+      ])
+      if (cancelled) return
+      // Senza leggere `error` un blocco RLS sarebbe indistinguibile da "tabella
+      // vuota" e la pagina dichiarerebbe una copertura inesistente.
+      const err = minRes.error || maxRes.error
+      if (err) { setError(prev => prev || `copertura chiusure_turni: ${err.message}`); return }
+      setCopertura({ da: minRes.data?.[0]?.data ?? null, a: maxRes.data?.[0]?.data ?? null })
     })()
     return () => { cancelled = true }
   }, [])
@@ -137,16 +157,24 @@ export default function TurniAnalysisBi() {
     setError(null)
     ;(async () => {
       try {
-        // chiusure_turni filtrate per periodo + sede
-        let qt = supabase.from('chiusure_turni')
-          .select('sede, data, turno, incasso, quantita')
-          .gte('data', dateFrom).lte('data', dateTo)
-        if (sede !== 'ALL') qt = qt.eq('sede', sede)
-        qt = qt.order('data', { ascending: true }).range(0, 9999)
-        const { data: tRows, error: tErr } = await qt
-        if (tErr) throw tErr
+        // chiusure_turni filtrate per periodo + sede.
+        // Lettura PAGINATA: `.range(0, 9999)` non alzava nulla (db-max-rows=1000
+        // è un tetto server) e su 3.123 righe la pagina mostrava solo le prime
+        // 1000 — cioè i mesi più vecchi — senza segnalarlo.
+        const { righe, troncato: tr } = await fetchPagedInfo(
+          () => {
+            let q = supabase.from('chiusure_turni')
+              .select('id, sede, data, turno, incasso, quantita')
+              .gte('data', dateFrom).lte('data', dateTo)
+            if (sede !== 'ALL') q = q.eq('sede', sede)
+            return q
+          },
+          'id' // colonna univoca: con `data` (duplicata) le pagine si sovrappongono
+        )
 
-        // v_be_mensile per i mesi toccati dal periodo (per quota costi)
+        // v_be_mensile per i mesi toccati dal periodo (per quota costi).
+        // Volume trascurabile (2 sedi × 12 mesi per anno): resta non paginata,
+        // ma l'errore va comunque letto.
         const monthsKeys = Object.keys(monthsInRange(dateFrom, dateTo))
         const annoMin = monthsKeys.length ? Number(monthsKeys[0].slice(0, 4)) : today.getFullYear()
         const annoMax = monthsKeys.length ? Number(monthsKeys[monthsKeys.length - 1].slice(0, 4)) : today.getFullYear()
@@ -157,7 +185,13 @@ export default function TurniAnalysisBi() {
         const { data: bRows, error: bErr } = await qb
         if (bErr) throw bErr
 
-        if (!cancelled) { setTurni(tRows || []); setBeRows(bRows || []) }
+        if (!cancelled) {
+          // Ordine cronologico applicato in memoria: la paginazione ordina per id.
+          setTurni([...righe].sort((a, b) => String(a.data).localeCompare(String(b.data))))
+          setTroncato(tr)
+          setBeRows(bRows || [])
+          setLimiteRighe(200)
+        }
       } catch (e) {
         if (!cancelled) setError(e.message || String(e))
       } finally {
@@ -167,9 +201,9 @@ export default function TurniAnalysisBi() {
     return () => { cancelled = true }
   }, [sede, dateFrom, dateTo])
 
-  // Avviso copertura: il periodo richiesto eccede la copertura di chiusure_turni
-  const copAvviso = dateTo > coperturaFine
-    ? `I dati turni coprono fino al ${coperturaFine.split('-').reverse().join('/')}. I giorni successivi non sono ancora disponibili.`
+  // Avviso copertura: il periodo richiesto eccede la copertura reale di chiusure_turni
+  const copAvviso = copertura.a && dateTo > copertura.a
+    ? `I dati turni coprono fino al ${itDate(copertura.a)}. I giorni successivi non sono ancora disponibili.`
     : null
 
   // ── Aggregati per turno (sul periodo+sede selezionati) ──────────────────────
@@ -250,7 +284,7 @@ export default function TurniAnalysisBi() {
       const deltaPct = ((inc - media) / media) * 100
       if (deltaPct < -20) { // sotto-performance > 20% rispetto alla media del turno
         out.push({
-          data: r.data, sede: r.sede, turno: r.turno,
+          id: r.id, data: r.data, sede: r.sede, turno: r.turno,
           incasso: inc, media, deltaPct,
         })
       }
@@ -259,23 +293,54 @@ export default function TurniAnalysisBi() {
   }, [turni, agg])
 
   // ── Tabella dettaglio ───────────────────────────────────────────────────────
-  const sorted = useMemo(() => [...turni].sort((a, b) =>
-    sortAsc ? a.data.localeCompare(b.data) : b.data.localeCompare(a.data)
-  ), [turni, sortAsc])
+  // Il coperto medio è precalcolato per riga: così è ordinabile e finisce nel CSV
+  // con lo stesso valore che si legge a schermo.
+  const righeDettaglio = useMemo(() => turni.map(r => {
+    const cop = Number(r.quantita) || 0
+    const inc = Number(r.incasso) || 0
+    return {
+      ...r,
+      incasso: inc,
+      coperti: cop || null,
+      copertoMedio: cop > 0 ? inc / cop : null,
+    }
+  }), [turni])
+
+  const { righeOrdinate, colonna, direzione, propsTh } = useOrdinamento(righeDettaglio, 'data', 'desc')
+  const righeVisibili = righeOrdinate.slice(0, limiteRighe)
+
+  const COLONNE_CSV_DETTAGLIO = [
+    { chiave: 'data', etichetta: 'Data' },
+    { chiave: 'sede', etichetta: 'Sede' },
+    { chiave: 'turno', etichetta: 'Turno' },
+    { chiave: 'incasso', etichetta: 'Incasso' },
+    { chiave: 'coperti', etichetta: 'Coperti' },
+    { chiave: 'copertoMedio', etichetta: 'Coperto medio', valore: r => (r.copertoMedio != null ? Math.round(r.copertoMedio * 100) / 100 : null) },
+  ]
+
+  const COLONNE_CSV_SOTTOPERF = [
+    { chiave: 'data', etichetta: 'Data' },
+    { chiave: 'sede', etichetta: 'Sede' },
+    { chiave: 'turno', etichetta: 'Turno' },
+    { chiave: 'incasso', etichetta: 'Incasso' },
+    { chiave: 'media', etichetta: 'Media turno', valore: r => Math.round(r.media * 100) / 100 },
+    { chiave: 'deltaPct', etichetta: 'Scostamento %', valore: r => Math.round(r.deltaPct * 10) / 10 },
+  ]
 
   const giorniPeriodo = daysInRange(dateFrom, dateTo)
 
   const systemContext = useMemo(() => `Pagina: Turni Pranzo/Cena BI
 Sede: ${sede === 'ALL' ? 'Entrambe (MA+PN)' : SEDE_LABEL[sede]}
 Periodo: ${dateFrom} → ${dateTo}
-Copertura dati: chiusure_turni fino al ${coperturaFine}
+Copertura dati: chiusure_turni da ${copertura.da || 'n/d'} a ${copertura.a || 'n/d'}
+Righe lette nel periodo: ${turni.length}${troncato ? ' (TRONCATE: i numeri qui sotto sono parziali)' : ''}
 KPI:
 - Incasso pranzo: ${eur(agg.pranzo.incasso)} (${agg.pctPranzo.toFixed(1)}% del totale, ${agg.pranzo.nTurni} turni)
 - Incasso cena: ${eur(agg.cena.incasso)} (${agg.pctCena.toFixed(1)}% del totale, ${agg.cena.nTurni} turni)
 - Coperto medio pranzo: ${eur2(agg.pranzo.scontrinoMedio)} · cena: ${eur2(agg.cena.scontrinoMedio)}
 - Costi del periodo (pro-rata v_be_mensile): ${costiPeriodo.tot > 0 ? eur(costiPeriodo.tot) : 'n/d'}
 - Quota costi coperta: pranzo ${quotaPranzo != null ? quotaPranzo.toFixed(1) + '%' : 'n/d'} · cena ${quotaCena != null ? quotaCena.toFixed(1) + '%' : 'n/d'}`,
-    [sede, dateFrom, dateTo, agg, quotaPranzo, quotaCena, costiPeriodo, coperturaFine])
+    [sede, dateFrom, dateTo, agg, quotaPranzo, quotaCena, costiPeriodo, copertura, turni.length, troncato])
 
   const noData = !loading && turni.length === 0
 
@@ -289,7 +354,10 @@ KPI:
         <p className="text-gray-500 text-sm mt-1">
           Incasso, coperti, coperto medio e quota costi per turno.{' '}
           <span className="text-gray-400">
-            Fonte: <b>chiusure_turni</b> (split reale pranzo/cena dalle chiusure iPratico). Copertura dati: 02/01/2025 → 04/06/2026.
+            Fonte: <b>chiusure_turni</b> (split reale pranzo/cena dalle chiusure iPratico).{' '}
+            {copertura.da || copertura.a
+              ? <>Copertura dati: {itDate(copertura.da)} → {itDate(copertura.a)}.</>
+              : <>Copertura dati in lettura…</>}
           </span>
         </p>
       </div>
@@ -341,7 +409,9 @@ KPI:
         </div>
       ) : noData ? (
         <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
-          <Empty msg="Dati non disponibili per il periodo selezionato. chiusure_turni copre 02/01/2025 → 04/06/2026." />
+          <Empty msg={`Dati non disponibili per il periodo selezionato.${
+            copertura.da || copertura.a ? ` chiusure_turni copre ${itDate(copertura.da)} → ${itDate(copertura.a)}.` : ''
+          }`} />
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-4 mb-6">
@@ -449,9 +519,13 @@ KPI:
             <ArrowDownRight size={16} className="text-red-500" /> Giornate sotto-performanti per turno
             <InfoTip text="Giornate in cui l'incasso del turno è inferiore di oltre il 20% rispetto all'incasso medio dello stesso turno nel periodo. Utile per rivedere la turnazione. Fonte: chiusure_turni." />
           </h2>
-          <p className="text-xs text-gray-400 mb-4">
-            Scostamento &gt; -20% vs media del turno (pranzo {eur(agg.pranzo.incassoMedio)} · cena {eur(agg.cena.incassoMedio)}).
-          </p>
+          <div className="flex items-start justify-between gap-3 mb-4">
+            <p className="text-xs text-gray-400">
+              Scostamento &gt; -20% vs media del turno (pranzo {eur(agg.pranzo.incassoMedio)} · cena {eur(agg.cena.incassoMedio)}).
+              {' '}Mostrate le {sottoPerf.length} giornate peggiori.
+            </p>
+            <BottoneCsv righe={sottoPerf} colonne={COLONNE_CSV_SOTTOPERF} nomeFile={`turni_sottoperformanti_${sede}`} />
+          </div>
           {sottoPerf.length === 0 ? (
             <p className="text-sm text-gray-400 py-6 text-center">Nessuna giornata sotto-performante oltre la soglia nel periodo.</p>
           ) : (
@@ -468,8 +542,10 @@ KPI:
                   </tr>
                 </thead>
                 <tbody>
-                  {sottoPerf.map((r, i) => (
-                    <tr key={i} className="border-b border-gray-50 hover:bg-gray-50">
+                  {/* key = id della chiusura: la lista è riordinata per scostamento,
+                      con l'indice React riciclerebbe la riga sbagliata */}
+                  {sottoPerf.map(r => (
+                    <tr key={r.id} className="border-b border-gray-50 hover:bg-gray-50">
                       <td className="py-2 pr-4 text-gray-700 text-xs whitespace-nowrap">{new Date(r.data + 'T00:00:00').toLocaleDateString('it-IT', { weekday: 'short', day: '2-digit', month: '2-digit' })}</td>
                       {sede === 'ALL' && <td className="py-2 pr-4 text-xs">{r.sede}</td>}
                       <td className="py-2 pr-4">
@@ -495,47 +571,66 @@ KPI:
       {/* TABELLA DETTAGLIO */}
       {!loading && !noData && (
         <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
             <h2 className="text-base font-semibold text-gray-800 flex items-center gap-2">
-              <Clock size={16} className="text-blue-500" /> Dettaglio turni ({turni.length})
+              <Clock size={16} className="text-blue-500" /> Dettaglio turni ({num(turni.length)})
             </h2>
-            <button onClick={() => setSortAsc(s => !s)}
-              className="text-xs text-gray-500 hover:text-blue-600 border border-gray-300 rounded px-2 py-1">
-              Data {sortAsc ? '↑' : '↓'}
-            </button>
+            <BottoneCsv righe={righeOrdinate} colonne={COLONNE_CSV_DETTAGLIO}
+              nomeFile={`turni_dettaglio_${sede}_${dateFrom}_${dateTo}`}
+              etichetta={`CSV (${num(righeOrdinate.length)} righe)`} />
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
+                {/* Ogni colonna è ordinabile in entrambe le direzioni: i null
+                    restano in coda (vedi useOrdinamento), non valgono 0 */}
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500 uppercase">
-                  <th className="pb-2 pr-4">Data</th>
-                  <th className="pb-2 pr-4">Sede</th>
-                  <th className="pb-2 pr-4">Turno</th>
-                  <th className="pb-2 pr-4 text-right">Incasso</th>
-                  <th className="pb-2 pr-4 text-right">Coperti</th>
-                  <th className="pb-2 pr-4 text-right">Coperto medio</th>
+                  <th className="pb-2 pr-4" {...propsTh('data')}>Data<IconaOrdine colonna="data" colonnaAttiva={colonna} direzione={direzione} /></th>
+                  <th className="pb-2 pr-4" {...propsTh('sede')}>Sede<IconaOrdine colonna="sede" colonnaAttiva={colonna} direzione={direzione} /></th>
+                  <th className="pb-2 pr-4" {...propsTh('turno')}>Turno<IconaOrdine colonna="turno" colonnaAttiva={colonna} direzione={direzione} /></th>
+                  <th className="pb-2 pr-4 text-right" {...propsTh('incasso')}>Incasso<IconaOrdine colonna="incasso" colonnaAttiva={colonna} direzione={direzione} /></th>
+                  <th className="pb-2 pr-4 text-right" {...propsTh('coperti')}>Coperti<IconaOrdine colonna="coperti" colonnaAttiva={colonna} direzione={direzione} /></th>
+                  <th className="pb-2 pr-4 text-right" {...propsTh('copertoMedio')}>Coperto medio<IconaOrdine colonna="copertoMedio" colonnaAttiva={colonna} direzione={direzione} /></th>
                 </tr>
               </thead>
               <tbody>
-                {sorted.slice(0, 120).map((r, i) => {
-                  const cm = (Number(r.quantita) || 0) > 0 ? (Number(r.incasso) || 0) / r.quantita : 0
-                  return (
-                    <tr key={i} className="border-b border-gray-50 hover:bg-gray-50">
-                      <td className="py-2 pr-4 text-gray-700 text-xs whitespace-nowrap">{new Date(r.data + 'T00:00:00').toLocaleDateString('it-IT')}</td>
-                      <td className="py-2 pr-4 text-xs">{r.sede}</td>
-                      <td className="py-2 pr-4">
-                        <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${r.turno === 'pranzo' ? 'bg-orange-100 text-orange-700' : 'bg-indigo-100 text-indigo-700'}`}>{r.turno}</span>
-                      </td>
-                      <td className="py-2 pr-4 text-right font-semibold text-gray-800">{eur2(r.incasso)}</td>
-                      <td className="py-2 pr-4 text-right text-gray-700">{r.quantita ?? '—'}</td>
-                      <td className="py-2 pr-4 text-right text-gray-600">{cm > 0 ? eur2(cm) : '—'}</td>
-                    </tr>
-                  )
-                })}
+                {/* key = id: la tabella è ordinabile, l'indice cambierebbe significato a ogni sort */}
+                {righeVisibili.map(r => (
+                  <tr key={r.id} className="border-b border-gray-50 hover:bg-gray-50">
+                    <td className="py-2 pr-4 text-gray-700 text-xs whitespace-nowrap">{new Date(r.data + 'T00:00:00').toLocaleDateString('it-IT')}</td>
+                    <td className="py-2 pr-4 text-xs">{r.sede}</td>
+                    <td className="py-2 pr-4">
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${r.turno === 'pranzo' ? 'bg-orange-100 text-orange-700' : 'bg-indigo-100 text-indigo-700'}`}>{r.turno}</span>
+                    </td>
+                    <td className="py-2 pr-4 text-right font-semibold text-gray-800">{eur2(r.incasso)}</td>
+                    <td className="py-2 pr-4 text-right text-gray-700">{r.coperti ?? '—'}</td>
+                    <td className="py-2 pr-4 text-right text-gray-600">{r.copertoMedio != null ? eur2(r.copertoMedio) : '—'}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
-          {sorted.length > 120 && <p className="text-xs text-gray-400 mt-3">Mostrate le prime 120 righe di {sorted.length}.</p>}
+          {/* Il troncamento non è più silenzioso: si dichiara quante righe si vedono
+              su quante ce ne sono, e il limite è superabile */}
+          <div className="flex items-center gap-3 mt-3 flex-wrap">
+            <p className="text-xs text-gray-400">
+              Mostrate {num(righeVisibili.length)} righe su {num(righeOrdinate.length)}.
+            </p>
+            {righeVisibili.length < righeOrdinate.length && (
+              <>
+                <button onClick={() => setLimiteRighe(n => n + 200)}
+                  className="text-xs border border-gray-300 rounded px-2 py-1 text-gray-600 hover:bg-gray-50">
+                  Mostra altre 200
+                </button>
+                <button onClick={() => setLimiteRighe(righeOrdinate.length)}
+                  className="text-xs border border-gray-300 rounded px-2 py-1 text-gray-600 hover:bg-gray-50">
+                  Mostra tutte ({num(righeOrdinate.length)})
+                </button>
+              </>
+            )}
+          </div>
+          <NotaCopertura righe={turni.length} da={dateFrom} a={dateTo}
+            fonte="chiusure_turni" troncato={troncato} />
         </div>
       )}
 

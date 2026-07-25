@@ -10,8 +10,9 @@
  * Le stesse funzioni del motore (lib/forecast.js, lib/staffing.js) sono usate
  * dal job notturno che salva i forecast su forecast_giornaliero.
  */
-import React, { useEffect, useMemo, useState, useCallback } from 'react'
+import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import supabase from '../../supabase'
+import { fetchPaged } from '../../api/paged'
 import { Users, Clock, TrendingUp, Target, RefreshCw, Settings2, Sparkles } from 'lucide-react'
 import {
   computeDailyForecast, computeShiftForecast, backtestAccuracy,
@@ -26,8 +27,6 @@ const eur = n => n != null ? `€ ${Number(n).toLocaleString('it-IT', { maximumF
 const eur2 = n => n != null ? `€ ${Number(n).toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'
 const fmt = n => n != null ? Number(n).toLocaleString('it-IT') : '—'
 const LS_KEY = 'calendarioSmart.override.'
-
-async function sbq(q) { const { data, error } = await q; if (error) throw error; return data ?? [] }
 
 function confColor(c) {
   if (c >= 70) return 'bg-green-100 text-green-700'
@@ -75,29 +74,47 @@ export default function CalendarioSmart({ sede: sedeProp }) {
   const oggi = isoDate(new Date())
   const horizon = 14
 
+  // Numero di caricamento: una `load()` vecchia non deve sovrascrivere la nuova
+  // (il pulsante "Ricalcola" e il cambio sede possono sovrapporsi).
+  const caricamentoRef = useRef(0)
+
   // ── Caricamento storico (12 mesi) indipendente dal filtro periodo pagina ──
-  const load = useCallback(async () => {
+  const load = useCallback(async (segnalaAnnullato) => {
+    const mio = ++caricamentoRef.current
+    const vivo = () => mio === caricamentoRef.current && !segnalaAnnullato?.()
+
     setLoading(true)
     const from12m = addDays(oggi, -380)
     try {
+      // Paginazione VERA su tutto. Il `.range(0, 4999)` non alzava nulla (il
+      // server tronca a 1000) e `buste_paga`, `employees`, `reparti`,
+      // `staffing_config` e `previsioni_giornaliere` non avevano nemmeno
+      // quello. È da buste_paga + employees che esce `computeHourlyCost`,
+      // cioè il costo orario su cui poggia OGNI costo del lavoro mostrato in
+      // pagina: leggerne un pezzo significa sbagliare tutti gli euro.
       const [d, t, bp, emp, rep, st, prev, cfgRow] = await Promise.all([
-        sbq(supabase.from('chiusure_giornaliere')
-          .select('data, sede, totale_venduto_ipratico, coperti')
-          .eq('sede', sede).gte('data', from12m).order('data').range(0, 4999)),
-        sbq(supabase.from('chiusure_turni')
-          .select('data, sede, turno, incasso, quantita')
-          .eq('sede', sede).gte('data', from12m).range(0, 4999)),
-        sbq(supabase.from('buste_paga')
-          .select('employee_id, sede, anno, mese, costo_azienda, ore_settimanali')
-          .gte('anno', new Date().getFullYear() - 1)),
-        sbq(supabase.from('employees').select('id, sede, ore_settimanali, reparto_id, active')),
-        sbq(supabase.from('reparti').select('id, nome')),
-        sbq(supabase.from('statistiche_tavoli')
-          .select('sede, durata_media_min, data_inizio')
-          .eq('sede', sede).gte('data_inizio', addDays(oggi, -120)).range(0, 4999)),
-        sbq(supabase.from('previsioni_giornaliere').select('*').eq('sede', sede).gte('data', addDays(oggi, -30)).lte('data', addDays(oggi, horizon))),
-        sbq(supabase.from('staffing_config').select('*').eq('sede', sede)),
+        fetchPaged(() => supabase.from('chiusure_giornaliere')
+          .select('id, data, sede, totale_venduto_ipratico, coperti')
+          .eq('sede', sede).gte('data', from12m), 'id'),
+        fetchPaged(() => supabase.from('chiusure_turni')
+          .select('id, data, sede, turno, incasso, quantita')
+          .eq('sede', sede).gte('data', from12m), 'id'),
+        fetchPaged(() => supabase.from('buste_paga')
+          .select('id, employee_id, sede, anno, mese, costo_azienda, ore_settimanali')
+          .gte('anno', new Date().getFullYear() - 1), 'id'),
+        fetchPaged(() => supabase.from('employees').select('id, sede, ore_settimanali, reparto_id, active'), 'id'),
+        fetchPaged(() => supabase.from('reparti').select('id, nome'), 'id'),
+        fetchPaged(() => supabase.from('statistiche_tavoli')
+          .select('id, sede, durata_media_min, data_inizio')
+          .eq('sede', sede).gte('data_inizio', addDays(oggi, -120)), 'id'),
+        fetchPaged(() => supabase.from('previsioni_giornaliere').select('*')
+          .eq('sede', sede).gte('data', addDays(oggi, -30)).lte('data', addDays(oggi, horizon)), 'id'),
+        // staffing_config ha `sede` come chiave: una riga per sede, nessun id.
+        fetchPaged(() => supabase.from('staffing_config').select('*').eq('sede', sede), 'sede'),
       ])
+      if (!vivo()) return
+      // L'ordine cronologico si applica qui: `id` serve solo a paginare.
+      d.sort((a, b) => a.data.localeCompare(b.data))
       setDaily(d); setTurni(t); setBustePaga(bp); setReparti(rep)
       // arricchisci employees col nome reparto
       const repById = Object.fromEntries(rep.map(r => [r.id, r.nome]))
@@ -119,13 +136,19 @@ export default function CalendarioSmart({ sede: sedeProp }) {
         })
       }
     } catch (e) {
-      setMsg({ type: 'err', text: 'Errore caricamento: ' + e.message })
+      if (vivo()) setMsg({ type: 'err', text: 'Errore caricamento: ' + e.message })
     } finally {
-      setLoading(false)
+      if (vivo()) setLoading(false)
     }
   }, [sede, oggi])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    // Guardia di unmount: senza, cambiare tab durante il caricamento fa
+    // setState su un componente già smontato.
+    let annullato = false
+    load(() => annullato)
+    return () => { annullato = true }
+  }, [load])
   // reset override quando cambia sede
   useEffect(() => {
     try { setOverride(JSON.parse(localStorage.getItem(LS_KEY + sede) || '{}')) } catch { setOverride({}) }
@@ -228,7 +251,10 @@ export default function CalendarioSmart({ sede: sedeProp }) {
   async function persistConfig() {
     setSavingDb(true); setMsg(null)
     try {
-      await supabase.from('staffing_config').upsert({
+      // Il client Supabase NON rigetta: senza leggere `error` un upsert
+      // bloccato da RLS finiva qui sotto con il messaggio "Config salvata su
+      // DB." — un salvataggio fallito dichiarato riuscito.
+      const { error } = await supabase.from('staffing_config').upsert({
         sede,
         target_cop_sala: cfg.target_cop_sala,
         target_cop_cucina: cfg.target_cop_cucina,
@@ -237,8 +263,11 @@ export default function CalendarioSmart({ sede: sedeProp }) {
         target_costo_pct: cfg.target_costo_pct,
         updated_at: new Date().toISOString(),
       }, { onConflict: 'sede' })
+      if (error) throw error
       setMsg({ type: 'ok', text: 'Config salvata su DB.' })
-    } catch (e) { setMsg({ type: 'err', text: e.message }) } finally { setSavingDb(false) }
+    } catch (e) {
+      setMsg({ type: 'err', text: 'Config NON salvata: ' + (e?.message || String(e)) })
+    } finally { setSavingDb(false) }
   }
 
   // Salva i forecast calcolati su forecast_giornaliero (stessa logica del job notturno)
@@ -279,11 +308,18 @@ export default function CalendarioSmart({ sede: sedeProp }) {
 
   async function salvaNota(date, nota) {
     try {
-      await supabase.from('previsioni_giornaliere').upsert({
+      // Stesso motivo di persistConfig: senza `error` la nota compariva
+      // salvata nello stato locale anche quando il DB l'aveva rifiutata, e
+      // spariva al primo ricaricamento senza spiegazioni.
+      const { error } = await supabase.from('previsioni_giornaliere').upsert({
         data: date, sede, nota_consuntivo: nota || null, updated_at: new Date().toISOString(),
       }, { onConflict: 'data,sede' })
+      if (error) throw error
       setPrevisioni(p => ({ ...p, [date]: { ...(p[date] || {}), nota_consuntivo: nota } }))
-    } catch (e) { setMsg({ type: 'err', text: e.message }) }
+      setMsg({ type: 'ok', text: `Nota del ${date} salvata.` })
+    } catch (e) {
+      setMsg({ type: 'err', text: `Nota del ${date} NON salvata: ${e?.message || String(e)}` })
+    }
   }
 
   return (
@@ -306,7 +342,7 @@ export default function CalendarioSmart({ sede: sedeProp }) {
           ))}
           <button onClick={() => setShowSettings(v => !v)} title="Impostazioni costo/staffing"
             className="px-2.5 py-1.5 rounded-lg border border-gray-200 text-gray-600"><Settings2 size={14} /></button>
-          <button onClick={load} title="Ricalcola ora" disabled={loading}
+          <button onClick={() => load()} title="Ricalcola ora" disabled={loading}
             className="px-2.5 py-1.5 rounded-lg border border-gray-200 text-gray-600 disabled:opacity-50">
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /></button>
         </div>
@@ -496,13 +532,16 @@ export default function CalendarioSmart({ sede: sedeProp }) {
                 <div className="grid grid-cols-7 gap-1 text-center">
                   {GIORNI.map(g => <div key={g} className="text-[10px] text-gray-400 pb-1">{g}</div>)}
                   {cells.map((dnum, idx) => {
-                    if (!dnum) return <div key={idx} />
+                    // Chiave dai dati, non dall'indice: le celle vuote di
+                    // riempimento hanno una chiave propria e le celle giorno
+                    // sono identificate dalla data.
+                    if (!dnum) return <div key={`vuota-${year}-${month}-${idx}`} />
                     const k = `${year}-${String(month).padStart(2, '0')}-${String(dnum).padStart(2, '0')}`
                     const info = heat[k]
                     const v = info ? (info.reale ?? info.prev) : null
                     const isFuture = info?.tipo === 'previsto'
                     return (
-                      <div key={idx}
+                      <div key={k}
                         className={`relative rounded-md aspect-square flex flex-col items-center justify-center border ${isFuture ? 'border-dashed border-violet-400' : 'border-transparent'}`}
                         style={{ backgroundColor: info ? heatColor(v) : '#f9fafb' }}
                         title={info

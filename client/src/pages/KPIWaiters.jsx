@@ -18,6 +18,9 @@ import {
   operatoreMeseApi, beMensileApi, kpiTargetsApi, bonusApi
 } from '../api/client'
 import supabase from '../supabase'
+import { fetchPaged, fetchPagedInfo } from '../api/paged'
+import { useOrdinamento, IconaOrdine, BottoneCsv, NotaCopertura } from '../lib/tabella'
+import useAnniDisponibili from '../hooks/useAnniDisponibili'
 import PageStatsWidget from '../components/PageStatsWidget'
 
 // ── Utils ──────────────────────────────────────────────────────────────
@@ -26,6 +29,38 @@ const COLORS = ['#6366f1','#3b82f6','#10b981','#f59e0b','#ec4899','#8b5cf6','#ef
 const fmt    = (n, d = 2) => n == null || isNaN(n) ? '—' : Number(n).toLocaleString('it-IT', { minimumFractionDigits: d, maximumFractionDigits: d })
 const fmtEur = n => n == null ? '—' : `€ ${fmt(n)}`
 const fmtPct = n => n == null ? '—' : `${fmt(n, 1)}%`
+
+/**
+ * Date del mese in formato ISO, calcolate SEMPRE in fuso locale.
+ *
+ * `new Date(anno, mese, 0).toISOString()` — il pattern che era sparso in questo
+ * file — costruisce la mezzanotte LOCALE dell'ultimo giorno del mese e poi la
+ * converte in UTC: in Italia (UTC+1/+2) diventa le 22:00/23:00 del giorno prima,
+ * quindi il filtro `.lte(data_fine, ...)` perdeva silenziosamente l'ultimo
+ * giorno di ogni mese. Anche `-31` fisso è escluso: in febbraio, aprile, giugno,
+ * settembre e novembre genera una data inesistente (errore Postgres 22008).
+ */
+const ymd        = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+const inizioMese = (anno, mese) => `${anno}-${String(mese).padStart(2, '0')}-01`
+const fineMese   = (anno, mese) => ymd(new Date(anno, mese, 0))
+
+/** Messaggio d'errore visibile: un guasto non deve travestirsi da "nessun dato". */
+function BannerErrore({ messaggio, onChiudi }) {
+  if (!messaggio) return null
+  return (
+    <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 flex items-start gap-3">
+      <span className="text-red-500 text-lg flex-shrink-0 mt-0.5">⚠️</span>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-semibold text-red-800">Errore nel caricamento dei dati</p>
+        <p className="text-xs text-red-700 mt-0.5 break-words">{messaggio}</p>
+        <p className="text-[11px] text-red-500 mt-1">I numeri mostrati potrebbero essere incompleti.</p>
+      </div>
+      {onChiudi && (
+        <button onClick={onChiudi} className="text-red-400 hover:text-red-700 text-sm flex-shrink-0">✕</button>
+      )}
+    </div>
+  )
+}
 
 function KpiCard({ icon: Icon, label, value, sub, color = 'indigo', badge, onClick }) {
   return (
@@ -48,7 +83,7 @@ function KpiCard({ icon: Icon, label, value, sub, color = 'indigo', badge, onCli
   )
 }
 
-function DetailDrawer({ tipo, data, loading, onClose, be, targetFatt, fatturatoTeam, quantumMedio, margine, anno, mese, fmtEur }) {
+function DetailDrawer({ tipo, data, loading, errore, onClose, be, targetFatt, fatturatoTeam, quantumMedio, margine, anno, mese, fmtEur }) {
   if (!tipo) return null
 
   const chiusure = data.chiusure || []
@@ -117,6 +152,8 @@ function DetailDrawer({ tipo, data, loading, onClose, be, targetFatt, fatturatoT
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
           {loading ? (
             <div className="flex items-center justify-center h-48 text-gray-400 text-sm">Caricamento dati...</div>
+          ) : errore ? (
+            <BannerErrore messaggio={errore} />
           ) : (
             <>
               {tipo === 'fatturato' && (
@@ -361,8 +398,11 @@ function DetailDrawer({ tipo, data, loading, onClose, be, targetFatt, fatturatoT
                         </thead>
                         <tbody>
                           {bustePaga.map((b) => (
-                            /* Fix: in buste_paga il nome sta in employee_name (non "operatore") */
-                            <tr key={b.employee_name} className="border-b border-gray-50">
+                            /* Fix: in buste_paga il nome sta in employee_name (non "operatore").
+                               La chiave è `id`: due cedolini possono avere lo stesso nome
+                               (omonimi, o stessa persona su sedi diverse) e con il nome come
+                               chiave React ne collassava uno. */
+                            <tr key={b.id ?? b.employee_name} className="border-b border-gray-50">
                               <td className="py-1 text-gray-700">{b.employee_name}</td>
                               <td className="py-1 text-right text-gray-600">{fmtEur(Number(b.netto||0))}</td>
                               <td className="py-1 text-right font-medium text-orange-600">{fmtEur(Number(b.costo_azienda||0))}</td>
@@ -570,25 +610,37 @@ function OperatoreRow({ op, rank, target, quantum, payout, expanded, onToggle,
                         teamCatData, opCatMap, totPezziCat, teamAggRate, quantumMedioTeam }) {
   const [prodotti, setProdotti]       = useState([])
   const [loadingProd, setLoadingProd] = useState(false)
+  const [errProd, setErrProd]         = useState(null)
+  const [righeLette, setRigheLette]   = useState(null)
 
   useEffect(() => {
     if (!expanded || prodotti.length > 0) return
+    let annullato = false
     setLoadingProd(true)
-    const meseStr = String(op.mese).padStart(2, '0')
-    const ini  = `${op.anno}-${meseStr}-01`
-    const fine = new Date(op.anno, op.mese, 0).toISOString().slice(0, 10)
-    supabase
-      .from('venduto_camerieri')
-      .select('categoria, prodotto, quantita, totale')
-      .eq('sede', op.sede)
-      .eq('operatore', op.operatore)
-      .gte('data_inizio', ini)
-      .lte('data_fine', fine)
-      .not('prodotto', 'ilike', '%coperto%')
-      .then(({ data }) => {
-        if (!data) { setLoadingProd(false); return }
+    setErrProd(null)
+    const ini  = inizioMese(op.anno, op.mese)
+    const fine = fineMese(op.anno, op.mese)
+
+    ;(async () => {
+      try {
+        // Lettura PAGINATA: senza questo il drill-down si fermava alle prime
+        // 1000 righe di venduto_camerieri e il totale per categoria mostrato
+        // qui era una frazione del venduto reale dell'operatore, senza che
+        // nulla in UI lo segnalasse.
+        const { righe, troncato } = await fetchPagedInfo(
+          () => supabase
+            .from('venduto_camerieri')
+            .select('id,categoria,prodotto,quantita,totale')
+            .eq('sede', op.sede)
+            .eq('operatore', op.operatore)
+            .gte('data_inizio', ini)
+            .lte('data_fine', fine)
+            .not('prodotto', 'ilike', '%coperto%'),
+          'id'
+        )
+        if (annullato) return
         const byCat = {}
-        data.forEach(r => {
+        righe.forEach(r => {
           const cat = r.categoria || 'Altro'
           if (!byCat[cat]) byCat[cat] = { pezzi: 0, fatturato: 0 }
           byCat[cat].pezzi    += Number(r.quantita) || 0
@@ -600,9 +652,16 @@ function OperatoreRow({ op, rank, target, quantum, payout, expanded, onToggle,
             .sort((a, b) => b.fatturato - a.fatturato)
             .slice(0, 8)
         )
-        setLoadingProd(false)
-      })
-  }, [expanded, op])
+        setRigheLette({ righe: righe.length, troncato })
+      } catch (e) {
+        if (!annullato) setErrProd(e?.message || String(e))
+      } finally {
+        if (!annullato) setLoadingProd(false)
+      }
+    })()
+
+    return () => { annullato = true }
+  }, [expanded, op, prodotti.length])
 
   const pezzi     = Number(op.tot_pezzi) || 0
   const fatturato = Number(op.fatturato_stimato_operatore) || 0
@@ -754,24 +813,50 @@ function OperatoreRow({ op, rank, target, quantum, payout, expanded, onToggle,
                 </div>
                 {loadingProd ? (
                   <p className="text-xs text-gray-400 italic">Caricamento...</p>
+                ) : errProd ? (
+                  <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-2.5 py-2">
+                    ⚠️ Impossibile leggere il venduto dell'operatore: {errProd}
+                  </p>
                 ) : prodotti.length === 0 ? (
                   <p className="text-xs text-gray-400 italic">Nessun dato prodotti disponibile</p>
                 ) : (
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    {prodotti.map((p, i) => {
-                      const pctFat = (p.fatturato / (prodotti[0]?.fatturato || 1)) * 100
-                      return (
-                        <div key={p.cat} className="bg-white rounded-lg border border-gray-100 p-2.5">
-                          <div className="text-[10px] font-semibold text-gray-500 truncate uppercase tracking-wide">{p.cat}</div>
-                          <div className="text-sm font-bold text-gray-900 mt-0.5">{fmtEur(p.fatturato)}</div>
-                          <div className="text-[10px] text-gray-400">{fmt(p.pezzi, 0)} pz.</div>
-                          <div className="mt-1.5 h-1 bg-gray-100 rounded-full overflow-hidden">
-                            <div className="h-full rounded-full" style={{ width: `${pctFat}%`, backgroundColor: COLORS[i % COLORS.length] }} />
+                  <>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {prodotti.map((p, i) => {
+                        const pctFat = (p.fatturato / (prodotti[0]?.fatturato || 1)) * 100
+                        return (
+                          <div key={p.cat} className="bg-white rounded-lg border border-gray-100 p-2.5">
+                            <div className="text-[10px] font-semibold text-gray-500 truncate uppercase tracking-wide">{p.cat}</div>
+                            <div className="text-sm font-bold text-gray-900 mt-0.5">{fmtEur(p.fatturato)}</div>
+                            <div className="text-[10px] text-gray-400">{fmt(p.pezzi, 0)} pz.</div>
+                            <div className="mt-1.5 h-1 bg-gray-100 rounded-full overflow-hidden">
+                              <div className="h-full rounded-full" style={{ width: `${pctFat}%`, backgroundColor: COLORS[i % COLORS.length] }} />
+                            </div>
                           </div>
-                        </div>
-                      )
-                    })}
-                  </div>
+                        )
+                      })}
+                    </div>
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      {righeLette && (
+                        <NotaCopertura
+                          righe={righeLette.righe}
+                          troncato={righeLette.troncato}
+                          da={inizioMese(op.anno, op.mese)}
+                          a={fineMese(op.anno, op.mese)}
+                          fonte="venduto_camerieri"
+                        />
+                      )}
+                      <BottoneCsv
+                        righe={prodotti}
+                        colonne={[
+                          { chiave: 'cat',       etichetta: 'Categoria' },
+                          { chiave: 'pezzi',     etichetta: 'Pezzi' },
+                          { chiave: 'fatturato', etichetta: 'Fatturato' },
+                        ]}
+                        nomeFile={`venduto_${op.operatore}_${op.anno}_${String(op.mese).padStart(2,'0')}`}
+                      />
+                    </div>
+                  </>
                 )}
               </div>
 
@@ -866,7 +951,6 @@ export default function KPIWaiters() {
   const [anno,    setAnno]    = useState(now.getFullYear())
   const [mese,    setMese]    = useState(now.getMonth() + 1)
   const [loading, setLoading] = useState(false)
-  const [sortBy,  setSortBy]  = useState('fatturato')
   const [expanded, setExpanded] = useState(null)
 
   const [operatori,   setOperatori]   = useState([])
@@ -878,19 +962,33 @@ export default function KPIWaiters() {
   const [bonusOp,     setBonusOp]     = useState([])
   const [isStima,     setIsStima]     = useState(false)
   const [vendutoTeam, setVendutoTeam] = useState([])
+  const [errore,      setErrore]      = useState(null)
+  const [coperturaVenduto, setCoperturaVenduto] = useState(null)
 
   const [activeModal,   setActiveModal]   = useState(null)
   const [modalData,     setModalData]     = useState({})
   const [modalLoading,  setModalLoading]  = useState(false)
+  const [modalError,    setModalError]    = useState(null)
 
-  const load = useCallback(async () => {
+  // Anni realmente presenti a DB: la vecchia lista partiva dal 2024 cablato a
+  // mano e nascondeva lo storico precedente.
+  const { anni: anniDb } = useAnniDisponibili('venduto_camerieri', 'data_inizio')
+  // L'anno selezionato resta sempre in lista: a gennaio, prima del primo
+  // import, l'anno corrente non è ancora a DB e il select apparirebbe vuoto.
+  const anniDisponibili = useMemo(
+    () => (anniDb.includes(anno) ? anniDb : [...anniDb, anno].sort((a, b) => b - a)),
+    [anniDb, anno]
+  )
+
+  const load = useCallback(async (segnale) => {
     setLoading(true)
     setExpanded(null)
+    setErrore(null)
     try {
-      const iniStr  = `${anno}-${String(mese).padStart(2,'0')}-01`
-      const fineStr = new Date(anno, mese, 0).toISOString().slice(0, 10)
+      const iniStr  = inizioMese(anno, mese)
+      const fineStr = fineMese(anno, mese)
 
-      const [ops, beData, tt, ti, qtRes, bt, bo, bpCheck, vtRes] = await Promise.all([
+      const [ops, beData, tt, ti, qtRes, bt, bo, bpCheck, vtInfo] = await Promise.all([
         operatoreMeseApi.list({ sede, anno, mese }),
         beMensileApi.mese({ sede, anno, mese }),
         kpiTargetsApi.getTeam({ sede, anno, mese }),
@@ -903,14 +1001,27 @@ export default function KPIWaiters() {
         supabase.from('buste_paga')
           .select('employee_code, note')
           .eq('sede', sede).eq('anno', anno).eq('mese', mese),
-        supabase.from('venduto_camerieri')
-          .select('operatore, categoria, quantita, totale')
-          .eq('sede', sede)
-          .gte('data_inizio', iniStr)
-          .lte('data_fine', fineStr)
-          .not('prodotto', 'ilike', '%coperto%')
-          .range(0, 4999),
+        // Paginato: il vecchio `.range(0, 4999)` non alzava il tetto server di
+        // 1000 righe, quindi il mix categorie del coaching panel poggiava su
+        // una porzione arbitraria del venduto del mese.
+        fetchPagedInfo(
+          () => supabase.from('venduto_camerieri')
+            .select('id,operatore,categoria,quantita,totale')
+            .eq('sede', sede)
+            .gte('data_inizio', iniStr)
+            .lte('data_fine', fineStr)
+            .not('prodotto', 'ilike', '%coperto%'),
+          'id'
+        ),
       ])
+      if (segnale?.annullato) return
+
+      // Il client Supabase non rigetta mai: senza leggere `error` un blocco RLS
+      // sulle viste diventerebbe "nessun operatore" e la pagina mostrerebbe zeri
+      // credibili al posto di un guasto.
+      if (qtRes?.error)   throw qtRes.error
+      if (bpCheck?.error) throw bpCheck.error
+
       setOperatori(ops  || [])
       setBe(beData)
       setTargetTeam(tt)
@@ -918,7 +1029,8 @@ export default function KPIWaiters() {
       setQuantumData(qtRes?.data || [])
       setBonusTeam(bt   || [])
       setBonusOp(bo     || [])
-      setVendutoTeam(vtRes?.data || [])
+      setVendutoTeam(vtInfo.righe)
+      setCoperturaVenduto({ righe: vtInfo.righe.length, troncato: vtInfo.troncato })
       // Rileva se buste_paga del mese sono solo stime provvisorie
       const bpRows = bpCheck?.data || []
       const stimaDetected = bpRows.length > 0 && bpRows.every(r =>
@@ -928,76 +1040,110 @@ export default function KPIWaiters() {
       setIsStima(stimaDetected)
     } catch (e) {
       console.error('[KPIWaiters] load error', e)
+      if (!segnale?.annullato) setErrore(e?.message || String(e))
     } finally {
-      setLoading(false)
+      if (!segnale?.annullato) setLoading(false)
     }
   }, [sede, anno, mese])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    const segnale = { annullato: false }
+    load(segnale)
+    // Guardia di unmount: cambiando sede/mese rapidamente la risposta lenta di
+    // una richiesta precedente non deve più sovrascrivere lo stato corrente.
+    return () => { segnale.annullato = true }
+  }, [load])
 
   async function openModal(tipo) {
     setActiveModal(tipo)
     setModalLoading(true)
-    const dateFrom = `${anno}-${String(mese).padStart(2,'0')}-01`
-    // Fix: ultimo giorno reale del mese (il "-31" fisso generava date invalide → errore Postgres 22008)
-    const ultimoGiorno = new Date(anno, mese, 0).getDate()
-    const dateTo = `${anno}-${String(mese).padStart(2,'0')}-${String(ultimoGiorno).padStart(2,'0')}`
+    setModalError(null)
+    setModalData({})
+    // Ultimo giorno reale del mese: il "-31" fisso generava date invalide in
+    // feb/apr/giu/set/nov (errore Postgres 22008).
+    const dateFrom = inizioMese(anno, mese)
+    const dateTo   = fineMese(anno, mese)
     const sedeFilter = sede !== 'ALL' ? sede : null
     const result = {}
 
-    if (tipo === 'fatturato' || tipo === 'margine') {
-      let q = supabase.from('chiusure_giornaliere')
-        .select('data,totale_venduto_ipratico,coperti,food_cost_giornaliero,sede')
-        .gte('data', dateFrom).lte('data', dateTo).order('data')
-      if (sedeFilter) q = q.eq('sede', sedeFilter)
-      const { data: chiusure } = await q
-      result.chiusure = chiusure || []
+    // Ordina in memoria per data: `fetchPaged` deve impaginare su `id`, che è
+    // l'unica colonna univoca — con `data` (duplicata per sede) le pagine si
+    // sovrappongono e alcune righe non vengono mai lette.
+    const perData = righe => [...righe].sort((a, b) => String(a.data).localeCompare(String(b.data)))
+
+    try {
+      if (tipo === 'fatturato' || tipo === 'margine') {
+        const chiusure = await fetchPaged(
+          () => {
+            let q = supabase.from('chiusure_giornaliere')
+              .select('id,data,totale_venduto_ipratico,coperti,food_cost_giornaliero,sede')
+              .gte('data', dateFrom).lte('data', dateTo)
+            if (sedeFilter) q = q.eq('sede', sedeFilter)
+            return q
+          },
+          'id'
+        )
+        result.chiusure = perData(chiusure)
+      }
+
+      if (tipo === 'margine') {
+        // Fix: nomi colonna reali su fatture_importate (fornitore / totale / p_iva)
+        // Le fatture duplicate vanno escluse: qui alimentano il calcolo del margine,
+        // e contarle due volte gonfia i costi e schiaccia il margine.
+        // `.not(...,'is',true)` copre anche is_duplicato NULL (storico).
+        result.fatture = await fetchPaged(
+          () => supabase.from('fatture_importate')
+            .select('id,fornitore,totale,data_fattura,p_iva')
+            .gte('data_fattura', dateFrom).lte('data_fattura', dateTo)
+            .not('is_duplicato', 'is', true),
+          'id'
+        )
+
+        // Fix: su buste_paga le colonne reali sono employee_name e totale_competenze (non operatore/lorda)
+        result.bustePaga = await fetchPaged(
+          () => {
+            let qb = supabase.from('buste_paga')
+              .select('id,employee_name,netto,totale_competenze,costo_azienda,mese,anno,sede')
+              .eq('anno', anno).eq('mese', mese)
+            if (sedeFilter) qb = qb.eq('sede', sedeFilter)
+            return qb
+          },
+          'id'
+        )
+      }
+
+      if (tipo === 'quantum') {
+        // Vista aggregata: una riga per operatore, nessuna paginazione necessaria.
+        // L'errore però va letto, altrimenti un blocco RLS diventa "0 operatori".
+        let qq = supabase.from('v_kpi_quantum_mensile')
+          .select('*').eq('anno', anno).eq('mese', mese)
+        if (sedeFilter) qq = qq.eq('sede', sedeFilter)
+        const { data: quantumOp, error: errQuantum } = await qq
+        if (errQuantum) throw errQuantum
+        result.quantumOp = (quantumOp || []).sort((a,b) => Number(b.quantum||0) - Number(a.quantum||0))
+      }
+
+      if (tipo === 'target') {
+        const chiusure = await fetchPaged(
+          () => {
+            let q = supabase.from('chiusure_giornaliere')
+              .select('id,data,totale_venduto_ipratico,coperti,sede')
+              .gte('data', dateFrom).lte('data', dateTo)
+            if (sedeFilter) q = q.eq('sede', sedeFilter)
+            return q
+          },
+          'id'
+        )
+        result.chiusure = perData(chiusure)
+      }
+
+      setModalData(result)
+    } catch (e) {
+      console.error('[KPIWaiters] openModal error', e)
+      setModalError(e?.message || String(e))
+    } finally {
+      setModalLoading(false)
     }
-
-    if (tipo === 'margine') {
-      // Fix: nomi colonna reali su fatture_importate (fornitore / totale / p_iva)
-      // Le fatture duplicate vanno escluse: qui alimentano il calcolo del margine,
-      // e contarle due volte gonfia i costi e schiaccia il margine.
-      // `.not(...,'is',true)` copre anche is_duplicato NULL (storico).
-      let qf = supabase.from('fatture_importate')
-        .select('fornitore,totale,data_fattura,p_iva')
-        .gte('data_fattura', dateFrom).lte('data_fattura', dateTo)
-        .not('is_duplicato', 'is', true)
-      // L'errore va letto: il client Supabase non lancia mai, quindi senza questo
-      // controllo un guasto RLS/rete diventerebbe "nessuna fattura" e il margine
-      // risulterebbe ottimo senza motivo.
-      const { data: fatture, error: errFatture } = await qf
-      if (errFatture) throw errFatture
-      result.fatture = fatture || []
-
-      // Fix: su buste_paga le colonne reali sono employee_name e totale_competenze (non operatore/lorda)
-      let qb = supabase.from('buste_paga')
-        .select('employee_name,netto,totale_competenze,costo_azienda,mese,anno,sede')
-        .eq('anno', anno).eq('mese', mese)
-      if (sedeFilter) qb = qb.eq('sede', sedeFilter)
-      const { data: bustePaga } = await qb
-      result.bustePaga = bustePaga || []
-    }
-
-    if (tipo === 'quantum') {
-      let qq = supabase.from('v_kpi_quantum_mensile')
-        .select('*').eq('anno', anno).eq('mese', mese)
-      if (sedeFilter) qq = qq.eq('sede', sedeFilter)
-      const { data: quantumOp } = await qq
-      result.quantumOp = (quantumOp || []).sort((a,b) => Number(b.quantum||0) - Number(a.quantum||0))
-    }
-
-    if (tipo === 'target') {
-      let q = supabase.from('chiusure_giornaliere')
-        .select('data,totale_venduto_ipratico,coperti,sede')
-        .gte('data', dateFrom).lte('data', dateTo).order('data')
-      if (sedeFilter) q = q.eq('sede', sedeFilter)
-      const { data: chiusure } = await q
-      result.chiusure = chiusure || []
-    }
-
-    setModalData(result)
-    setModalLoading(false)
   }
 
   // Lookup: nome operatore → target individuale (fuzzy match per prima parola)
@@ -1027,22 +1173,11 @@ export default function KPIWaiters() {
     return map
   }, [bonusOp])
 
-  // Operatori filtrati (escludi "pienissimo") e ordinati
-  const operatoriSorted = useMemo(() => {
-    return [...(operatori || [])]
-      .filter(op => op.operatore && op.operatore.toLowerCase() !== 'pienissimo')
-      .sort((a, b) => {
-        if (sortBy === 'pezzi')    return (Number(b.tot_pezzi) || 0) - (Number(a.tot_pezzi) || 0)
-        if (sortBy === 'pctTeam')  return (Number(b.pct_pezzi_team) || 0) - (Number(a.pct_pezzi_team) || 0)
-        if (sortBy === 'aggiunte') return (Number(b.tot_importo_aggiunte) || 0) - (Number(a.tot_importo_aggiunte) || 0)
-        if (sortBy === 'quantum') {
-          const qa = quantumMap[(a.operatore || '').toUpperCase()]?.quantum || 0
-          const qb = quantumMap[(b.operatore || '').toUpperCase()]?.quantum || 0
-          return qb - qa
-        }
-        return (Number(b.fatturato_stimato_operatore) || 0) - (Number(a.fatturato_stimato_operatore) || 0)
-      })
-  }, [operatori, sortBy, quantumMap])
+  // Operatori filtrati (escludi "pienissimo"). I totali di piede tabella si
+  // calcolano su questa base: non devono cambiare al variare dell'ordinamento.
+  const operatoriFiltrati = useMemo(() =>
+    (operatori || []).filter(op => op.operatore && op.operatore.toLowerCase() !== 'pienissimo'),
+  [operatori])
 
   // KPI team
   const fatturatoTeam = Number(be?.fatturato) || 0
@@ -1053,9 +1188,33 @@ export default function KPIWaiters() {
   const pctVsTarget   = targetFatt > 0 ? (fatturatoTeam / targetFatt) * 100 : 0
   const gapTarget     = targetFatt > 0 ? targetFatt - fatturatoTeam : 0
 
-  const totPezzi    = operatoriSorted.reduce((s, o) => s + (Number(o.tot_pezzi) || 0), 0)
-  const totAggiunte = operatoriSorted.reduce((s, o) => s + (Number(o.tot_importo_aggiunte) || 0), 0)
+  const totPezzi    = operatoriFiltrati.reduce((s, o) => s + (Number(o.tot_pezzi) || 0), 0)
+  const totAggiunte = operatoriFiltrati.reduce((s, o) => s + (Number(o.tot_importo_aggiunte) || 0), 0)
   const totBonusOp  = (bonusOp || []).reduce((s, b) => s + (Number(b.payout_operatore) || 0), 0)
+
+  // Righe piatte per l'ordinamento: il quantum vive in una vista separata, va
+  // materializzato sulla riga perché useOrdinamento ordina per chiave.
+  const righeOperatori = useMemo(() => operatoriFiltrati.map(op => {
+    const chiave = (op.operatore || '').toUpperCase()
+    const qData  = quantumMap[chiave] || null
+    return {
+      op,
+      chiave,
+      operatore: op.operatore,
+      target:    targetMap[chiave]   || null,
+      quantumRow: qData,
+      payout:    bonusOpMap[chiave]  || 0,
+      pezzi:     Number(op.tot_pezzi) || 0,
+      fatturato: Number(op.fatturato_stimato_operatore) || 0,
+      pctTeam:   Number(op.pct_pezzi_team) || 0,
+      aggiunte:  Number(op.tot_importo_aggiunte) || 0,
+      // null, non 0: "quantum non calcolabile" e "quantum pari a zero" sono
+      // affermazioni diverse, e useOrdinamento mette i null sempre in coda.
+      quantum:   qData?.quantum != null ? Number(qData.quantum) : null,
+    }
+  }), [operatoriFiltrati, quantumMap, targetMap, bonusOpMap])
+
+  const { righeOrdinate, colonna, direzione, propsTh } = useOrdinamento(righeOperatori, 'fatturato', 'desc')
 
   // ── Mappe categoria per coaching panel ───────────────────────────────
   const { teamCatData, opCatData, totPezziCat, teamAggRate } = useMemo(() => {
@@ -1076,17 +1235,22 @@ export default function KPIWaiters() {
       opCat[opKey][cat].pezzi  += qty
       opCat[opKey][cat].totale += tot
     }
-    const teamAgg = operatoriSorted.reduce((s, o) => s + (Number(o.tot_aggiunte)          || 0), 0)
-    const teamPz  = operatoriSorted.reduce((s, o) => s + (Number(o.tot_pezzi)             || 0), 0)
+    const teamAgg = operatoriFiltrati.reduce((s, o) => s + (Number(o.tot_aggiunte)          || 0), 0)
+    const teamPz  = operatoriFiltrati.reduce((s, o) => s + (Number(o.tot_pezzi)             || 0), 0)
     return { teamCatData: teamCat, opCatData: opCat, totPezziCat: totPz, teamAggRate: teamPz > 0 ? teamAgg / teamPz * 100 : 0 }
-  }, [vendutoTeam, operatoriSorted])
+  }, [vendutoTeam, operatoriFiltrati])
 
-  const SortTh = ({ col, children }) => (
-    <th className={`text-right px-3 py-2 font-semibold cursor-pointer select-none hover:text-indigo-600 transition-colors ${sortBy === col ? 'text-indigo-600' : ''}`}
-      onClick={() => setSortBy(col)}>
-      {children}{sortBy === col ? ' ↓' : ''}
-    </th>
-  )
+  // Colonne dell'export: stessi numeri della tabella, senza ricopiarli a mano.
+  const colonneCsv = [
+    { chiave: 'operatore', etichetta: 'Operatore' },
+    { chiave: 'pezzi',     etichetta: 'Pezzi' },
+    { chiave: 'fatturato', etichetta: 'Fatturato stimato' },
+    { chiave: 'pctTeam',   etichetta: '% Team' },
+    { chiave: 'aggiunte',  etichetta: 'Aggiunte EUR' },
+    { chiave: 'quantum',   etichetta: 'Quantum EUR/coperto' },
+    { chiave: 'payout',    etichetta: 'Bonus maturato' },
+    { chiave: 'target',    etichetta: 'Target pezzi', valore: r => r.target?.target ?? null },
+  ]
 
   return (
     <div className="space-y-5">
@@ -1100,11 +1264,13 @@ export default function KPIWaiters() {
           </h1>
           <p className="text-sm text-gray-500 mt-0.5">Venduto reale · quota team · progress target · bonus</p>
         </div>
-        <button onClick={load} disabled={loading} className="btn-secondary text-sm flex items-center gap-1.5">
+        <button onClick={() => load()} disabled={loading} className="btn-secondary text-sm flex items-center gap-1.5">
           <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
           {loading ? 'Caricamento...' : 'Ricarica'}
         </button>
       </div>
+
+      <BannerErrore messaggio={errore} onChiudi={() => setErrore(null)} />
 
       {/* Filtri */}
       <div className="bg-white rounded-xl border border-gray-200 p-3 flex flex-wrap gap-3 items-center shadow-sm">
@@ -1119,10 +1285,10 @@ export default function KPIWaiters() {
         </div>
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium text-gray-600">Anno:</span>
+          {/* Anni letti da venduto_camerieri: la vecchia lista partiva dal 2024
+              cablato a mano e nascondeva lo storico più vecchio a DB. */}
           <select className="input text-xs py-1" value={anno} onChange={e => setAnno(parseInt(e.target.value))}>
-            {/* Da 2024 all'anno corrente incluso. Prima la lunghezza era
-                `anno-2022`, che aggiungeva un anno futuro ancora senza dati. */}
-            {Array.from({length:new Date().getFullYear()-2023},(_,i)=>2024+i).map(y => <option key={y}>{y}</option>)}
+            {anniDisponibili.map(y => <option key={y} value={y}>{y}</option>)}
           </select>
         </div>
         <div className="flex items-center gap-2">
@@ -1228,23 +1394,16 @@ export default function KPIWaiters() {
           <div className="flex items-center gap-2">
             <Users size={15} className="text-indigo-600" />
             <h2 className="text-sm font-bold text-gray-900">
-              Operatori · {operatoriSorted.length} attivi · {MESI[mese - 1]} {anno} · {sede}
+              Operatori · {operatoriFiltrati.length} attivi · {MESI[mese - 1]} {anno} · {sede}
             </h2>
           </div>
-          <div className="flex items-center gap-1 text-[11px] text-gray-400">
-            <span className="mr-1 text-gray-500">Ordina:</span>
-            {[
-              { key: 'fatturato', label: '€ Fatt.' },
-              { key: 'pezzi',    label: 'Pezzi'   },
-              { key: 'pctTeam',  label: '% Team'  },
-              { key: 'aggiunte', label: 'Aggiunte' },
-              { key: 'quantum',  label: 'Quantum'  },
-            ].map(({ key, label }) => (
-              <button key={key} onClick={() => setSortBy(key)}
-                className={`px-2 py-1 rounded-md transition-all font-medium ${sortBy === key ? 'bg-indigo-100 text-indigo-700' : 'hover:bg-gray-100 text-gray-500'}`}>
-                {label}
-              </button>
-            ))}
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] text-gray-400">Clicca le intestazioni per ordinare</span>
+            <BottoneCsv
+              righe={righeOrdinate}
+              colonne={colonneCsv}
+              nomeFile={`operatori_${sede}_${anno}_${String(mese).padStart(2,'0')}`}
+            />
           </div>
         </div>
 
@@ -1253,50 +1412,58 @@ export default function KPIWaiters() {
             <thead className="bg-gray-50 text-gray-500 text-[11px]">
               <tr>
                 <th className="px-3 py-2 w-8 text-center">#</th>
-                <th className="text-left px-3 py-2 font-semibold">Operatore</th>
-                <SortTh col="pezzi">Pezzi ↕</SortTh>
-                <SortTh col="fatturato">Fatturato ↕</SortTh>
-                <th className="text-right px-3 py-2 font-semibold w-28">% Team</th>
-                <SortTh col="aggiunte">Aggiunte € ↕</SortTh>
-                <SortTh col="quantum">Quantum ↕</SortTh>
-                <th className="text-right px-3 py-2 font-semibold">Bonus</th>
+                <th {...propsTh('operatore')} className="text-left px-3 py-2 font-semibold cursor-pointer select-none hover:text-indigo-600">
+                  Operatore<IconaOrdine colonna="operatore" colonnaAttiva={colonna} direzione={direzione} />
+                </th>
+                <th {...propsTh('pezzi')} className={`text-right px-3 py-2 font-semibold cursor-pointer select-none hover:text-indigo-600 ${colonna === 'pezzi' ? 'text-indigo-600' : ''}`}>
+                  Pezzi<IconaOrdine colonna="pezzi" colonnaAttiva={colonna} direzione={direzione} />
+                </th>
+                <th {...propsTh('fatturato')} className={`text-right px-3 py-2 font-semibold cursor-pointer select-none hover:text-indigo-600 ${colonna === 'fatturato' ? 'text-indigo-600' : ''}`}>
+                  Fatturato<IconaOrdine colonna="fatturato" colonnaAttiva={colonna} direzione={direzione} />
+                </th>
+                <th {...propsTh('pctTeam')} className={`text-right px-3 py-2 font-semibold w-28 cursor-pointer select-none hover:text-indigo-600 ${colonna === 'pctTeam' ? 'text-indigo-600' : ''}`}>
+                  % Team<IconaOrdine colonna="pctTeam" colonnaAttiva={colonna} direzione={direzione} />
+                </th>
+                <th {...propsTh('aggiunte')} className={`text-right px-3 py-2 font-semibold cursor-pointer select-none hover:text-indigo-600 ${colonna === 'aggiunte' ? 'text-indigo-600' : ''}`}>
+                  Aggiunte €<IconaOrdine colonna="aggiunte" colonnaAttiva={colonna} direzione={direzione} />
+                </th>
+                <th {...propsTh('quantum')} className={`text-right px-3 py-2 font-semibold cursor-pointer select-none hover:text-indigo-600 ${colonna === 'quantum' ? 'text-indigo-600' : ''}`}>
+                  Quantum<IconaOrdine colonna="quantum" colonnaAttiva={colonna} direzione={direzione} />
+                </th>
+                <th {...propsTh('payout')} className={`text-right px-3 py-2 font-semibold cursor-pointer select-none hover:text-indigo-600 ${colonna === 'payout' ? 'text-indigo-600' : ''}`}>
+                  Bonus<IconaOrdine colonna="payout" colonnaAttiva={colonna} direzione={direzione} />
+                </th>
                 <th className="w-8"></th>
               </tr>
             </thead>
             <tbody>
-              {!loading && operatoriSorted.length === 0 && (
+              {!loading && righeOrdinate.length === 0 && (
                 <tr>
                   <td colSpan={9} className="text-center py-10 text-gray-400 text-sm">
                     Nessun dato operatori per {sede} · {MESI[mese - 1]} {anno}
                   </td>
                 </tr>
               )}
-              {operatoriSorted.map((op, i) => {
-                const key    = (op.operatore || '').toUpperCase()
-                const target = targetMap[key]  || null
-                const qData  = quantumMap[key] || null
-                const payout = bonusOpMap[key] || 0
-                return (
-                  <OperatoreRow
-                    key={op.operatore}
-                    op={op}
-                    rank={i}
-                    target={target}
-                    quantum={qData}
-                    payout={payout}
-                    expanded={expanded === op.operatore}
-                    onToggle={() => setExpanded(expanded === op.operatore ? null : op.operatore)}
-                    teamCatData={teamCatData}
-                    opCatMap={opCatData[key] || {}}
-                    totPezziCat={totPezziCat}
-                    teamAggRate={teamAggRate}
-                    quantumMedioTeam={quantumMedio}
-                  />
-                )
-              })}
+              {righeOrdinate.map((r, i) => (
+                <OperatoreRow
+                  key={r.operatore}
+                  op={r.op}
+                  rank={i}
+                  target={r.target}
+                  quantum={r.quantumRow}
+                  payout={r.payout}
+                  expanded={expanded === r.operatore}
+                  onToggle={() => setExpanded(expanded === r.operatore ? null : r.operatore)}
+                  teamCatData={teamCatData}
+                  opCatMap={opCatData[r.chiave] || {}}
+                  totPezziCat={totPezziCat}
+                  teamAggRate={teamAggRate}
+                  quantumMedioTeam={quantumMedio}
+                />
+              ))}
             </tbody>
 
-            {operatoriSorted.length > 0 && (
+            {righeOrdinate.length > 0 && (
               <tfoot className="bg-gray-50 border-t-2 border-gray-200 font-bold text-gray-800 text-xs">
                 <tr>
                   <td colSpan={2} className="px-3 py-2 text-gray-700">TOTALE {sede}</td>
@@ -1312,6 +1479,19 @@ export default function KPIWaiters() {
             )}
           </table>
         </div>
+
+        {coperturaVenduto && (
+          <div className="px-3 pb-3">
+            <NotaCopertura
+              righe={coperturaVenduto.righe}
+              troncato={coperturaVenduto.troncato}
+              da={inizioMese(anno, mese)}
+              a={fineMese(anno, mese)}
+              fonte="venduto_camerieri"
+              extra="base del mix categorie nei pannelli espansi"
+            />
+          </div>
+        )}
       </div>
 
       {/* Obiettivi Prodotto (se esistono per il mese) */}
@@ -1335,6 +1515,7 @@ export default function KPIWaiters() {
         tipo={activeModal}
         data={modalData}
         loading={modalLoading}
+        errore={modalError}
         onClose={() => setActiveModal(null)}
         be={be}
         targetFatt={targetFatt}

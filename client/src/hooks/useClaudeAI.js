@@ -8,8 +8,43 @@
  */
 import { useCallback } from 'react'
 import supabase from '../supabase'
+import { fetchPaged } from '../api/paged'
 
 const EDGE_FUNCTION_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/claude-proxy`
+
+// ─── Date ───────────────────────────────────────────────────────────────────
+
+/**
+ * Data YYYY-MM-DD nel fuso LOCALE.
+ * `toISOString()` converte in UTC: la sera, in Italia (UTC+1/+2), "oggi"
+ * diventa ieri e l'intera finestra temporale scivola indietro di un giorno.
+ */
+function isoLocale(d) {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const g = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${g}`
+}
+
+/**
+ * Sottrae mesi mantenendo il giorno valido.
+ * `setMonth(getMonth() - 6)` il 31 agosto punta al 31 febbraio, che Date
+ * normalizza al 3 marzo: la finestra "ultimi 6 mesi" cambia lunghezza a
+ * seconda del giorno in cui la si calcola. `new Date(anno, mese, 0)` dà il
+ * numero reale di giorni del mese di arrivo, senza costanti tipo 30 o 31.
+ */
+function sottraiMesi(d, n) {
+  const anno = d.getFullYear()
+  const mese = d.getMonth() - n
+  const ultimoGiorno = new Date(anno, mese + 1, 0).getDate()
+  return new Date(anno, mese, Math.min(d.getDate(), ultimoGiorno))
+}
+
+function sottraiGiorni(d, n) {
+  const out = new Date(d)
+  out.setDate(out.getDate() - n)
+  return out
+}
 
 /**
  * Costruisce il system prompt con contesto dati CRM.
@@ -31,17 +66,38 @@ export async function buildCrmContext(options = {}) {
   parts.push(`Oggi: ${new Date().toLocaleDateString('it-IT', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`)
   parts.push(`Risto CRM`)
 
+  /**
+   * Esegue un blocco di contesto isolandone l'errore.
+   *
+   * Il client Supabase non rigetta mai: prima, un `{ data }` letto senza
+   * guardare `error` faceva sparire la sezione dal prompt e il modello
+   * rispondeva su dati parziali SENZA saperlo. Ora il guasto viene scritto
+   * nel prompt: meglio un "non disponibile" esplicito di un silenzio che il
+   * modello interpreta come "non ci sono dati".
+   */
+  const sezione = async (nome, fn) => {
+    try {
+      await fn()
+    } catch (e) {
+      parts.push(`\n## ⚠️ ${nome} — DATI NON DISPONIBILI (${e?.message || String(e)})`)
+      parts.push(`Non trarre conclusioni su questa sezione: la lettura è fallita, non è un dato pari a zero.`)
+    }
+  }
+
   try {
     // Chiusure ultimi 30 gg
-    if (includeChiusure) {
-      const from30 = new Date(); from30.setDate(from30.getDate() - 30)
-      const { data: ch } = await supabase
-        .from('chiusure_giornaliere')
-        .select('sede,data,totale_venduto_dgfe,n_doc_fiscali_emessi,coperti')
-        .gte('data', from30.toISOString().substring(0, 10))
-        .order('data', { ascending: false })
-        .limit(60)
-      if (ch?.length) {
+    if (includeChiusure) await sezione('Chiusure ultimi 30 giorni', async () => {
+      const da = isoLocale(sottraiGiorni(new Date(), 30))
+      // Niente `.limit(60)`: 31 giorni × 2 sedi fanno 62 righe e le due più
+      // vecchie sparivano dal totale senza alcun segnale.
+      const ch = await fetchPaged(
+        () => supabase
+          .from('chiusure_giornaliere')
+          .select('id,sede,data,totale_venduto_dgfe,n_doc_fiscali_emessi,coperti')
+          .gte('data', da),
+        'id'
+      )
+      if (ch.length) {
         const bySede = {}
         for (const r of ch) {
           if (!bySede[r.sede]) bySede[r.sede] = { dgfe: 0, coperti: 0, n: 0 }
@@ -49,23 +105,29 @@ export async function buildCrmContext(options = {}) {
           bySede[r.sede].coperti += parseInt(r.coperti) || 0
           bySede[r.sede].n++
         }
-        parts.push(`\n## Chiusure ultimi 30 giorni`)
+        parts.push(`\n## Chiusure ultimi 30 giorni (dal ${da}, ${ch.length} chiusure lette)`)
         for (const [s, v] of Object.entries(bySede)) {
           parts.push(`${s}: €${v.dgfe.toFixed(0)} fatturato, ${v.coperti} coperti, ${v.n} giorni`)
         }
+      } else {
+        parts.push(`\n## Chiusure ultimi 30 giorni: nessuna chiusura registrata dal ${da}`)
       }
-    }
+    })
 
     // Coperti per turno (pranzo/cena) — media per giorno settimana — ultimi 6 mesi
-    if (includeTurni) {
-      const from6m = new Date(); from6m.setMonth(from6m.getMonth() - 6)
-      const { data: turniData } = await supabase
-        .from('chiusure_turni')
-        .select('sede, data, turno, quantita')
-        .gte('data', from6m.toISOString().substring(0, 10))
-        .in('turno', ['pranzo', 'cena'])
-        .order('data', { ascending: false })
-      if (turniData?.length) {
+    if (includeTurni) await sezione('Media coperti per turno', async () => {
+      const da6m = isoLocale(sottraiMesi(new Date(), 6))
+      // ~700 righe oggi, in crescita: senza paginazione il cap di 1000 righe
+      // di PostgREST taglierebbe i mesi più vecchi falsando le medie.
+      const turniData = await fetchPaged(
+        () => supabase
+          .from('chiusure_turni')
+          .select('id, sede, data, turno, quantita')
+          .gte('data', da6m)
+          .in('turno', ['pranzo', 'cena']),
+        'id'
+      )
+      if (turniData.length) {
         const GIORNI = ['Dom','Lun','Mar','Mer','Gio','Ven','Sab']
         // {sede: {dow: {pranzo: [sum,n], cena: [sum,n]}}}
         const agg = {}
@@ -91,16 +153,23 @@ export async function buildCrmContext(options = {}) {
           }
         }
       }
-    }
+    })
 
     // Venduto top prodotti ultimo mese
-    if (includeVenduto) {
-      const { data: vd } = await supabase
-        .from('venduto_camerieri')
-        .select('prodotto, categoria, quantita, sede')
-        .order('quantita', { ascending: false })
-        .limit(200)
-      if (vd?.length) {
+    if (includeVenduto) await sezione('Top prodotti venduti', async () => {
+      // Prima: `.order('quantita').limit(200)` su TUTTO lo storico. Erano le
+      // 200 singole righe con la quantità più alta di sempre, non i prodotti
+      // più venduti dell'ultimo mese — e la chat viene interrogata proprio
+      // sugli ultimi 30 giorni. Ora la finestra è esplicita e letta per intero.
+      const da = isoLocale(sottraiGiorni(new Date(), 30))
+      const vd = await fetchPaged(
+        () => supabase
+          .from('venduto_camerieri')
+          .select('id, prodotto, categoria, quantita, sede')
+          .gte('data_fine', da),
+        'id'
+      )
+      if (vd.length) {
         const byP = {}
         for (const r of vd) {
           if (!r.prodotto || r.prodotto === 'nan') continue
@@ -108,54 +177,65 @@ export async function buildCrmContext(options = {}) {
           byP[r.prodotto].q += parseFloat(r.quantita) || 0
         }
         const top10 = Object.entries(byP).sort((a, b) => b[1].q - a[1].q).slice(0, 10)
-        parts.push(`\n## Top 10 prodotti venduti`)
+        parts.push(`\n## Top 10 prodotti venduti (periodi chiusi dal ${da}, ${vd.length} righe lette)`)
         top10.forEach(([p, v], i) => parts.push(`${i+1}. ${p} (${v.cat || '—'}): ${Math.round(v.q)} pz`))
+      } else {
+        parts.push(`\n## Top prodotti venduti: nessun venduto caricato dal ${da}`)
       }
-    }
+    })
 
     // Fatture — top fornitori
-    if (includeFatture) {
-      const { data: ft } = await supabase
+    if (includeFatture) await sezione('Top fornitori per spesa', async () => {
+      // Qui il `.limit(10)` è voluto: ordinato per spesa decrescente, le 10
+      // righe lette sono davvero le prime 10.
+      const { data: ft, error } = await supabase
         .from('fornitori_fatture')
         .select('nome, tot_spesa, n_fatture')
         .order('tot_spesa', { ascending: false })
         .limit(10)
+      if (error) throw error
       if (ft?.length) {
         parts.push(`\n## Top fornitori per spesa`)
         ft.forEach((f, i) => parts.push(`${i+1}. ${f.nome}: €${parseFloat(f.tot_spesa || 0).toFixed(0)} (${f.n_fatture || 0} fatture)`))
       }
-    }
+    })
 
     // Dipendenti attivi
-    if (includeSedi) {
-      const { data: emp } = await supabase
-        .from('employees')
-        .select('name, role, sede')
-        .eq('active', true)
-        .order('sede')
-        .limit(40)
-      if (emp?.length) {
+    if (includeSedi) await sezione('Dipendenti attivi', async () => {
+      // `.limit(40)` tagliava l'organico senza dirlo: la chat elencava 40
+      // persone e il modello le trattava come l'elenco completo.
+      const emp = await fetchPaged(
+        () => supabase
+          .from('employees')
+          .select('id, name, role, sede')
+          .eq('active', true),
+        'id'
+      )
+      if (emp.length) {
         const bySede = {}
         for (const e of emp) {
           if (!bySede[e.sede]) bySede[e.sede] = []
           bySede[e.sede].push(`${e.name} (${e.role || 'n/a'})`)
         }
-        parts.push(`\n## Dipendenti attivi`)
-        for (const [s, list] of Object.entries(bySede)) {
-          parts.push(`${s}: ${list.join(', ')}`)
+        parts.push(`\n## Dipendenti attivi (${emp.length} in totale)`)
+        for (const s of Object.keys(bySede).sort()) {
+          parts.push(`${s}: ${bySede[s].join(', ')}`)
         }
       }
-    }
+    })
 
     // Buste paga + ANALISI PRO-RATA COERENTE (costo personale vs fatturato sullo stesso periodo)
     // USA v_costo_personale_mensile_categoria per separare ATTIVI da EX-DIPENDENTI/TFR
-    if (includeBuste) {
-      const { data: bpView } = await supabase
+    if (includeBuste) await sezione('Costo personale', async () => {
+      // Vista aggregata (~100 righe): il `.limit(200)` con ordinamento
+      // decrescente tiene comunque i mesi più recenti, cioè quelli usati.
+      const { data: bpView, error: errBp } = await supabase
         .from('v_costo_personale_mensile_categoria')
         .select('sede, anno, mese, categoria, tot_costo, n_cedolini')
         .order('anno', { ascending: false })
         .order('mese', { ascending: false })
         .limit(200)
+      if (errBp) throw errBp
       if (bpView?.length) {
         // Aggrega per sede+mese, ma separa categorie
         const byMese = {}
@@ -184,17 +264,18 @@ export async function buildCrmContext(options = {}) {
         // L'anno di partenza era cablato a '2026-01-01': dal 2027 l'analisi
         // pro-rata avrebbe continuato a caricare anche gli anni passati,
         // falsando il rapporto costo/fatturato. Si usa l'anno corrente.
-        // .range() invece di .limit(): il cap PostgREST è 1000 righe e queste
-        // vengono aggregate per sede+mese, quindi un troncamento silenzioso
-        // farebbe sparire mesi interi dal denominatore.
-        const { data: chTutti, error: errCh } = await supabase
-          .from('chiusure_giornaliere')
-          .select('sede, data, totale_venduto_ipratico, coperti')
-          .gte('data', `${new Date().getFullYear()}-01-01`)
-          .order('data', { ascending: false })
-          .range(0, 4999)
-        if (errCh) throw errCh
-        if (chTutti?.length) {
+        // Il vecchio `.range(0, 4999)` NON bypassava nulla: db-max-rows=1000 è
+        // un tetto server, PostgREST restituiva 1000 righe senza errore e,
+        // essendo ordinate per data DESC, sparivano i mesi più vecchi dal
+        // denominatore del ratio costo/fatturato. Serve paginare davvero.
+        const chTutti = await fetchPaged(
+          () => supabase
+            .from('chiusure_giornaliere')
+            .select('id, sede, data, totale_venduto_ipratico, coperti')
+            .gte('data', `${new Date().getFullYear()}-01-01`),
+          'id'
+        )
+        if (chTutti.length) {
           // Aggrega fatturato per sede+mese + conta giorni con fatturato
           const fatMese = {}
           for (const r of chTutti) {
@@ -227,7 +308,13 @@ export async function buildCrmContext(options = {}) {
           const today = new Date()
           const mY = today.getFullYear(), mM = today.getMonth() + 1
           parts.push(`\n## 📊 Mese in corso ${String(mM).padStart(2, '0')}/${mY} — costo personale PRO-RATA reale`)
-          for (const sede of ['MA', 'PN']) {
+          // Sedi ricavate dai dati: cablare ['MA','PN'] farebbe sparire dal
+          // prompt una terza sede il giorno in cui venisse aperta.
+          const sediNote = [...new Set([
+            ...Object.values(fatMese).map(f => f.sede),
+            ...mesiSorted.map(m => m.sede),
+          ].filter(Boolean))].sort()
+          for (const sede of sediNote) {
             const kCurr = `${sede}|${mY}|${mM}`
             const fCurr = fatMese[kCurr]
             if (!fCurr || fCurr.giorni === 0) {
@@ -242,7 +329,9 @@ export async function buildCrmContext(options = {}) {
             }
             const baseK = `${sede}|${baseMese.anno}|${baseMese.mese}`
             const baseF = fatMese[baseK]
-            const giorniBase = baseF?.giorni || 30
+            // Fallback = giorni reali del mese base (`new Date(anno, mese, 0)`),
+            // non un 30 fisso che in febbraio sovrastima il costo/giorno.
+            const giorniBase = baseF?.giorni || new Date(baseMese.anno, baseMese.mese, 0).getDate()
             const costoPerGiornoBase = baseMese.tot / giorniBase
             const costoProRata = costoPerGiornoBase * fCurr.giorni
             const ratioPro = (costoProRata / fCurr.fat) * 100
@@ -250,26 +339,28 @@ export async function buildCrmContext(options = {}) {
           }
         }
       }
-    }
+    })
 
     // Memoria CRM
-    if (includeMemory) {
-      const { data: mem } = await supabase
+    if (includeMemory) await sezione('Memoria CRM', async () => {
+      const { data: mem, error } = await supabase
         .from('crm_memory')
         .select('sezione, chiave, valore, valore_json, updated_at')
         .order('updated_at', { ascending: false })
         .limit(30)
+      if (error) throw error
       if (mem?.length) {
-        parts.push(`\n## Memoria CRM salvata`)
+        parts.push(`\n## Memoria CRM salvata${mem.length === 30 ? ' (30 voci più recenti)' : ''}`)
         for (const m of mem) {
           const val = m.valore_json ? JSON.stringify(m.valore_json) : m.valore
           parts.push(`[${m.sezione}/${m.chiave}]: ${val}`)
         }
       }
-    }
+    })
 
   } catch (e) {
-    parts.push(`\n⚠️ Errore caricamento contesto: ${e.message}`)
+    // Rete di sicurezza: i guasti per singola sezione sono già segnalati sopra.
+    parts.push(`\n⚠️ Errore caricamento contesto: ${e?.message || String(e)}`)
   }
 
   return parts.join('\n')

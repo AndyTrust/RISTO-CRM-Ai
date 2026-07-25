@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useMemo } from 'react'
 import { chiusure as chiusureApi } from '../api/client'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -10,6 +10,8 @@ import { Printer, TrendingUp, TrendingDown, Minus } from 'lucide-react'
 import PageAssistant from '../components/PageAssistant'
 import PageStatsWidget from '../components/PageStatsWidget'
 import { useTabParam } from '../hooks/useTabParam'
+import { useAnniDisponibili } from '../hooks/useAnniDisponibili'
+import { useOrdinamento, IconaOrdine, BottoneCsv, NotaCopertura } from '../lib/tabella'
 
 function eur(n) { return n != null ? `€ ${Number(n).toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—' }
 function fmt(n) { return n != null ? Number(n).toLocaleString('it-IT') : '—' }
@@ -30,9 +32,12 @@ function DeltaBadge({ value }) {
   )
 }
 
-const CUR_YEAR  = new Date().getFullYear()
-const PREV_YEAR = CUR_YEAR - 1
-const PREV2_YEAR = CUR_YEAR - 2
+// Tonalità per anno nel confronto: l'ultimo anno è il più saturo.
+// Non c'è più un numero fisso di anni, quindi nemmeno un numero fisso di colori:
+// le tonalità si assegnano per posizione, dalla più chiara alla più scura.
+const TONI_MA = ['#eff6ff', '#dbeafe', '#bfdbfe', '#93c5fd', '#60a5fa', '#3b82f6', '#2563eb']
+const TONI_PN = ['#f0fdf4', '#dcfce7', '#bbf7d0', '#86efac', '#4ade80', '#22c55e', '#16a34a']
+const tono = (toni, i, n) => toni[Math.max(0, toni.length - n + i)] ?? toni[toni.length - 1]
 
 // Deep link: /chiusure?tab=andamento|confronto|mensile|tabella
 const TAB_IDS = ['andamento', 'confronto', 'mensile', 'tabella']
@@ -46,6 +51,24 @@ export default function ChiusurePage() {
   const [confronto, setConfrontoAnnuale] = useState([])
   const [period, setPeriod] = useState('ytd')
   const [dates, setDates] = useState(periodToDates('ytd'))
+
+  // Anni REALI a DB: il confronto era strutturalmente fisso a tre anni
+  // (corrente, -1, -2). Con sette anni di storico significava che quattro anni
+  // non erano raggiungibili da nessuna parte della pagina.
+  const { anni: anniDisponibili } = useAnniDisponibili('chiusure_giornaliere', 'data')
+  const [anniSel, setAnniSel] = useState([])   // vuoto = ultimi 3 disponibili
+  const anniConfronto = useMemo(() => {
+    const scelti = anniSel.length ? anniSel : anniDisponibili.slice(0, 3)
+    return [...scelti].sort((a, b) => a - b)
+  }, [anniSel, anniDisponibili])
+  const annoRecente = anniConfronto[anniConfronto.length - 1]
+  const annoPrec    = anniConfronto[anniConfronto.length - 2]
+
+  const toggleAnno = (y) => setAnniSel(prec => {
+    const base = prec.length ? prec : anniDisponibili.slice(0, 3)
+    const next = base.includes(y) ? base.filter(x => x !== y) : [...base, y]
+    return next.length ? next : base   // almeno un anno selezionato
+  })
 
   // Fix: Recharts ResponsiveContainer ha width=0 quando il tab non è quello iniziale
   useEffect(() => {
@@ -61,23 +84,41 @@ export default function ChiusurePage() {
   }
 
   useEffect(() => {
+    // Guardia di unmount: senza, cambiare rotta durante il fetch produce
+    // setState su un componente già smontato.
+    let annullato = false
     const p = { location: loc, from: dates?.from, to: dates?.to }
     Promise.all([
       chiusureApi.mensile(p),
       chiusureApi.recenti(p),
       chiusureApi.stats(p),
-      chiusureApi.confrontoAnnuale(p),
-    ]).then(([m, r, s, c]) => {
+    ]).then(([m, r, s]) => {
+      if (annullato) return
       setMensile(m); setRecenti(r); setStats(s)
-      const byMese = {}
-      c.forEach(row => {
-        if (!byMese[row.mese]) byMese[row.mese] = { mese: row.mese }
-        byMese[row.mese][`${row.anno}_${row.location}`] = row.tot_venduto
-        byMese[row.mese][`${row.anno}_coperti_${row.location}`] = row.tot_coperti
+    }).catch(e => { if (!annullato) console.error(e) })
+    return () => { annullato = true }
+  }, [location, dates, loc])
+
+  // Il confronto anno su anno dipende dagli ANNI scelti, non dal periodo:
+  // tenerlo nello stesso effetto lo faceva ricaricare a ogni cambio di date
+  // e lo legava a un intervallo che non usa.
+  useEffect(() => {
+    if (!anniConfronto.length) return
+    let annullato = false
+    chiusureApi.confrontoAnnuale({ location: loc, anni: anniConfronto })
+      .then(c => {
+        if (annullato) return
+        const byMese = {}
+        c.forEach(row => {
+          if (!byMese[row.mese]) byMese[row.mese] = { mese: row.mese }
+          byMese[row.mese][`${row.anno}_${row.location}`] = row.tot_venduto
+          byMese[row.mese][`${row.anno}_coperti_${row.location}`] = row.tot_coperti
+        })
+        setConfrontoAnnuale(Object.values(byMese).sort((a, b) => a.mese > b.mese ? 1 : -1))
       })
-      setConfrontoAnnuale(Object.values(byMese).sort((a, b) => a.mese > b.mese ? 1 : -1))
-    }).catch(console.error)
-  }, [location, dates])
+      .catch(e => { if (!annullato) console.error(e) })
+    return () => { annullato = true }
+  }, [loc, anniConfronto])
 
   // Merge mensile per grafici
   const mensileChart = mensile.reduce((acc, r) => {
@@ -99,6 +140,48 @@ export default function ChiusurePage() {
 
   const totaleVenduto = stats.reduce((s, x) => s + (parseFloat(x.tot_venduto) || 0), 0)
   const totaleCoperti = stats.reduce((s, x) => s + (parseInt(x.tot_coperti) || 0), 0)
+
+  // ── Tabella mensile: ordinabile ed esportabile ─────────────────────────────
+  const mensileRighe = useMemo(() => mensile.map(m => ({
+    ...m,
+    tot_venduto: parseFloat(m.tot_venduto) || 0,
+    tot_coperti: parseInt(m.tot_coperti) || 0,
+    sede: m.location === 'MAMELI' ? 'MA' : 'PN',
+  })), [mensile])
+  const ordMensile = useOrdinamento(mensileRighe, 'mese', 'desc')
+  // Estratto dal .map: ricalcolare il massimo dentro il ciclo rendeva il
+  // rendering O(n²) su una tabella che con 7 anni di storico ha 168 righe.
+  const maxVendutoMensile = useMemo(
+    () => mensileRighe.reduce((m, x) => Math.max(m, x.tot_venduto), 0),
+    [mensileRighe]
+  )
+
+  const COLONNE_CSV_MENSILE = [
+    { chiave: 'mese', etichetta: 'Mese' },
+    { chiave: 'sede', etichetta: 'Sede' },
+    { chiave: 'tot_venduto', etichetta: 'Venduto' },
+    { chiave: 'tot_coperti', etichetta: 'Coperti' },
+    { chiave: 'avg_coperto_medio', etichetta: 'Coperto medio' },
+    { chiave: 'avg_scontrino_medio', etichetta: 'Scontrino medio' },
+    { chiave: 'giorni_apertura', etichetta: 'Giorni apertura' },
+  ]
+
+  const COLONNE_CSV_CONFRONTO = useMemo(() => [
+    { chiave: 'mese', etichetta: 'Mese' },
+    ...anniConfronto.flatMap(y => [
+      { chiave: `${y}_MAMELI`, etichetta: `MA ${y} venduto` },
+      { chiave: `${y}_PREDDA_NIEDDA`, etichetta: `PN ${y} venduto` },
+    ]),
+  ], [anniConfronto])
+
+  // `cls` replica le classi responsive delle celle: senza, l'intestazione
+  // resterebbe visibile mentre la colonna sparisce, disallineando la tabella.
+  const ThM = ({ col, children, align = 'right', cls = '' }) => (
+    <th {...ordMensile.propsTh(col)}
+      className={`text-${align} px-4 py-3 cursor-pointer select-none hover:text-violet-600 whitespace-nowrap ${cls}`}>
+      {children}<IconaOrdine colonna={col} colonnaAttiva={ordMensile.colonna} direzione={ordMensile.direzione} />
+    </th>
+  )
 
   const tabs = [
     { id: 'andamento',  label: '📈 Andamento' },
@@ -264,11 +347,23 @@ export default function ChiusurePage() {
           <div className="card">
             <div className="card-header">
               <h2 className="font-semibold">Confronto Anno su Anno — Venduto mensile</h2>
-              <p className="text-xs text-gray-400 mt-0.5">Confronto multi-anno per entrambe le sedi</p>
+              <p className="text-xs text-gray-400 mt-0.5 mb-2">
+                Anni presi dai dati: seleziona quali confrontare (il periodo Dal/Al non si applica a questo tab)
+              </p>
+              <div className="flex gap-1.5 flex-wrap">
+                {anniDisponibili.map(y => (
+                  <button key={y} onClick={() => toggleAnno(y)}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ${
+                      anniConfronto.includes(y)
+                        ? 'bg-violet-600 border-violet-600 text-white'
+                        : 'bg-white border-gray-200 text-gray-500 hover:border-violet-300'
+                    }`}>{y}</button>
+                ))}
+              </div>
             </div>
             <div className="card-body">
               {confronto.length === 0 ? (
-                <p className="text-center text-gray-400 py-10 text-sm">Nessun dato disponibile — allarga il periodo di date</p>
+                <p className="text-center text-gray-400 py-10 text-sm">Nessun dato disponibile per gli anni selezionati</p>
               ) : (
                 <ResponsiveContainer width="100%" height={300}>
                   <BarChart data={confronto} margin={{ top: 4, right: 16 }}>
@@ -277,17 +372,13 @@ export default function ChiusurePage() {
                     <YAxis tickFormatter={v => `€${(v/1000).toFixed(0)}k`} tick={{ fontSize: 11 }} />
                     <Tooltip formatter={v => eur(v)} />
                     <Legend />
-                    {[
-                      { anno: PREV2_YEAR, fillMA: '#e2e8f0', fillPN: '#d1fae5' },
-                      { anno: PREV_YEAR,  fillMA: '#93c5fd', fillPN: '#6ee7b7' },
-                      { anno: CUR_YEAR,   fillMA: '#3b82f6', fillPN: '#22c55e' },
-                    ].flatMap(({ anno, fillMA, fillPN }) => {
+                    {anniConfronto.flatMap((anno, i) => {
                       const keyMA = `${anno}_MAMELI`, keyPN = `${anno}_PREDDA_NIEDDA`
                       const hasMA = confronto.some(c => c[keyMA] != null)
                       const hasPN = confronto.some(c => c[keyPN] != null)
                       return [
-                        hasMA && <Bar key={keyMA} dataKey={keyMA} name={`MA ${anno}`} fill={fillMA} radius={[2,2,0,0]} />,
-                        hasPN && <Bar key={keyPN} dataKey={keyPN} name={`PN ${anno}`} fill={fillPN} radius={[2,2,0,0]} />,
+                        hasMA && <Bar key={keyMA} dataKey={keyMA} name={`MA ${anno}`} fill={tono(TONI_MA, i, anniConfronto.length)} radius={[2,2,0,0]} />,
+                        hasPN && <Bar key={keyPN} dataKey={keyPN} name={`PN ${anno}`} fill={tono(TONI_PN, i, anniConfronto.length)} radius={[2,2,0,0]} />,
                       ].filter(Boolean)
                     })}
                   </BarChart>
@@ -299,40 +390,49 @@ export default function ChiusurePage() {
           {/* Tabella confronto con delta % */}
           {confronto.length > 0 && (
             <div className="card overflow-hidden">
-              <div className="card-header"><h2 className="font-semibold">Tabella confronto — delta {CUR_YEAR} vs {PREV_YEAR}</h2></div>
+              <div className="card-header flex items-start justify-between gap-3 flex-wrap">
+                <div>
+                  <h2 className="font-semibold">
+                    Tabella confronto{annoPrec ? ` — delta ${annoRecente} vs ${annoPrec}` : ` — ${annoRecente}`}
+                  </h2>
+                  <NotaCopertura righe={confronto.length} fonte="v_chiusure_confronto_annuale"
+                    extra={`anni: ${anniConfronto.join(', ')}`} />
+                </div>
+                <BottoneCsv righe={confronto} colonne={COLONNE_CSV_CONFRONTO} nomeFile={`confronto_${anniConfronto.join('-')}`} />
+              </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="bg-gray-50 text-xs text-gray-500">
                     <tr>
                       <th className="text-left px-4 py-3">Mese</th>
-                      <th className="text-right px-4 py-3">MA {PREV2_YEAR}</th>
-                      <th className="text-right px-4 py-3">MA {PREV_YEAR}</th>
-                      <th className="text-right px-4 py-3">MA {CUR_YEAR} △</th>
-                      <th className="text-right px-4 py-3">PN {PREV2_YEAR}</th>
-                      <th className="text-right px-4 py-3">PN {PREV_YEAR}</th>
-                      <th className="text-right px-4 py-3">PN {CUR_YEAR} △</th>
+                      {anniConfronto.map(y => (
+                        <th key={`h-MA-${y}`} className="text-right px-4 py-3">MA {y}{y === annoRecente && annoPrec ? ' △' : ''}</th>
+                      ))}
+                      {anniConfronto.map(y => (
+                        <th key={`h-PN-${y}`} className="text-right px-4 py-3">PN {y}{y === annoRecente && annoPrec ? ' △' : ''}</th>
+                      ))}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {confronto.map((c) => {
-                      const deltaMA = pctDelta(c[`${CUR_YEAR}_MAMELI`], c[`${PREV_YEAR}_MAMELI`])
-                      const deltaPN = pctDelta(c[`${CUR_YEAR}_PREDDA_NIEDDA`], c[`${PREV_YEAR}_PREDDA_NIEDDA`])
-                      return (
-                        <tr key={c.mese} className="hover:bg-gray-50">
-                          <td className="px-4 py-2.5 font-medium">{c.mese}</td>
-                          <td className="px-4 py-2.5 text-right text-gray-400">{eur(c[`${PREV2_YEAR}_MAMELI`])}</td>
-                          <td className="px-4 py-2.5 text-right">{eur(c[`${PREV_YEAR}_MAMELI`])}</td>
-                          <td className="px-4 py-2.5 text-right font-semibold">
-                            {eur(c[`${CUR_YEAR}_MAMELI`])}<DeltaBadge value={deltaMA}/>
+                    {confronto.map((c) => (
+                      <tr key={c.mese} className="hover:bg-gray-50">
+                        <td className="px-4 py-2.5 font-medium">{c.mese}</td>
+                        {anniConfronto.map(y => (
+                          <td key={`MA-${y}`} className={`px-4 py-2.5 text-right ${y === annoRecente ? 'font-semibold' : y === annoPrec ? '' : 'text-gray-400'}`}>
+                            {eur(c[`${y}_MAMELI`])}
+                            {y === annoRecente && annoPrec &&
+                              <DeltaBadge value={pctDelta(c[`${annoRecente}_MAMELI`], c[`${annoPrec}_MAMELI`])}/>}
                           </td>
-                          <td className="px-4 py-2.5 text-right text-gray-400">{eur(c[`${PREV2_YEAR}_PREDDA_NIEDDA`])}</td>
-                          <td className="px-4 py-2.5 text-right">{eur(c[`${PREV_YEAR}_PREDDA_NIEDDA`])}</td>
-                          <td className="px-4 py-2.5 text-right font-semibold">
-                            {eur(c[`${CUR_YEAR}_PREDDA_NIEDDA`])}<DeltaBadge value={deltaPN}/>
+                        ))}
+                        {anniConfronto.map(y => (
+                          <td key={`PN-${y}`} className={`px-4 py-2.5 text-right ${y === annoRecente ? 'font-semibold' : y === annoPrec ? '' : 'text-gray-400'}`}>
+                            {eur(c[`${y}_PREDDA_NIEDDA`])}
+                            {y === annoRecente && annoPrec &&
+                              <DeltaBadge value={pctDelta(c[`${annoRecente}_PREDDA_NIEDDA`], c[`${annoPrec}_PREDDA_NIEDDA`])}/>}
                           </td>
-                        </tr>
-                      )
-                    })}
+                        ))}
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -344,27 +444,29 @@ export default function ChiusurePage() {
       {/* ─── MENSILE ──────────────────────────────────────────────────── */}
       {tab === 'mensile' && (
         <div className="card overflow-hidden">
-          <div className="card-header flex items-center justify-between">
-            <h2 className="font-semibold">Riepilogo mensile per sede</h2>
-            <span className="text-xs text-gray-400">{mensile.length} record</span>
+          <div className="card-header flex items-start justify-between gap-3 flex-wrap">
+            <div>
+              <h2 className="font-semibold">Riepilogo mensile per sede</h2>
+              <NotaCopertura righe={mensile.length} da={dates?.from} a={dates?.to} fonte="chiusure_giornaliere" />
+            </div>
+            <BottoneCsv righe={ordMensile.righeOrdinate} colonne={COLONNE_CSV_MENSILE} nomeFile={`mensile_${location}`} />
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 text-xs text-gray-500">
                 <tr>
-                  <th className="text-left px-4 py-3">Mese</th>
-                  <th className="text-left px-4 py-3">Sede</th>
-                  <th className="text-right px-4 py-3">Venduto</th>
-                  <th className="text-right px-4 py-3 hidden sm:table-cell">Coperti</th>
-                  <th className="text-right px-4 py-3 hidden sm:table-cell">Cop. medio</th>
-                  <th className="text-right px-4 py-3 hidden md:table-cell">Scont. medio</th>
-                  <th className="text-right px-4 py-3 hidden md:table-cell">Giorni</th>
+                  <ThM col="mese" align="left">Mese</ThM>
+                  <ThM col="sede" align="left">Sede</ThM>
+                  <ThM col="tot_venduto">Venduto</ThM>
+                  <ThM col="tot_coperti" cls="hidden sm:table-cell">Coperti</ThM>
+                  <ThM col="avg_coperto_medio" cls="hidden sm:table-cell">Cop. medio</ThM>
+                  <ThM col="avg_scontrino_medio" cls="hidden md:table-cell">Scont. medio</ThM>
+                  <ThM col="giorni_apertura" cls="hidden md:table-cell">Giorni</ThM>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {mensile.slice().reverse().map((m) => {
-                  const maxV = Math.max(...mensile.map(x => parseFloat(x.tot_venduto) || 0))
-                  const barPct = maxV > 0 ? ((parseFloat(m.tot_venduto) || 0) / maxV * 100).toFixed(1) : 0
+                {ordMensile.righeOrdinate.map((m) => {
+                  const barPct = maxVendutoMensile > 0 ? (m.tot_venduto / maxVendutoMensile * 100).toFixed(1) : 0
                   return (
                     <tr key={`${m.mese}-${m.location}`} className="hover:bg-gray-50">
                       <td className="px-4 py-2.5 font-medium">{m.mese}</td>
@@ -484,7 +586,11 @@ export default function ChiusurePage() {
         suggerimenti={[
           "Qual è la chiusura più alta di questo mese?",
           "Media coperti per giorno nella settimana corrente",
-          "Confronta le chiusure di marzo 2025 vs 2026",
+          // Anni presi dalla selezione reale: la stringa era cablata a
+          // "marzo 2025 vs 2026" e sarebbe invecchiata in silenzio.
+          annoPrec
+            ? `Confronta le chiusure ${annoPrec} vs ${annoRecente}`
+            : `Analizza le chiusure ${annoRecente}`,
         ]}
       />
     </>
