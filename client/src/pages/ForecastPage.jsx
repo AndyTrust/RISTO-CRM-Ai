@@ -197,8 +197,13 @@ export default function ForecastPage() {
         // cioè perdendo proprio i giorni più recenti.
         const [fData, cData] = await Promise.all([
           fetchPaged(() => {
-            let q = supabase.from('revenue_forecast')
-              .select('id, sede, data_competenza, previsione_incasso, valutazione, note_meteo, aggiornato_il')
+            // `revenue_forecast` è abbandonata: 20 righe ferme al 24/06/2026,
+            // per questo la pagina risultava vuota. Il job notturno
+            // `genera-forecast-personale` scrive su `forecast_giornaliero`, che
+            // arriva a due settimane avanti; v_forecast_giornaliero ne aggrega
+            // i turni sulla giornata mantenendo gli stessi nomi di colonna.
+            let q = supabase.from('v_forecast_giornaliero')
+              .select('id, sede, data_competenza, previsione_incasso, previsione_coperti, staff_previsto, costo_lavoro, costo_lavoro_pct, confidence, valutazione, note_meteo, aggiornato_il')
               .gte('data_competenza', fromF).lte('data_competenza', toF)
             if (sede !== 'all') q = q.eq('sede', sede)
             return q
