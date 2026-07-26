@@ -4445,7 +4445,7 @@ export const analisiCostiApi = {
         .select('id, sede, data_fattura, importo_riga, categoria')
         .gte('data_fattura', da).lte('data_fattura', a), 'id', { max: 150000 }),
       sbFetchPaged(() => supabase.from('buste_paga')
-        .select('id, sede, anno, mese, costo_azienda, netto, employee_id')
+        .select('id, sede, anno, mese, costo_azienda, netto, employee_id, is_stima')
         .gte('anno', annoDa).lte('anno', annoA), 'id'),
       sbFetchPaged(() => supabase.from('employees').select('id, reparto_id'), 'id'),
       sbFetch(supabase.from('reparti').select('id, nome')),
@@ -4465,7 +4465,7 @@ export const analisiCostiApi = {
     const vuota = () => ({
       ricaviLordi: 0, ricaviNetti: 0, coperti: 0, giorni: 0,
       fornitori: 0, fornitoriFood: 0,
-      persDiretto: 0, persCentrale: 0, persNonAssegnato: 0,
+      persDiretto: 0, persCentrale: 0, persNonAssegnato: 0, persStima: 0,
       fissi: 0,
       dettaglioReparti: {},
     })
@@ -4507,11 +4507,15 @@ export const analisiCostiApi = {
       const costo = Number(b.costo_azienda) || (Number(b.netto) || 0) * 1.79
       const rep = b.employee_id ? repartoDip.get(b.employee_id) ?? null : null
       const m = `${b.anno}-${String(b.mese).padStart(2, '0')}`
-      const voce = rep === null ? 'persNonAssegnato'
+      // Le righe `is_stima` non sono persone: sono la chiusura stimata del mese
+      // in attesa del LUL. Mescolarle al "senza reparto" faceva sembrare non
+      // classificato un quinto del costo di Mameli, quando era solo una stima.
+      const voce = b.is_stima ? 'persStima'
+        : rep === null ? 'persNonAssegnato'
         : REPARTI_CENTRALI.has(rep) ? 'persCentrale' : 'persDiretto'
       for (const t of [perSede[s], mese(s, m)]) {
         t[voce] += costo
-        const nome = rep ?? '(reparto non assegnato)'
+        const nome = b.is_stima ? '(stima mese in corso)' : rep ?? '(reparto non assegnato)'
         t.dettaglioReparti[nome] = (t.dettaglioReparti[nome] || 0) + costo
       }
     }
@@ -4526,7 +4530,10 @@ export const analisiCostiApi = {
     }
 
     const chiudi = (t) => {
-      const personaleSede = t.persDiretto + t.persNonAssegnato
+      // La stima entra nel costo di sede: è personale che c'è stato davvero,
+      // solo il cedolino non è ancora arrivato. Resta però su una voce sua,
+      // così si vede quanta parte del risultato non è ancora consuntivo.
+      const personaleSede = t.persDiretto + t.persNonAssegnato + t.persStima
       const margineSede = t.ricaviNetti - t.fornitori - personaleSede - t.fissi
       const risultato = margineSede - t.persCentrale
       const pct = v => (t.ricaviNetti > 0 ? (v / t.ricaviNetti) * 100 : null)
@@ -4540,6 +4547,7 @@ export const analisiCostiApi = {
         fornitoriPct: pct(t.fornitori),
         personaleSedePct: pct(personaleSede),
         personaleCentralePct: pct(t.persCentrale),
+        persStimaPct: pct(t.persStima),
         fissiPct: pct(t.fissi),
         margineSedePct: pct(margineSede),
         risultatoPct: pct(risultato),

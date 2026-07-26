@@ -320,6 +320,12 @@ function SezioneMarginalita() {
                 ma={-MA.persNonAssegnato} pn={-PN.persNonAssegnato}
                 pctMa={MA.ricaviNetti ? -(MA.persNonAssegnato / MA.ricaviNetti) * 100 : null}
                 pctPn={PN.ricaviNetti ? -(PN.persNonAssegnato / PN.ricaviNetti) * 100 : null} />
+              {(MA.persStima > 0 || PN.persStima > 0) && (
+                <VoceCE etichetta="Personale del mese in corso (stima)"
+                  nota="cedolini non ancora emessi: stima sulla media dei mesi chiusi, sostituita quando arriva il LUL"
+                  ma={-MA.persStima} pn={-PN.persStima}
+                  pctMa={-MA.persStimaPct} pctPn={-PN.persStimaPct} />
+              )}
               <VoceCE etichetta="Costi fissi" nota="affitti, utenze e oneri censiti in Costi Fissi"
                 ma={-MA.fissi} pn={-PN.fissi} pctMa={-MA.fissiPct} pctPn={-PN.fissiPct} />
               <VoceCE etichetta="MARGINE DI SEDE" tipo="totale"
