@@ -894,10 +894,21 @@ function MatriceCategorieMedia({ sede, from, to }) {
 }
 
 // ── Matrice Operatori × Categorie ─────────────────────────────────────────
+// Il COPERTO non è un prodotto venduto: è il numero di clienti serviti.
+// Sta in categoria "Costo servizio" e da solo vale più di ogni categoria vera
+// (12.412 pezzi in due mesi), quindi se entra nella heatmap ne satura la scala
+// e tutte le categorie reali finiscono nella fascia più chiara.
+// Lo teniamo fuori dalla matrice e lo mostriamo come colonna a sé.
+function isCoperto(r) {
+  const cat  = (r.categoria || '').toLowerCase()
+  const prod = (r.prodotto  || '').toUpperCase()
+  return cat.includes('costo servizio') || prod.startsWith('COPERTO')
+}
+
 async function loadMatriceCategorie(sede, from, to) {
   const rows = await sbqAll(() => {
     let q = supabase.from('venduto_camerieri')
-      .select('operatore, categoria, quantita')
+      .select('operatore, categoria, prodotto, quantita')
     if (sede) q = q.eq('sede', sede)
     if (to)   q = q.lte('data_inizio', to)
     if (from) q = q.gte('data_fine', from)
@@ -905,18 +916,30 @@ async function loadMatriceCategorie(sede, from, to) {
   })
 
   // Aggrega per operatore + categoria
-  const matrix = {}   // { op: { cat: qty } }
-  const catTotals = {} // { cat: qty }
-  const opTotals  = {} // { op: qty }
+  const matrix = {}      // { op: { cat: qty } }  — solo prodotti veri
+  const catTotals = {}   // { cat: qty }
+  const opTotals  = {}   // { op: qty }           — pezzi venduti, coperti esclusi
+  const copertiByOp = {} // { op: coperti }       — dato di servizio, scala separata
 
   for (const r of rows) {
     if (!r.operatore || r.operatore.toLowerCase() === 'pienissimo') continue
-    const cat = (!r.categoria || r.categoria === 'nan') ? 'Altro' : r.categoria
     const qty = parseFloat(r.quantita) || 0
+
+    if (isCoperto(r)) {
+      copertiByOp[r.operatore] = (copertiByOp[r.operatore] || 0) + qty
+      continue
+    }
+
+    const cat = (!r.categoria || r.categoria === 'nan') ? 'Altro' : r.categoria
     if (!matrix[r.operatore])  matrix[r.operatore] = {}
     matrix[r.operatore][cat] = (matrix[r.operatore][cat] || 0) + qty
     catTotals[cat] = (catTotals[cat] || 0) + qty
     opTotals[r.operatore] = (opTotals[r.operatore] || 0) + qty
+  }
+
+  // Un operatore può avere coperti ma nessun prodotto: va comunque elencato
+  for (const op of Object.keys(copertiByOp)) {
+    if (!(op in opTotals)) opTotals[op] = 0
   }
 
   // Top 10 categorie per totale
@@ -925,12 +948,12 @@ async function loadMatriceCategorie(sede, from, to) {
     .slice(0, 10)
     .map(([cat]) => cat)
 
-  // Operatori ordinati per totale
+  // Operatori ordinati per pezzi venduti
   const ops = Object.entries(opTotals)
     .sort((a, b) => b[1] - a[1])
     .map(([op]) => op)
 
-  return { matrix, topCats, ops, catTotals, opTotals }
+  return { matrix, topCats, ops, catTotals, opTotals, copertiByOp }
 }
 
 function MatriceCategorie({ sede, from, to }) {
@@ -948,12 +971,18 @@ function MatriceCategorie({ sede, from, to }) {
   if (loading) return <p className="text-center text-gray-400 py-10 text-sm animate-pulse">Caricamento matrice...</p>
   if (!data || data.ops.length === 0) return <p className="text-center text-gray-400 py-10 text-sm">Nessun dato nel periodo</p>
 
-  const { matrix, topCats, ops, catTotals, opTotals } = data
+  const { matrix, topCats, ops, catTotals, opTotals, copertiByOp = {} } = data
   const grandTotal = Object.values(opTotals).reduce((s, v) => s + v, 0)
+  const copertiTotal = Object.values(copertiByOp).reduce((s, v) => s + v, 0)
 
-  // Valore massimo per heatmap
+  // Scala della heatmap calcolata SOLO sui prodotti veri: il coperto è escluso
+  // a monte, altrimenti da solo satura il massimo e appiattisce tutto il resto.
   const allVals = ops.flatMap(op => topCats.map(cat => matrix[op]?.[cat] || 0))
   const maxVal  = Math.max(...allVals, 1)
+
+  // Il coperto ha una scala propria e una tinta diversa (ambra), così si legge
+  // a colpo d'occhio che è un dato di servizio e non una vendita.
+  const maxCoperti = Math.max(...ops.map(op => copertiByOp[op] || 0), 1)
 
   function getCellBg(qty) {
     if (!qty) return 'bg-gray-50 text-gray-300'
@@ -962,6 +991,15 @@ function MatriceCategorie({ sede, from, to }) {
     if (ratio > 0.5)  return 'bg-indigo-400 text-white'
     if (ratio > 0.25) return 'bg-indigo-200 text-indigo-800'
     return 'bg-indigo-50 text-indigo-600'
+  }
+
+  function getCopertiBg(qty) {
+    if (!qty) return 'bg-gray-50 text-gray-300'
+    const ratio = qty / maxCoperti
+    if (ratio > 0.75) return 'bg-amber-500 text-white'
+    if (ratio > 0.5)  return 'bg-amber-300 text-amber-900'
+    if (ratio > 0.25) return 'bg-amber-100 text-amber-800'
+    return 'bg-amber-50 text-amber-700'
   }
 
   return (
@@ -974,6 +1012,12 @@ function MatriceCategorie({ sede, from, to }) {
           ))}
           <span>basso → alto</span>
         </span>
+        <span className="flex items-center gap-1 border-l border-gray-200 pl-4">
+          {['bg-amber-50','bg-amber-100','bg-amber-300','bg-amber-500'].map((cls, i) => (
+            <span key={i} className={`w-4 h-4 rounded inline-block ${cls}`} />
+          ))}
+          <span>coperti serviti (scala a parte)</span>
+        </span>
       </div>
 
       <div className="overflow-x-auto rounded-xl border border-gray-200">
@@ -981,8 +1025,11 @@ function MatriceCategorie({ sede, from, to }) {
           <thead>
             <tr className="bg-gray-50 border-b border-gray-200">
               <th className="px-3 py-2.5 text-left font-semibold text-gray-700 sticky left-0 bg-gray-50 z-10 min-w-[130px]">Operatore</th>
-              <th className="px-3 py-2.5 text-right font-semibold text-gray-700 min-w-[70px]">Totale</th>
+              <th className="px-3 py-2.5 text-right font-semibold text-gray-700 min-w-[70px]">Pezzi venduti</th>
               <th className="px-3 py-2.5 text-right font-semibold text-gray-500 min-w-[60px]">% Team</th>
+              <th className="px-3 py-2.5 text-center font-semibold text-amber-700 min-w-[80px] border-r-2 border-amber-200 bg-amber-50/60">
+                <div title="Numero di clienti serviti: non è una vendita, ha una scala separata">Coperti</div>
+              </th>
               {topCats.map(cat => (
                 <th key={cat} className="px-3 py-2.5 text-center font-semibold text-gray-600 min-w-[90px] max-w-[120px]">
                   <div className="truncate" title={cat}>{cat}</div>
@@ -999,6 +1046,22 @@ function MatriceCategorie({ sede, from, to }) {
                   <td className="px-3 py-2.5 font-semibold text-gray-900 sticky left-0 bg-white">{op}</td>
                   <td className="px-3 py-2.5 text-right font-mono font-semibold text-gray-800">{fmt(opTotal)}</td>
                   <td className="px-3 py-2.5 text-right font-mono text-gray-500">{opPct}%</td>
+                  {(() => {
+                    const cop = Math.round(copertiByOp[op] || 0)
+                    const pezziPerCoperto = cop > 0 ? (opTotal / cop).toFixed(1) : null
+                    return (
+                      <td className={`px-2 py-2.5 text-center border-r-2 border-amber-200 ${getCopertiBg(cop)}`}>
+                        {cop > 0 ? (
+                          <div>
+                            <div className="font-bold">{fmt(cop)}</div>
+                            <div className="text-[10px] opacity-75" title="Pezzi venduti per coperto servito">
+                              {pezziPerCoperto}×
+                            </div>
+                          </div>
+                        ) : '—'}
+                      </td>
+                    )
+                  })()}
                   {topCats.map(cat => {
                     const qty = Math.round(matrix[op]?.[cat] || 0)
                     const catPct = opTotal > 0 && qty > 0 ? Math.round(qty / opTotal * 100) : 0
@@ -1022,6 +1085,12 @@ function MatriceCategorie({ sede, from, to }) {
               <td className="px-3 py-2.5 text-gray-700 uppercase text-[11px]">Totale Team</td>
               <td className="px-3 py-2.5 text-right font-mono text-gray-900">{fmt(Math.round(grandTotal))}</td>
               <td className="px-3 py-2.5 text-right text-gray-500">100%</td>
+              <td className="px-2 py-2.5 text-center text-amber-800 bg-amber-50/60 border-r-2 border-amber-200">
+                <div className="font-bold">{fmt(Math.round(copertiTotal))}</div>
+                <div className="text-[10px] text-amber-700">
+                  {copertiTotal > 0 ? `${(grandTotal / copertiTotal).toFixed(1)}× / coperto` : '—'}
+                </div>
+              </td>
               {topCats.map(cat => {
                 const catTotal = Math.round(catTotals[cat] || 0)
                 const catPct   = grandTotal > 0 ? (catTotal / grandTotal * 100).toFixed(1) : '0'
@@ -1038,6 +1107,12 @@ function MatriceCategorie({ sede, from, to }) {
       </div>
       <p className="text-xs text-gray-400">
         Visualizzate le top {topCats.length} categorie per volume. Fonte: Pienissimo iPratico.
+        <br />
+        Il <strong className="text-amber-700">coperto</strong> non è un prodotto venduto: è il numero di
+        clienti serviti. Sta in colonna a parte, con scala e colore propri, e non entra né nel totale
+        pezzi né nella scala della heatmap — altrimenti da solo la saturerebbe e le categorie vere
+        risulterebbero tutte nella fascia più bassa. Il valore piccolo sotto i coperti è il numero di
+        pezzi venduti per ogni cliente servito.
       </p>
     </div>
   )
