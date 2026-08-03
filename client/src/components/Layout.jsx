@@ -29,6 +29,10 @@ const NAV_GROUPS = [
     items: [
       { id: 'chiusure',     path: '/chiusure',     icon: Receipt,         label: 'Chiusure Cassa',  desc: 'Corrispettivi giornalieri MA + PN' },
       { id: 'venduto',      path: '/venduto',      icon: TrendingUp,      label: 'Venduto & BI',    desc: 'Analisi venduto, heatmap, calendario' },
+      // Vicino a Venduto perché risponde alla stessa domanda ("come sta andando
+      // il mese"), ma in EURO e con la regola dei premi: break-even → quorum →
+      // quantum. I target in pezzi della tab Venduto restano operativi.
+      { id: 'obiettivi',    path: '/obiettivi',    icon: Award,           label: 'Obiettivi & Premi', desc: 'Break-even, quorum/quantum, premi', alwaysEnabled: true },
       { id: 'prodotti_bi',  path: '/prodotti-bi',  icon: Tag,             label: 'Prodotti & Menu', desc: 'Food cost, BCG, menu engineering', alwaysEnabled: true },
       { id: 'forecast',     path: '/forecast',     icon: Cloud,           label: 'Forecast',        desc: 'Previsioni incasso prossimi giorni', alwaysEnabled: true },
     ]

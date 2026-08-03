@@ -72,6 +72,7 @@ import RecensioniPage from './pages/RecensioniPage'
 import BilanciPage from './pages/BilanciPage'
 import CostiPrezziBi from './pages/CostiPrezziBi'
 import CatalogoArticoli from './pages/CatalogoArticoli'
+import ObiettiviPremi from './pages/ObiettiviPremi'
 import { modules as modulesApi, crmConfig } from './api/client'
 
 export const ModulesContext = React.createContext({})
@@ -152,6 +153,10 @@ export default function App() {
           <Route path="/kpi-config" element={<KPIConfig />} />
           <Route path="/kpi-team" element={<Navigate to="/kpi?tab=team" replace />} />
           <Route path="/venduto" element={isEnabled('venduto') ? <VendutoPage /> : <DisabledModule name="Venduto" />} />
+          {/* OBIETTIVI & PREMI — break-even → quorum → quantum e premi per
+              operatore. È l'unico posto in cui l'obiettivo di sede è in EURO:
+              i target in pezzi della tab Venduto restano un dettaglio operativo. */}
+          <Route path="/obiettivi" element={<ObiettiviPremi />} />
           <Route path="/chiusure" element={isEnabled('chiusure') ? <ChiusurePage /> : <DisabledModule name="Chiusure" />} />
           <Route path="/chat" element={isEnabled('chat_claude') ? <ChatClaude /> : <DisabledModule name="Chat Claude AI" />} />
           <Route path="/fornitori" element={isEnabled('fornitori') ? <FornitoriPage /> : <DisabledModule name="Fornitori" />} />

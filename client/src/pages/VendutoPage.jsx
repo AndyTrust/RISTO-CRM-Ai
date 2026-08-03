@@ -2,6 +2,7 @@
  * VendutoPage.jsx — Analisi venduto con calendario heatmap + BI avanzata
  */
 import React, { useEffect, useState, useMemo } from 'react'
+import { Link } from 'react-router-dom'
 import supabase from '../supabase'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -250,6 +251,121 @@ async function loadPrevisioni(from, to) {
     if (to)   q = q.lte('data', to)
     return q
   })
+}
+
+// ── Fascia "obiettivo di sede in euro" ────────────────────────────────────
+/**
+ * La tab qui sotto calcola un target PROPRIO — media 3 mesi × 1.10, in pezzi —
+ * che non è l'obiettivo aziendale: quello vive in `v_obiettivi_mese`, è in euro
+ * e parte dal break-even. Le due cose convivevano senza che nulla lo dicesse, e
+ * chi leggeva questa pagina si portava via il numero sbagliato.
+ *
+ * Questa fascia non riscrive la tab: le mette sopra il dato di sede, così è
+ * chiaro quale dei due comanda. Lettura filtrata lato server per anno+mese (e
+ * sede quando ne è scelta una): il cap PostgREST è di 1000 righe.
+ */
+function FasciaObiettivoSede({ sede, anno, mese }) {
+  const [righe, setRighe] = React.useState(null)
+  const [errore, setErrore] = React.useState(null)
+
+  React.useEffect(() => {
+    let annullato = false
+    setRighe(null); setErrore(null)
+    let q = supabase.from('v_obiettivi_mese').select('*').eq('anno', anno).eq('mese', mese)
+    if (sede) q = q.eq('sede', sede)
+    q.order('sede').then(({ data, error }) => {
+      if (annullato) return
+      // Mai `?? []`: "vista non leggibile" e "mese senza dati" dicono cose diverse.
+      if (error) setErrore(error.message)
+      else setRighe(data ?? [])
+    })
+    return () => { annullato = true }
+  }, [sede, anno, mese])
+
+  const TONO = {
+    sotto_break_even: { txt: 'Sotto break-even', cls: 'bg-red-50 border-red-200 text-red-700',        pill: 'bg-red-500' },
+    quorum:           { txt: 'Quorum raggiunto', cls: 'bg-amber-50 border-amber-200 text-amber-800',  pill: 'bg-amber-500' },
+    quantum:          { txt: 'Obiettivo raggiunto (quantum)', cls: 'bg-emerald-50 border-emerald-200 text-emerald-800', pill: 'bg-emerald-500' },
+  }
+  const eur0 = n => (n == null ? '—' : `€ ${Math.round(Number(n)).toLocaleString('it-IT')}`)
+  const pct1 = n => (n == null ? '—' : `${Number(n).toLocaleString('it-IT', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`)
+
+  return (
+    <div className="space-y-2">
+      {errore && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+          Obiettivo di sede non disponibile: {errore}
+        </div>
+      )}
+
+      {righe && righe.length > 0 && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+          {righe.map(r => {
+            const t = TONO[r.stato] || TONO.sotto_break_even
+            const proRata = Number(r.quota_mese) < 1
+            const be = proRata ? r.break_even_pro_rata : r.break_even
+            const ob = proRata ? r.obiettivo_pro_rata : r.obiettivo
+            const gap = Number(r.gap_a_obiettivo)
+            return (
+              <div key={r.sede} className={`rounded-xl border p-3 ${t.cls}`}>
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <span className="font-bold text-sm">
+                    📍 {r.sede === 'MA' ? 'Mameli' : 'Predda Niedda'}
+                    <span className="font-normal opacity-70 ml-1.5">{r.mese_str}</span>
+                  </span>
+                  <span className={`text-[11px] font-semibold text-white px-2 py-0.5 rounded-full ${t.pill}`}>
+                    {t.txt}
+                  </span>
+                </div>
+                <div className="grid grid-cols-4 gap-2 mt-2 text-xs">
+                  <div>
+                    <div className="opacity-60">Fatturato</div>
+                    <div className="font-bold text-sm">{eur0(r.fatturato)}</div>
+                  </div>
+                  <div>
+                    <div className="opacity-60">Break-even</div>
+                    <div className="font-bold text-sm">{eur0(be)}</div>
+                  </div>
+                  <div>
+                    <div className="opacity-60">Obiettivo</div>
+                    <div className="font-bold text-sm">{eur0(ob)}</div>
+                  </div>
+                  <div>
+                    <div className="opacity-60">% obiettivo</div>
+                    <div className="font-bold text-sm">{pct1(r.pct_su_obiettivo)}</div>
+                  </div>
+                </div>
+                <div className="text-[11px] mt-1.5 opacity-80">
+                  {Number.isFinite(gap) && (gap > 0
+                    ? <>Mancano <strong>{eur0(gap)}</strong> all'obiettivo{proRata ? ' pro-rata' : ''}. </>
+                    : <>Obiettivo{proRata ? ' pro-rata' : ''} superato di <strong>{eur0(Math.abs(gap))}</strong>. </>)}
+                  {r.be_stimato && <>Break-even <strong>stimato</strong> sulla media dei 3 mesi chiusi. </>}
+                  {proRata && <>Confronto pro-rata su {r.gg_aperti} giorni su {r.gg_mese}. </>}
+                  <Link to="/obiettivi" className="underline font-semibold whitespace-nowrap">
+                    Vai a Obiettivi &amp; Premi →
+                  </Link>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {righe && righe.length === 0 && (
+        <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-500">
+          Nessun obiettivo di sede a database per {String(anno)}-{String(mese).padStart(2, '0')}.
+        </div>
+      )}
+
+      <div className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-[11px] text-gray-600 leading-relaxed">
+        <strong>Come leggere questa tab.</strong> L'obiettivo di sede è quello qui sopra, in{' '}
+        <strong>euro</strong>: break-even (personale + fatture + costi fissi) più una percentuale.
+        I target in <strong>pezzi</strong> della tabella sottostante sono un dettaglio operativo per
+        singolo operatore (media degli ultimi 3 mesi +10%) e non concorrono a definire quorum,
+        quantum o premi.
+      </div>
+    </div>
+  )
 }
 
 // ── Tab Obiettivi Team ────────────────────────────────────────────────────
@@ -1396,6 +1512,13 @@ export default function VendutoPage() {
       {/* ─── OBIETTIVI TEAM ───────────────────────────────────── */}
       {tab === 'obiettivi' && (
         <div className="space-y-4">
+          {/* L'obiettivo di sede (euro, break-even) PRIMA dei target in pezzi:
+              sono due cose diverse e l'ordine di lettura conta. */}
+          <FasciaObiettivoSede
+            sede={sede}
+            anno={(to ? new Date(to + 'T00:00:00') : new Date()).getFullYear()}
+            mese={(to ? new Date(to + 'T00:00:00') : new Date()).getMonth() + 1}
+          />
           <div className="bg-violet-50 border border-violet-100 rounded-lg px-4 py-2.5 text-xs text-violet-700">
             🎯 <strong>Obiettivi Team</strong> — media pezzi venduti negli ultimi 3 mesi per ogni operatore, con target +10%.
             Il target è modificabile direttamente: passa con il mouse sopra un valore e clicca ✏️.
