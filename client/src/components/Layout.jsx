@@ -6,7 +6,7 @@ import {
   Building2, Settings, ChevronLeft, ChevronRight, RefreshCw,
   BarChart2, Lock, Wallet, UtensilsCrossed, CalendarDays,
   ChevronDown, Tag, MapPin, Archive, Brain, Cloud, Database, Award, BarChart3, Activity, Coins, Star, MessageSquare,
-  GitMerge, BookOpen, Scale, Landmark, GitCompareArrows, Percent, Package
+  GitMerge, BookOpen, Scale, Landmark, GitCompareArrows, Percent, Package, Gauge
 } from 'lucide-react'
 import { data as dataApi } from '../api/client'
 
@@ -33,6 +33,10 @@ const NAV_GROUPS = [
       // il mese"), ma in EURO e con la regola dei premi: break-even → quorum →
       // quantum. I target in pezzi della tab Venduto restano operativi.
       { id: 'obiettivi',    path: '/obiettivi',    icon: Award,           label: 'Obiettivi & Premi', desc: 'Break-even, quorum/quantum, premi', alwaysEnabled: true },
+      // Subito dopo Obiettivi perché ne è il seguito operativo: lì c'è il gap
+      // di sede in euro, qui lo stesso gap spezzato per turno e tradotto in
+      // coperti o scontrino — le due leve su cui si può davvero agire.
+      { id: 'fabbisogno',   path: '/fabbisogno',   icon: Gauge,           label: 'Fabbisogno & Tendenza', desc: 'Pareggio per turno, coperti vs scontrino', alwaysEnabled: true },
       { id: 'prodotti_bi',  path: '/prodotti-bi',  icon: Tag,             label: 'Prodotti & Menu', desc: 'Food cost, BCG, menu engineering', alwaysEnabled: true },
       { id: 'forecast',     path: '/forecast',     icon: Cloud,           label: 'Forecast',        desc: 'Previsioni incasso prossimi giorni', alwaysEnabled: true },
     ]

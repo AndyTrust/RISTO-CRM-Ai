@@ -73,6 +73,7 @@ import BilanciPage from './pages/BilanciPage'
 import CostiPrezziBi from './pages/CostiPrezziBi'
 import CatalogoArticoli from './pages/CatalogoArticoli'
 import ObiettiviPremi from './pages/ObiettiviPremi'
+import Fabbisogno from './pages/Fabbisogno'
 import { modules as modulesApi, crmConfig } from './api/client'
 
 export const ModulesContext = React.createContext({})
@@ -157,6 +158,10 @@ export default function App() {
               operatore. È l'unico posto in cui l'obiettivo di sede è in EURO:
               i target in pezzi della tab Venduto restano un dettaglio operativo. */}
           <Route path="/obiettivi" element={<ObiettiviPremi />} />
+          {/* FABBISOGNO & TENDENZA — quanto deve incassare ogni turno per
+              coprire la sua quota di pareggio, e se il fatturato si muove per
+              i coperti o per lo scontrino. Sola lettura su tre viste. */}
+          <Route path="/fabbisogno" element={<Fabbisogno />} />
           <Route path="/chiusure" element={isEnabled('chiusure') ? <ChiusurePage /> : <DisabledModule name="Chiusure" />} />
           <Route path="/chat" element={isEnabled('chat_claude') ? <ChatClaude /> : <DisabledModule name="Chat Claude AI" />} />
           <Route path="/fornitori" element={isEnabled('fornitori') ? <FornitoriPage /> : <DisabledModule name="Fornitori" />} />
