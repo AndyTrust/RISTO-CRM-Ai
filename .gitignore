@@ -8,10 +8,16 @@ dist-ssr/
 *.timestamp-*.mjs
 
 # Environment — NEVER commit
+# FIX 2026-08-03 (issue #9): le regole sotto non coprivano .env.140grammi
+# (password portali + token OAuth Pienissimo). `.env*` copre ogni variante,
+# backup datati compresi; gli .env.example restano tracciati.
 .env
+.env*
 .env.local
 .env.*.local
 *.env
+!.env.example
+!client/.env.example
 
 # Data / uploads
 data/

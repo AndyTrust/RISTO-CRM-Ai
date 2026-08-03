@@ -345,15 +345,29 @@ Usa questi strumenti per eseguire azioni concrete e rispondere con dati reali.`
       description: t.description,
       input_schema: t.input_schema,
     }))
+    // /api/assistant richiede un JWT Supabase valido (fix 2026-08-03, issue #1):
+    // senza, l'endpoint era pubblico e chiunque poteva consumare la chiave Anthropic.
+    // getSession() rinnova il token da sé se è scaduto.
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session?.access_token) {
+      throw new Error('Sessione scaduta: ricarica la pagina e accedi di nuovo.')
+    }
+
     const res = await fetch(API_ENDPOINT, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${session.access_token}`,
+      },
       body: JSON.stringify({
         messages: apiMessages,
         system: buildSystemPrompt(),
         tools: allToolDefs,
       }),
     })
+    if (res.status === 401) {
+      throw new Error('Sessione scaduta: ricarica la pagina e accedi di nuovo.')
+    }
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }))
       throw new Error(err.error || `HTTP ${res.status}`)
