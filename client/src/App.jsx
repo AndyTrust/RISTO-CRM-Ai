@@ -71,6 +71,7 @@ import SondaggiPage from './pages/SondaggiPage'
 import RecensioniPage from './pages/RecensioniPage'
 import BilanciPage from './pages/BilanciPage'
 import CostiPrezziBi from './pages/CostiPrezziBi'
+import CatalogoArticoli from './pages/CatalogoArticoli'
 import { modules as modulesApi, crmConfig } from './api/client'
 
 export const ModulesContext = React.createContext({})
@@ -181,6 +182,10 @@ export default function App() {
               un'analisi che non si può linkare non si può nemmeno discutere. */}
           <Route path="/costi-prezzi" element={<CostiPrezziBi />} />
           <Route path="/costi-prezzi/:sezione" element={<CostiPrezziBi />} />
+          {/* CATALOGO ARTICOLI — viste di sola lettura sui prezzi fornitore:
+              catalogo, alert prezzi, Pareto, confronto fra fornitori. */}
+          <Route path="/catalogo-articoli" element={<CatalogoArticoli />} />
+          <Route path="/catalogo-articoli/:sezione" element={<CatalogoArticoli />} />
           {/* BILANCI — ogni sottosezione ha una sotto-route propria e linkabile */}
           <Route path="/bilanci" element={<BilanciPage />} />
           <Route path="/bilanci/:sezione" element={<BilanciPage />} />

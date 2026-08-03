@@ -6,7 +6,7 @@ import {
   Building2, Settings, ChevronLeft, ChevronRight, RefreshCw,
   BarChart2, Lock, Wallet, UtensilsCrossed, CalendarDays,
   ChevronDown, Tag, MapPin, Archive, Brain, Cloud, Database, Award, BarChart3, Activity, Coins, Star, MessageSquare,
-  GitMerge, BookOpen, Scale, Landmark, GitCompareArrows, Percent
+  GitMerge, BookOpen, Scale, Landmark, GitCompareArrows, Percent, Package
 } from 'lucide-react'
 import { data as dataApi } from '../api/client'
 
@@ -67,6 +67,10 @@ const NAV_GROUPS = [
       // Voce nuova: le analisi che 114.650 righe di dettaglio fattura rendono
       // possibili per la prima volta (prezzi per articolo, merceologico, sedi).
       { id: 'costi_prezzi',   path: '/costi-prezzi',   icon: Coins,     label: 'Costi & Prezzi BI', desc: 'Marginalità sedi, prezzi articoli, 7 anni', alwaysEnabled: true },
+      // Catalogo per fornitore × articolo con alert sui rincari: risponde a
+      // "quanto pago questo prodotto e chi me lo vende meglio", che le altre
+      // voci di questa sezione toccano solo di sfuggita.
+      { id: 'catalogo_articoli', path: '/catalogo-articoli', icon: Package, label: 'Catalogo Articoli', desc: 'Prezzi fornitore, rincari, Pareto', alwaysEnabled: true },
       { id: 'contabilita_bi', path: '/contabilita-bi', icon: BarChart3, label: 'Contabilità BI',    desc: 'BE, margini, proiezioni', alwaysEnabled: true },
       { id: 'kpi_config',     path: '/kpi-config',     icon: Target,    label: 'Target & BE',       desc: 'Break-even, target, bonus', alwaysEnabled: true },
     ]
