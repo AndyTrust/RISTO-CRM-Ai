@@ -243,13 +243,17 @@ function BESection({ beMensile, loading, meseRange, periodoAttivo }) {
               <tr key={`${r.sede}-${r.mese}`} className="border-t border-gray-50 hover:bg-gray-50">
                 <td className="px-3 py-2 font-medium">
                   {r.mese_label}
-                  {r.fatture_unreliable && <span className="ml-1 text-amber-500" title="Attribuzione fatture per sede non affidabile">⚠</span>}
+                  {r.fatture_unreliable && <span className="ml-1 text-amber-500" title={`Attribuzione fatture per sede poco affidabile: solo il ${r.fatture_pct_certa ?? 0}% della spesa ha una destinazione certa nell'XML`}>⚠</span>}
                 </td>
                 <td className="px-3 py-2 text-green-700 font-medium">€{r.incasso.toLocaleString('it-IT')}</td>
                 <td className="px-3 py-2 text-indigo-600">€{r.costo_personale.toLocaleString('it-IT')}</td>
                 <td className="px-3 py-2 text-violet-600">
                   €{r.costo_fatture.toLocaleString('it-IT')}
-                  {r.fatture_unreliable && <span className="ml-1 text-amber-400">⚠</span>}
+                  {r.fatture_pct_certa != null && (
+                    <span className="ml-1 text-[10px] text-gray-400" title="quota con destinazione certa nell'XML SdI">
+                      {Math.round(r.fatture_pct_certa)}%✓
+                    </span>
+                  )}
                 </td>
                 <td className="px-3 py-2 text-amber-600">€{r.costo_fissi.toLocaleString('it-IT')}</td>
                 <td className="px-3 py-2 font-semibold text-gray-800">€{r.be_totale.toLocaleString('it-IT')}</td>
@@ -276,9 +280,10 @@ function BESection({ beMensile, loading, meseRange, periodoAttivo }) {
           if (!rowMA || !rowPN || lastMese === 0) return (
             <p className="text-xs text-gray-400">Dati non ancora disponibili per il riepilogo.</p>
           )
-          // I totali pre-split sono nei metadati _tot_*
+          // Personale: totale pre-split nei metadati. Fatture: NON più divise 50/50,
+          // il totale del mese è la somma delle due sedi già attribuite.
           const totPersonale = rowMA._tot_personale ?? (rowMA.costo_personale * 2)
-          const totFatture   = rowMA._tot_fatture   ?? (rowMA.costo_fatture   * 2)
+          const totFatture   = rowMA._tot_fatture   ?? (rowMA.costo_fatture + rowPN.costo_fatture)
           const totFissiMA   = rowMA.costo_fissi
           const totFissiPN   = rowPN.costo_fissi
           const meseLabel    = MESI_IT[lastMese - 1]

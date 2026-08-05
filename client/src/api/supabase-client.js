@@ -2077,8 +2077,12 @@ export const analytics = {
   },
 
   // BE mensile: costi (personale + fatture + fissi) vs incasso per sede
-  // Regola: costo_personale e costo_fatture sono CONDIVISI tra i 2 locali
-  // → ogni sede mostra il 50% del totale mensile (media equa)
+  // Regola: costo_personale resta CONDIVISO tra i 2 locali (50% ciascuno).
+  // costo_fatture NO: dal 05/08/2026 arriva già attribuito per sede da
+  // v_costi_mensili, che applica in quest'ordine
+  //   1. sede certa  → 100% a quella sede (destinazione letta dall'XML SdI)
+  //   2. sede NULL   → sede_ma_pct / sede_pn_pct (riparto sul mix verificato)
+  // Il vecchio 50/50 forzato buttava via quell'attribuzione ed è stato rimosso.
   // I costi_fissi rimangono per-sede (affitti, indennizzi specifici)
   beMensile: async (p = {}) => {
     try {
@@ -2091,11 +2095,21 @@ export const analytics = {
       const meseFromPad = String(meseFromNum).padStart(2, '0')
       const mesePad = String(meseCorrente).padStart(2, '0')
 
-      const [{ data: costiRows }, { data: chiusureRows }] = await Promise.all([
+      const [{ data: costiRows }, { data: chiusureRows }, { data: spesaRows }] = await Promise.all([
         supabase.from('v_costi_mensili').select('*').eq('anno', annoCorrente).order('mese'),
         supabase.from('v_chiusure_mensile').select('sede, mese, tot_venduto, tot_coperti, n_giorni')
           .gte('mese', `${annoCorrente}-${meseFromPad}`).lte('mese', `${annoCorrente}-${mesePad}`),
+        // quanta parte della spesa del mese poggia su una destinazione certa
+        supabase.from('v_spesa_sede_mese').select('mese, sede, pct_certa')
+          .gte('mese', `${annoCorrente}-01-01`).lte('mese', `${annoCorrente}-12-31`),
       ])
+
+      // Lookup affidabilità attribuzione fatture per sede-mese
+      const certMap = {}
+      for (const r of spesaRows ?? []) {
+        const mn = parseInt(String(r.mese).split('-')[1])
+        certMap[`${r.sede}-${mn}`] = parseFloat(r.pct_certa) || 0
+      }
 
       // Lookup incasso per sede-mese
       const revMap = {}
@@ -2108,8 +2122,10 @@ export const analytics = {
         }
       }
 
-      // Mesi con attribuzione fatture per sede non affidabile (gen-feb senza sede assegnata)
-      const unreliable = new Set(['MA-1','MA-2','PN-1','PN-2'])
+      // Attribuzione fatture "non affidabile" = meno del 40% della spesa del mese
+      // ha una destinazione certa nell'XML. Prima era una lista fissa di mesi.
+      const SOGLIA_CERTEZZA = 40
+      const isUnreliable = (key) => (certMap[key] ?? 0) < SOGLIA_CERTEZZA
 
       // --- Step 1: costruisci righe grezze per sede ---
       const rawBySede = {}   // { mese: { MA: {...}, PN: {...} } }
@@ -2124,7 +2140,7 @@ export const analytics = {
         }
       }
 
-      // --- Step 2: applica split 50/50 su personale e fatture ---
+      // --- Step 2: personale 50/50; fatture già attribuite per sede ---
       // I costi_fissi restano per-sede (affitti, indennizzi specifici di ogni locale)
       const result = []
       for (const [mese, bySede] of Object.entries(rawBySede)) {
@@ -2132,11 +2148,12 @@ export const analytics = {
         const maRaw = bySede['MA'] || { costo_personale: 0, costo_fatture: 0, costo_fissi: 0 }
         const pnRaw = bySede['PN'] || { costo_personale: 0, costo_fatture: 0, costo_fissi: 0 }
 
-        // Totali condivisi → divisi al 50%
+        // Personale: resta condiviso al 50%
         const totPersonale = maRaw.costo_personale + pnRaw.costo_personale
-        const totFatture   = maRaw.costo_fatture   + pnRaw.costo_fatture
         const personalePerSede = Math.round(totPersonale / 2)
-        const fatturePerSede   = Math.round(totFatture   / 2)
+        // Fatture: NON si dividono. v_costi_mensili le ha già ripartite per sede
+        // (100% dove la destinazione è certa, percentuali dove è stimata).
+        const totFatture = maRaw.costo_fatture + pnRaw.costo_fatture
 
         for (const sede of ['MA', 'PN']) {
           const raw = bySede[sede]
@@ -2146,7 +2163,7 @@ export const analytics = {
           const rev = revMap[revKey] || { incasso: 0, coperti: 0, giorni: 0 }
 
           const costo_personale = personalePerSede
-          const costo_fatture   = fatturePerSede
+          const costo_fatture   = Math.round(raw.costo_fatture)
           const costo_fissi     = raw.costo_fissi
           const be_totale       = costo_personale + costo_fatture + costo_fissi
           const incasso         = rev.incasso
@@ -2167,7 +2184,8 @@ export const analytics = {
             be_totale,
             margine,
             margine_pct,
-            fatture_unreliable: unreliable.has(revKey),
+            fatture_unreliable: isUnreliable(revKey),
+            fatture_pct_certa:  certMap[revKey] ?? null,
             has_real_data: incasso > 0 && be_totale > 0,
             // metadati per il box "calcolo semplice" (totali originali)
             _tot_personale: totPersonale,
