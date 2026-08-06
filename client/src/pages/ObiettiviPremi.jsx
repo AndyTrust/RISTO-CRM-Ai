@@ -157,7 +157,16 @@ const TONI = {
     titolo: 'text-emerald-700',
   },
 }
-const tono = s => TONI[s] || TONI.sotto_break_even
+// Sotto il 40% del mese l'esito è un giudizio su troppi pochi giorni: con 4
+// giornate su 31, per giunta di alta stagione, "Quantum: obiettivo raggiunto"
+// si legge come un verdetto quando è solo l'andamento dei primi giorni.
+const TONO_PROVVISORIO = {
+  testo: 'Andamento provvisorio', barra: 'bg-slate-400',
+  chip: 'bg-slate-100 text-slate-700 border-slate-200', bordo: 'border-slate-200',
+  titolo: 'text-slate-600',
+}
+const tono = (s, provvisorio) =>
+  provvisorio ? TONO_PROVVISORIO : (TONI[s] || TONI.sotto_break_even)
 
 /**
  * Barra di avanzamento con DUE tacche: break-even e obiettivo.
@@ -167,13 +176,13 @@ const tono = s => TONI[s] || TONI.sotto_break_even
  * massimo fra obiettivo e fatturato, con un margine, così entrambe le tacche
  * restano sempre visibili e leggibili.
  */
-function BarraDueTacche({ fatturato, breakEven, obiettivo, stato }) {
+function BarraDueTacche({ fatturato, breakEven, obiettivo, stato, provvisorio }) {
   const f = num(fatturato) ?? 0
   const be = num(breakEven) ?? 0
   const ob = num(obiettivo) ?? 0
   const scala = Math.max(ob, be, f) * 1.08 || 1
   const pos = v => Math.max(0, Math.min(100, (v / scala) * 100))
-  const t = tono(stato)
+  const t = tono(stato, provvisorio)
 
   return (
     <div className="mt-3">
@@ -205,7 +214,8 @@ function BarraDueTacche({ fatturato, breakEven, obiettivo, stato }) {
 // BLOCCO 1 — Stato del mese
 // ════════════════════════════════════════════════════════════════════════════
 function CardSede({ riga }) {
-  const t = tono(riga.stato)
+  const provvisorio = riga.esito_provvisorio === true
+  const t = tono(riga.stato, provvisorio)
   const proRata = (num(riga.quota_mese) ?? 1) < 1
   const gap = num(riga.gap_a_obiettivo)
   // Le soglie da confrontare col fatturato sono quelle PRO-RATA: sul mese
@@ -222,7 +232,12 @@ function CardSede({ riga }) {
             {NOME_SEDE[riga.sede] || riga.sede}
             <span className="text-xs font-normal text-gray-400 ml-2">{etichettaMese(riga.mese_str)}</span>
           </h3>
-          <p className={`text-sm font-semibold mt-0.5 ${t.titolo}`}>{t.testo}</p>
+          <p className={`text-sm font-semibold mt-0.5 ${t.titolo}`}>
+            {t.testo}
+            {provvisorio && (
+              <span className="font-normal text-gray-400"> — {fmtNum(riga.gg_coperti)} giorni su {fmtNum(riga.gg_mese)}, troppo pochi per un verdetto</span>
+            )}
+          </p>
         </div>
         <span className={`text-xs font-bold px-2.5 py-1 rounded-full border ${t.chip}`}>
           {fmtPct(riga.pct_su_obiettivo)} dell'obiettivo
@@ -252,7 +267,8 @@ function CardSede({ riga }) {
         </div>
       </div>
 
-      <BarraDueTacche fatturato={riga.fatturato} breakEven={beRif} obiettivo={obRif} stato={riga.stato} />
+      <BarraDueTacche fatturato={riga.fatturato} breakEven={beRif} obiettivo={obRif}
+        stato={riga.stato} provvisorio={provvisorio} />
 
       <p className="text-sm mt-3">
         {gap == null ? (
@@ -284,9 +300,14 @@ function CardSede({ riga }) {
           )}
           {proRata && (
             <p className="text-[11px] text-gray-500">
-              Confronto pro-rata su <strong>{fmtNum(riga.gg_aperti)} giorni su {fmtNum(riga.gg_mese)}</strong>{' '}
+              Confronto pro-rata su <strong>{fmtNum(riga.gg_coperti ?? riga.gg_aperti)} giorni su {fmtNum(riga.gg_mese)}</strong>{' '}
               ({fmtPct((num(riga.quota_mese) ?? 0) * 100)} del mese): il fatturato è parziale, quindi
               anche break-even e obiettivo sono riproporzionati.
+              {num(riga.gg_coperti) > num(riga.gg_aperti) && (
+                <> Sono giorni di <strong>calendario</strong>, non di apertura: le{' '}
+                {fmtNum(num(riga.gg_coperti) - num(riga.gg_aperti))} giornate di chiusura contano
+                comunque nei costi, perché affitto e stipendi maturano lo stesso.</>
+              )}
             </p>
           )}
         </div>
@@ -305,15 +326,27 @@ function CardSede({ riga }) {
 // ════════════════════════════════════════════════════════════════════════════
 // BLOCCO 2 — Composizione del break-even
 // ════════════════════════════════════════════════════════════════════════════
+// Mese chiuso: le tre voci sono il consuntivo.
+// Mese in corso: la colonna che conta è quella PRO-RATA (media dei 3 mesi chiusi
+// riproporzionata sui giorni coperti), perché è l'unica confrontabile con un
+// fatturato parziale. Prima la tabella mostrava solo il "già registrato" —
+// personale a €0 (le buste paga arrivano il mese dopo), fatture solo quelle
+// già protocollate e costi fissi del MESE INTERO — e il totale non aveva
+// niente a che vedere col break-even usato per le soglie.
 const VOCI_BE = [
-  ['Costo del personale', 'costo_personale'],
-  ['Fatture d\'acquisto', 'costo_fatture'],
-  ['Costi fissi', 'costi_fissi'],
+  ['Costo del personale', 'costo_personale', 'costo_personale_pro_rata'],
+  ['Fatture d\'acquisto',  'costo_fatture',   'costo_fatture_pro_rata'],
+  ['Costi fissi',          'costi_fissi',     'costi_fissi_pro_rata'],
 ]
 
 function TabellaBreakEven({ riga }) {
   const fatt = num(riga.fatturato)
-  const inc = v => (fatt ? fmtPct((v / fatt) * 100) : '—')
+  const inc = v => (fatt && v != null ? fmtPct((v / fatt) * 100) : '—')
+  // Il pro-rata esiste solo sul mese in corso: sul mese chiuso quota = 1 e le
+  // due colonne coinciderebbero, quindi se ne mostra una sola.
+  const proRata = (num(riga.quota_mese) ?? 1) < 1
+  const totale = proRata ? num(riga.break_even_pro_rata) : num(riga.break_even_rilevato)
+
   return (
     <div className="rounded-lg border border-gray-200 overflow-hidden">
       <div className="bg-gray-50 px-3 py-2 text-sm font-semibold text-gray-800">
@@ -323,31 +356,50 @@ function TabellaBreakEven({ riga }) {
         <thead>
           <tr className="border-b border-gray-100 text-left text-[11px] text-gray-400">
             <th className="py-1.5 pl-3 font-normal">Voce</th>
-            <th className="py-1.5 text-right font-normal">Importo</th>
+            {proRata && <th className="py-1.5 text-right font-normal">Già registrato</th>}
+            <th className="py-1.5 text-right font-normal">
+              {proRata ? `Atteso su ${fmtNum(riga.gg_coperti)} gg` : 'Importo'}
+            </th>
             <th className="py-1.5 pr-3 text-right font-normal">% sul fatturato</th>
           </tr>
         </thead>
         <tbody>
-          {VOCI_BE.map(([label, campo]) => (
-            <tr key={campo} className="border-b border-gray-50">
-              <td className="py-2 pl-3 text-gray-700">{label}</td>
-              <td className="py-2 text-right tabular-nums font-medium text-gray-900">
-                {fmtEur(riga[campo], { decimali: 2 })}
-              </td>
-              <td className="py-2 pr-3 text-right tabular-nums text-gray-500">{inc(num(riga[campo]))}</td>
-            </tr>
-          ))}
+          {VOCI_BE.map(([label, campo, campoPro]) => {
+            const valore = proRata ? num(riga[campoPro]) : num(riga[campo])
+            return (
+              <tr key={campo} className="border-b border-gray-50">
+                <td className="py-2 pl-3 text-gray-700">{label}</td>
+                {proRata && (
+                  <td className="py-2 text-right tabular-nums text-gray-400">
+                    {fmtEur(riga[campo], { decimali: 2 })}
+                  </td>
+                )}
+                <td className="py-2 text-right tabular-nums font-medium text-gray-900">
+                  {fmtEur(valore, { decimali: 2 })}
+                </td>
+                <td className="py-2 pr-3 text-right tabular-nums text-gray-500">{inc(valore)}</td>
+              </tr>
+            )
+          })}
           <tr className="border-t-2 border-gray-200 bg-gray-50/60">
-            <td className="py-2 pl-3 font-bold text-gray-900">Break-even rilevato</td>
+            <td className="py-2 pl-3 font-bold text-gray-900">
+              {proRata ? 'Break-even pro-rata' : 'Break-even rilevato'}
+            </td>
+            {proRata && (
+              <td className="py-2 text-right tabular-nums text-gray-400">
+                {fmtEur(riga.break_even_rilevato, { decimali: 2 })}
+              </td>
+            )}
             <td className="py-2 text-right tabular-nums font-bold text-gray-900">
-              {fmtEur(riga.break_even_rilevato, { decimali: 2 })}
+              {fmtEur(totale, { decimali: 2 })}
             </td>
             <td className="py-2 pr-3 text-right tabular-nums font-semibold text-gray-600">
-              {inc(num(riga.break_even_rilevato))}
+              {inc(totale)}
             </td>
           </tr>
           <tr>
             <td className="py-2 pl-3 text-xs text-gray-500">Fatturato del mese</td>
+            {proRata && <td />}
             <td className="py-2 text-right tabular-nums text-gray-600">
               {fmtEur(riga.fatturato, { decimali: 2 })}
             </td>
@@ -364,18 +416,20 @@ function ComposizioneBreakEven({ righe }) {
     <Sezione
       icona={Calculator}
       titolo="Come è fatto il break-even"
-      sottotitolo="costo personale + fatture d'acquisto + costi fissi: questi tre numeri, e nient'altro">
+      sottotitolo="costo personale + fatture d'acquisto + costi fissi: questi tre numeri, e nient'altro — sul mese in corso divisi per i giorni già coperti">
       <div className={`grid gap-3 ${righe.length > 1 ? 'lg:grid-cols-2' : ''}`}>
         {righe.map(r => <TabellaBreakEven key={r.sede} riga={r} />)}
       </div>
 
-      {righe.some(r => r.be_stimato) && (
+      {righe.some(r => (num(r.quota_mese) ?? 1) < 1) && (
         <div className="mt-3">
           <Avviso tipo="warn">
-            Le tre voci qui sopra sono quelle <strong>già registrate</strong> nel mese: sul mese in
-            corso le buste paga e parte delle fatture non ci sono ancora, quindi il totale
-            "rilevato" è più basso del vero. Il break-even usato per le soglie è per questo una{' '}
-            <strong>stima sulla media dei 3 mesi chiusi</strong>, non la somma di questa tabella.
+            Sul mese in corso la colonna <strong>Già registrato</strong> è incompleta per forza: le
+            buste paga arrivano il mese dopo (personale a €0) e le fatture d'acquisto entrano con
+            giorni di ritardo. La colonna <strong>Atteso</strong> prende invece la media di ciascuna
+            voce sui 3 mesi chiusi e la divide per i giorni di calendario già coperti — quindi le tre
+            voci sommano esattamente al break-even usato per le soglie qui sopra, e sono
+            confrontabili col fatturato incassato finora.
           </Avviso>
         </div>
       )}
@@ -391,11 +445,16 @@ function frasePremi(ob, erogato) {
   const nome = NOME_SEDE[ob.sede] || ob.sede
   const monte = num(ob.monte_premi_euro) ?? 0
   const quota = num(ob.quota_quorum_pct) ?? 0
+  // Con pochi giorni di mese il premio non è "maturato": è la proiezione di un
+  // andamento. Dirlo, altrimenti la frase suona come una liquidazione decisa.
+  const seProvvisorio = ob.esito_provvisorio
+    ? ` Attenzione: siamo a ${fmtNum(ob.gg_coperti)} giorni su ${fmtNum(ob.gg_mese)}, il dato è ancora un andamento e non un premio maturato.`
+    : ''
   if (ob.stato === 'quantum') {
-    return `${nome} ha raggiunto l'obiettivo di ${fmtEur(ob.obiettivo_pro_rata ?? ob.obiettivo)}: erogato il monte pieno di ${fmtEur(monte)}, diviso fra i primi ${fmtNum(ob.n_premiati)}.`
+    return `${nome} ha raggiunto l'obiettivo di ${fmtEur(ob.obiettivo_pro_rata ?? ob.obiettivo)}: erogato il monte pieno di ${fmtEur(monte)}, diviso fra i primi ${fmtNum(ob.n_premiati)}.${seProvvisorio}`
   }
   if (ob.stato === 'quorum') {
-    return `${nome} ha superato il break-even ma non l'obiettivo: quorum raggiunto, si eroga il ${fmtPct(quota, { decimali: 0 })} del monte, cioè ${fmtEur(erogato ?? (monte * quota) / 100)}.`
+    return `${nome} ha superato il break-even ma non l'obiettivo: quorum raggiunto, si eroga il ${fmtPct(quota, { decimali: 0 })} del monte, cioè ${fmtEur(erogato ?? (monte * quota) / 100)}.${seProvvisorio}`
   }
   return `${nome} è sotto break-even: nessun premio questo mese. Il monte da ${fmtEur(monte)} si sblocca solo superando il break-even.`
 }
