@@ -156,15 +156,19 @@ export default function ContabilitaBi() {
           'anno'
         )
 
+        // `revenue_forecast` è abbandonata (20 righe ferme al 24/06/2026):
+        // leggendola, la proiezione del mese in corso non trovava mai giorni
+        // futuri e ripiegava sempre sulla proporzione lineare sui giorni
+        // trascorsi — cioè il forecast mensile non compariva mai.
+        // `v_forecast_mensile` dà direttamente reale + previsione per mese.
         const forecast = await fetchPaged(
           () => {
-            let q = supabase.from('revenue_forecast')
-              .select('id, sede, data_competenza, previsione_incasso')
-              .gte('data_competenza', dateFrom).lte('data_competenza', dateTo)
+            let q = supabase.from('v_forecast_mensile')
+              .select('tipo, sede, anno, mese, mese_str, data_mese, giorni_mese, giorni_reali, fatturato_reale, forecast_residuo, stima_coda, proiezione_mese, metodo')
             if (sede !== 'ALL') q = q.eq('sede', sede)
             return q
           },
-          'id'
+          'data_mese'
         )
 
         if (annullato || mia !== richiestaRef.current) return
@@ -261,14 +265,14 @@ export default function ContabilitaBi() {
     const inCorso = ultimo.anno === annoCorrente && ultimo.mese === oggiDate.getMonth() + 1
     const giorniTrascorsi = inCorso ? oggiDate.getDate() : giorniMese
 
-    // Se il mese è in corso, la parte mancante si stima con le previsioni
-    // reali (revenue_forecast) quando ci sono, altrimenti in proporzione.
-    const restanti = forecastData
-      .filter(f => {
-        const d = String(f.data_competenza || '')
-        return d.slice(0, 7) === chiaveMese(ultimo.anno, ultimo.mese) && Number(d.slice(8, 10)) > giorniTrascorsi
-      })
-      .reduce((s, f) => s + (num(f.previsione_incasso) ?? 0), 0)
+    // Se il mese è in corso, la parte mancante viene dal forecast mensile
+    // (reale + forecast giornaliero + stima per giorno-settimana sulla coda);
+    // solo se quello manca si ripiega sulla proporzione lineare.
+    const chiaveUltimo = chiaveMese(ultimo.anno, ultimo.mese)
+    const righeMese = forecastData.filter(f => f.mese_str === chiaveUltimo)
+    const restanti = righeMese.reduce(
+      (s, f) => s + (num(f.forecast_residuo) ?? 0) + (num(f.stima_coda) ?? 0), 0
+    )
 
     const proiezione = !inCorso
       ? ultimo.fatturato
@@ -279,7 +283,7 @@ export default function ContabilitaBi() {
     return {
       mese: ultimo.mese, anno: ultimo.anno, label: ultimo.label,
       inCorso, giorniMese, giorniTrascorsi,
-      fonte: !inCorso ? 'mese completo' : restanti > 0 ? 'previsioni revenue_forecast' : 'proporzione sui giorni trascorsi',
+      fonte: !inCorso ? 'mese completo' : restanti > 0 ? 'forecast mensile (v_forecast_mensile)' : 'proporzione sui giorni trascorsi',
       dati: [
         { name: inCorso ? `Actual (${giorniTrascorsi}/${giorniMese} gg)` : 'Actual (mese completo)', value: ultimo.fatturato, fill: '#6366f1' },
         { name: 'Proiezione mese', value: proiezione, fill: '#10b981' },

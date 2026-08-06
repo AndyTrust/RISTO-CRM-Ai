@@ -7,12 +7,12 @@ import supabase from '../supabase'
 import { fetchPaged } from '../api/paged'
 import { useOrdinamento, IconaOrdine, BottoneCsv, NotaCopertura } from '../lib/tabella'
 import {
-  AreaChart, Area, LineChart, Line,
+  AreaChart, Area, LineChart, Line, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer
 } from 'recharts'
 import {
-  TrendingUp, CalendarDays, Euro, Loader,
+  TrendingUp, CalendarDays, Euro, Loader, CalendarRange,
   AlertCircle, CloudSun, Sun, Cloud, CloudRain
 } from 'lucide-react'
 import PageAssistant from '../components/PageAssistant'
@@ -51,6 +51,14 @@ function datShort(s) {
   if (!s) return ''
   const d = new Date(s + 'T00:00:00')
   return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}`
+}
+
+const MESI_BREVI = ['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic']
+// "2026-08" → "Ago 26": l'asse X di un grafico a 12+ mesi non regge le date intere.
+function meseLabel(meseStr) {
+  if (!meseStr) return ''
+  const [a, m] = meseStr.split('-')
+  return `${MESI_BREVI[Number(m) - 1] || m} ${String(a).slice(2)}`
 }
 
 // Prossimi N giorni a partire da `da`
@@ -140,11 +148,37 @@ function SerieTooltip({ active, payload, label }) {
   )
 }
 
+// ── Tooltip del grafico mensile: mostra anche il TOTALE del mese ─────────────
+// Con due barre impilate il totale è la somma delle due: lasciarlo calcolare a
+// occhio è proprio il numero che l'utente cercava e non trovava.
+function MensileTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null
+  const riga = payload[0]?.payload || {}
+  return (
+    <div className="bg-white border border-gray-200 rounded-lg shadow-md px-3 py-2 text-xs">
+      <div className="font-semibold text-gray-800 mb-1">{label}</div>
+      {payload.map(p => (
+        <div key={p.dataKey} className="flex items-center gap-2">
+          <span className="w-2 h-2 rounded-full" style={{ backgroundColor: p.color, opacity: p.dataKey === 'previsto' ? 0.4 : 1 }} />
+          <span className="text-gray-600">{p.name}: <b>{eur(p.value)}</b></span>
+        </div>
+      ))}
+      <div className="border-t border-gray-100 mt-1 pt-1 text-gray-800">
+        Totale mese: <b>{eur(riga.proiezione)}</b>
+        {riga.tipo && riga.tipo !== 'consuntivo' && (
+          <span className="ml-1 text-gray-400">({riga.tipo === 'in_corso' ? 'in corso' : 'previsione'})</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Componente principale ─────────────────────────────────────────────────────
 export default function ForecastPage() {
   const [sede, setSede]           = useState('all')
   const [forecast, setForecast]   = useState([])
   const [chiusure, setChiusure]   = useState([])
+  const [mensile, setMensile]     = useState([])
   const [loading, setLoading]     = useState(true)
   const [error, setError]         = useState(null)
   const richiestaRef = useRef(0)
@@ -195,7 +229,7 @@ export default function ForecastPage() {
         // con un periodo storico ampio (selezionabile dall'utente) le chiusure
         // si fermavano in silenzio alle prime 1000 righe in ordine di data,
         // cioè perdendo proprio i giorni più recenti.
-        const [fData, cData] = await Promise.all([
+        const [fData, cData, mData] = await Promise.all([
           fetchPaged(() => {
             // `revenue_forecast` è abbandonata: 20 righe ferme al 24/06/2026,
             // per questo la pagina risultava vuota. Il job notturno
@@ -215,15 +249,27 @@ export default function ForecastPage() {
             if (sede !== 'all') q = q.eq('sede', sede)
             return q
           }, 'id'),
+          // Valore MENSILE del forecast: fino a ieri la pagina esponeva solo il
+          // giorno e la settimana, quindi del mese in corso si vedeva il
+          // progressivo (4 giorni su 31) e mai il totale previsto.
+          // `v_forecast_mensile` somma reale + forecast giornaliero + stima
+          // per giorno-settimana sulla coda oltre l'orizzonte del forecast.
+          fetchPaged(() => {
+            let q = supabase.from('v_forecast_mensile')
+              .select('tipo, sede, anno, mese, data_mese, mese_str, giorni_mese, giorni_reali, giorni_forecast, giorni_stimati, fatturato_reale, forecast_residuo, stima_coda, proiezione_mese, coperti_reali, metodo')
+            if (sede !== 'all') q = q.eq('sede', sede)
+            return q
+          }, 'data_mese'),
         ])
 
         if (annullato || mia !== richiestaRef.current) return
         setForecast(fData)
         setChiusure(cData)
+        setMensile(mData)
       } catch (e) {
         if (!annullato && mia === richiestaRef.current) {
           setError(e?.message || String(e))
-          setForecast([]); setChiusure([])
+          setForecast([]); setChiusure([]); setMensile([])
         }
       } finally {
         if (!annullato && mia === richiestaRef.current) setLoading(false)
@@ -249,6 +295,50 @@ export default function ForecastPage() {
       settimana: forecast.length > 0   ? totSettimana : null,
     }
   }, [forecast, oggi, domani])
+
+  // ── Proiezione del mese in corso ─────────────────────────────────────────
+  // Somma sulle sedi selezionate: reale già incassato + previsione sui giorni
+  // che restano. È il numero che mancava a tutti i grafici della pagina.
+  const meseCorrente = useMemo(() => {
+    const chiave = oggiIso.slice(0, 7)
+    const righe = mensile.filter(r => r.mese_str === chiave)
+    if (!righe.length) return null
+    const somma = k => righe.reduce((s, r) => s + (Number(r[k]) || 0), 0)
+    return {
+      mese_str:  chiave,
+      reale:     somma('fatturato_reale'),
+      previsto:  somma('forecast_residuo') + somma('stima_coda'),
+      proiezione: somma('proiezione_mese'),
+      giorniReali:  Math.max(...righe.map(r => Number(r.giorni_reali) || 0)),
+      giorniMese:   Math.max(...righe.map(r => Number(r.giorni_mese) || 0)),
+      // Se anche una sola sede ha bisogno della stima per giorno-settimana, il
+      // numero non è "solo forecast": dirlo evita di spacciarlo per certo.
+      conStima:  righe.some(r => (Number(r.giorni_stimati) || 0) > 0),
+    }
+  }, [mensile, oggiIso])
+
+  // ── Serie mensile: consuntivo, mese in corso, mesi futuri ────────────────
+  const mensileData = useMemo(() => {
+    const map = new Map()
+    for (const r of mensile) {
+      const k = r.mese_str
+      if (!map.has(k)) {
+        map.set(k, {
+          mese_str: k, label: meseLabel(k), tipo: r.tipo,
+          reale: 0, previsto: 0, proiezione: 0,
+        })
+      }
+      const g = map.get(k)
+      g.reale      += Number(r.fatturato_reale) || 0
+      g.previsto   += (Number(r.forecast_residuo) || 0) + (Number(r.stima_coda) || 0)
+      g.proiezione += Number(r.proiezione_mese) || 0
+      // Un mese è "in corso"/"previsione" se lo è per almeno una sede.
+      if (r.tipo !== 'consuntivo') g.tipo = r.tipo
+    }
+    return [...map.values()]
+      .sort((a, b) => a.mese_str.localeCompare(b.mese_str))
+      .slice(-18)   // 18 mesi: abbastanza per vedere la stagionalità, non tanto da illeggibile
+  }, [mensile])
 
   // ── Dati AreaChart forecast MA vs PN ────────────────────────────────────
   const areaData = useMemo(() => {
@@ -329,12 +419,15 @@ KPI previsioni:
 - Oggi (${datIt(oggi)}): ${eur(kpi.oggi)}
 - Domani (${datIt(domani)}): ${eur(kpi.domani)}
 - Totale settimana (7 giorni): ${eur(kpi.settimana)}
+- Proiezione mese ${meseCorrente?.mese_str || oggiIso.slice(0, 7)}: ${meseCorrente ? eur(meseCorrente.proiezione) : 'N/D'}${meseCorrente ? ` (${eur(meseCorrente.reale)} reali su ${meseCorrente.giorniReali}/${meseCorrente.giorniMese} gg + ${eur(meseCorrente.previsto)} previsti)` : ''}
+Serie mensile (reale + previsione, ultimi mesi):
+${mensileData.slice(-8).map(m => `- ${m.label}: totale ${eur(m.proiezione)} (incassato ${eur(m.reale)}, previsto ${eur(m.previsto)}, ${m.tipo})`).join('\n') || '- nessun dato'}
 Righe forecast: ${forecast.length}
 Periodo storico confrontato: ${daStorico} → ${aStorico}
 Chiusure reali nel periodo: ${chiusure.length}
 Giornate con nota meteo: ${forecast.filter(r => r.note_meteo).length}
 Valutazioni disponibili: ${[...new Set(forecast.filter(r => r.valutazione).map(r => r.valutazione))].join(', ') || 'nessuna'}`
-  }, [kpi, sede, oggi, domani, forecast, chiusure, daStorico, aStorico])
+  }, [kpi, sede, oggi, domani, forecast, chiusure, daStorico, aStorico, meseCorrente, mensileData, oggiIso])
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -391,7 +484,7 @@ Valutazioni disponibili: ${[...new Set(forecast.filter(r => r.valutazione).map(r
       ) : (
         <>
           {/* KPI Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
             <KPICard
               icon={CalendarDays}
               label="Previsione Oggi"
@@ -413,6 +506,85 @@ Valutazioni disponibili: ${[...new Set(forecast.filter(r => r.valutazione).map(r
               sub="somma previsioni 7 giorni"
               color="#f59e0b"
             />
+            <KPICard
+              icon={CalendarRange}
+              label="Proiezione Mese"
+              value={meseCorrente ? eur(meseCorrente.proiezione) : 'N/D'}
+              sub={meseCorrente
+                ? `${eur(meseCorrente.reale)} reali (${meseCorrente.giorniReali}/${meseCorrente.giorniMese} gg) + ${eur(meseCorrente.previsto)} previsti`
+                : 'nessun dato mensile'}
+              color="#0ea5e9"
+            />
+          </div>
+
+          {meseCorrente?.conStima && (
+            <p className="text-[11px] text-gray-400 -mt-3">
+              La proiezione del mese usa il forecast giornaliero finché arriva, poi la media
+              per giorno della settimana sui giorni successivi: oltre l'orizzonte del forecast è una stima, non una previsione del motore.
+            </p>
+          )}
+
+          {/* BarChart mensile: consuntivo + previsione */}
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+            <h2 className="text-sm font-bold text-gray-800 mb-1">Forecast Mensile — Reale vs Previsione</h2>
+            <p className="text-xs text-gray-400 mb-4">
+              Ogni barra è il totale del mese: parte piena = incassato, parte chiara = ancora da incassare (previsione).
+              I mesi chiusi hanno solo la parte piena.
+            </p>
+            {mensileData.length === 0 ? (
+              <div className="flex items-center justify-center h-48 text-gray-400 text-sm">
+                Nessun dato mensile disponibile.
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={260}>
+                <BarChart data={mensileData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                  <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 10 }} tickFormatter={v => `€${(v / 1000).toFixed(0)}k`} />
+                  <Tooltip content={<MensileTooltip />} />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                  {/* Impilate: la somma delle due barre È la proiezione del mese,
+                      così il totale previsto si legge senza doverlo ricostruire. */}
+                  <Bar dataKey="reale"    name="Incassato"  stackId="mese" fill="#0ea5e9" radius={[0, 0, 0, 0]} />
+                  <Bar dataKey="previsto" name="Previsione" stackId="mese" fill="#0ea5e9" fillOpacity={0.3} radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+
+            {mensileData.length > 0 && (
+              <div className="overflow-x-auto rounded-xl border border-gray-100 mt-4">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-3 py-2 text-left  text-xs font-semibold text-gray-500 uppercase tracking-wide">Mese</th>
+                      <th className="px-3 py-2 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Incassato</th>
+                      <th className="px-3 py-2 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Previsione residua</th>
+                      <th className="px-3 py-2 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Totale mese</th>
+                      <th className="px-3 py-2 text-left  text-xs font-semibold text-gray-500 uppercase tracking-wide">Stato</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {[...mensileData].reverse().slice(0, 12).map(m => (
+                      <tr key={m.mese_str} className="hover:bg-gray-50 transition-colors">
+                        <td className="px-3 py-2 text-gray-700 whitespace-nowrap">{m.label}</td>
+                        <td className="px-3 py-2 text-right text-gray-600">{eur(m.reale)}</td>
+                        <td className="px-3 py-2 text-right text-gray-600">{m.previsto > 0 ? eur(m.previsto) : '—'}</td>
+                        <td className="px-3 py-2 text-right font-bold text-gray-900">{eur(m.proiezione)}</td>
+                        <td className="px-3 py-2">
+                          <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                            m.tipo === 'consuntivo' ? 'bg-gray-100 text-gray-600' :
+                            m.tipo === 'in_corso'   ? 'bg-sky-100 text-sky-700' :
+                            'bg-violet-100 text-violet-700'
+                          }`}>
+                            {m.tipo === 'consuntivo' ? 'consuntivo' : m.tipo === 'in_corso' ? 'in corso' : 'previsione'}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
 
           {/* AreaChart forecast 7 giorni */}
@@ -653,8 +825,13 @@ Valutazioni disponibili: ${[...new Set(forecast.filter(r => r.valutazione).map(r
             const righe = (forecast || []).map(r =>
               `${r.data_competenza} ${r.sede}: €${Math.round(Number(r.previsione_incasso) || 0)}${r.valutazione ? ` (${r.valutazione})` : ''}${r.note_meteo ? ` [${r.note_meteo}]` : ''}`
             ).join('\n')
+            const mesi = (mensileData || []).slice(-6).map(m =>
+              `${m.label}: totale ${Math.round(m.proiezione)} € (incassato ${Math.round(m.reale)}, previsto ${Math.round(m.previsto)}, ${m.tipo})`
+            ).join('\n')
             return `### Previsioni incasso prossimi giorni (per sede)\n${righe || '(nessuna previsione disponibile)'}\n\n` +
-              `### Sintesi\nOggi: ${kpi?.oggi ?? '—'} · Domani: ${kpi?.domani ?? '—'} · Settimana: ${kpi?.settimana ?? '—'}`
+              `### Andamento mensile (reale + previsione)\n${mesi || '(nessun dato mensile)'}\n\n` +
+              `### Sintesi\nOggi: ${kpi?.oggi ?? '—'} · Domani: ${kpi?.domani ?? '—'} · Settimana: ${kpi?.settimana ?? '—'}` +
+              ` · Proiezione mese: ${meseCorrente ? Math.round(meseCorrente.proiezione) + ' €' : '—'}`
           }}
         />
       </div>

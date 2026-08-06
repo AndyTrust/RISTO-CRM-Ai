@@ -117,6 +117,97 @@ function ChartTooltip({ active, payload, label }) {
   )
 }
 
+// ── Proiezione fatturato del mese in corso (vista v_forecast_mensile) ─────
+// La dashboard mostrava del mese corrente solo il progressivo (es. 4 giorni su
+// 31), quindi il confronto con i mesi chiusi sembrava un crollo. Qui il mese in
+// corso viene chiuso con il forecast: incassato + previsione sui giorni residui.
+function ProiezioneMeseSection({ locFilter }) {
+  const [rows, setRows] = useState(null)
+  const [errore, setErrore] = useState(null)
+
+  useEffect(() => {
+    let annullato = false
+    setErrore(null)
+    supabase.from('v_forecast_mensile')
+      .select('tipo, sede, mese_str, giorni_mese, giorni_reali, fatturato_reale, forecast_residuo, stima_coda, proiezione_mese, metodo')
+      .order('data_mese', { ascending: true })
+      .then(({ data, error }) => {
+        if (annullato) return
+        if (error) { setErrore(error.message); setRows([]) }
+        else setRows(data || [])
+      })
+    return () => { annullato = true }
+  }, [])
+
+  if (errore) return (
+    <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-3 text-xs">
+      Proiezione mese non disponibile (v_forecast_mensile): {errore}
+    </div>
+  )
+  if (!rows?.length) return null
+
+  const sedeSel = locFilter === 'MAMELI' ? 'MA' : locFilter === 'PREDDA_NIEDDA' ? 'PN' : null
+  const oggi = new Date()
+  const chiave = `${oggi.getFullYear()}-${String(oggi.getMonth() + 1).padStart(2, '0')}`
+  const correnti = rows.filter(r => r.mese_str === chiave && (!sedeSel || r.sede === sedeSel))
+  if (!correnti.length) return null
+
+  const somma = k => correnti.reduce((s, r) => s + (Number(r[k]) || 0), 0)
+  const reale      = somma('fatturato_reale')
+  const previsto   = somma('forecast_residuo') + somma('stima_coda')
+  const proiezione = somma('proiezione_mese')
+  const giorniReali = Math.max(...correnti.map(r => Number(r.giorni_reali) || 0))
+  const giorniMese  = Math.max(...correnti.map(r => Number(r.giorni_mese)  || 0))
+  const pct = proiezione > 0 ? Math.round((reale / proiezione) * 100) : 0
+
+  // Mese precedente completo, per capire se la proiezione è sopra o sotto.
+  const [aP, mP] = [oggi.getFullYear(), oggi.getMonth()]
+  const chiavePrec = mP === 0 ? `${aP - 1}-12` : `${aP}-${String(mP).padStart(2, '0')}`
+  const precedenti = rows.filter(r => r.mese_str === chiavePrec && (!sedeSel || r.sede === sedeSel))
+  const totPrec = precedenti.reduce((s, r) => s + (Number(r.proiezione_mese) || 0), 0)
+  const delta = totPrec > 0 ? getDelta(proiezione, totPrec) : null
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <h2 className="font-bold text-gray-800 text-sm flex items-center gap-1.5">
+          <TrendingUp size={15} className="text-sky-600" /> Proiezione fatturato mese in corso
+        </h2>
+        <Link to="/forecast" className="text-xs text-indigo-600 hover:underline flex items-center gap-1">
+          Forecast <ArrowRight size={12} />
+        </Link>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div>
+          <p className="text-[11px] text-gray-400">Incassato ({giorniReali}/{giorniMese} gg)</p>
+          <p className="text-lg font-bold text-gray-900">{eur(Math.round(reale))}</p>
+        </div>
+        <div>
+          <p className="text-[11px] text-gray-400">Ancora previsto</p>
+          <p className="text-lg font-bold text-sky-600">{eur(Math.round(previsto))}</p>
+        </div>
+        <div>
+          <p className="text-[11px] text-gray-400">Totale mese previsto</p>
+          <p className="text-lg font-bold text-gray-900">
+            {eur(Math.round(proiezione))}
+            {delta != null && (
+              <span className={`ml-2 text-xs font-semibold ${delta >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                {delta >= 0 ? '+' : ''}{delta}% vs mese prec.
+              </span>
+            )}
+          </p>
+        </div>
+      </div>
+      <div className="h-2.5 bg-sky-100 rounded-full overflow-hidden">
+        <div className="h-full bg-sky-500 rounded-full" style={{ width: `${Math.min(100, pct)}%` }} />
+      </div>
+      <p className="text-[11px] text-gray-400">
+        {pct}% del mese previsto già incassato · metodo: {correnti[0]?.metodo || '—'}
+      </p>
+    </div>
+  )
+}
+
 // ── Margine e proiezione per sede (vista BI v_forecast_costi_perdite) ─────
 // Il quadro che i KPI di venduto non raccontano: quanto RESTA per sede dopo
 // tutti i costi, mese per mese, e dove si atterra a fine anno.
@@ -713,6 +804,9 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+
+      {/* ── Proiezione fatturato del mese in corso (v_forecast_mensile) ── */}
+      <ProiezioneMeseSection locFilter={locFilter} />
 
       {/* ── Margine per sede + proiezione fine anno (v_forecast_costi_perdite) ── */}
       <MargineSedeSection anno={Number((dates?.to || '').slice(0, 4)) || new Date().getFullYear()} locFilter={locFilter} />

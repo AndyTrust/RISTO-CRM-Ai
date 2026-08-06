@@ -41,6 +41,10 @@ const QUERY_CRM_ALLOWED_TABLES = [
   'prenotazioni_summary',
   'venduto_categorie',
   'revenue_forecast',
+  // Forecast MENSILE: `revenue_forecast` è ferma al 24/06/2026 e non ha mai
+  // il totale del mese, quindi l'assistente non sapeva rispondere a "quanto
+  // chiudo questo mese?". v_forecast_mensile ha reale + previsione per mese.
+  'v_forecast_mensile',
   'clienti_stats',
   'chiusure_turni',
   // Allineate a QUERY_CRM_ALLOWED_COLUMNS (prima definite lì ma assenti qui:
@@ -70,6 +74,7 @@ const QUERY_CRM_ALLOWED_COLUMNS = {
   prenotazioni_summary:      ['sede', 'data_inizio', 'data_fine', 'periodo', 'turno', 'stato', 'canale', 'n_prenotazioni', 'n_persone'],
   venduto_categorie:         ['sede', 'data_inizio', 'data_fine', 'categoria', 'tipologia', 'quantita', 'prezzo_medio', 'totale', 'food_cost_pct', 'n_documenti'],
   revenue_forecast:          ['sede', 'data_competenza', 'previsione_coperti', 'previsione_incasso', 'valutazione', 'note_meteo', 'aggiornato_il'],
+  v_forecast_mensile:        ['tipo', 'sede', 'anno', 'mese', 'mese_str', 'data_mese', 'giorni_mese', 'giorni_reali', 'giorni_forecast', 'giorni_stimati', 'fatturato_reale', 'forecast_residuo', 'stima_coda', 'proiezione_mese', 'coperti_reali', 'metodo'],
   clienti_stats:             ['sede', 'periodo', 'grouping_tipo', 'valore', 'n_clienti'],
   chiusure_turni:            ['sede', 'data', 'turno', 'incasso', 'quantita'],
   prodotti_venduti_live:     ['sede', 'data_inizio', 'data_fine', 'prodotto', 'categoria', 'tipologia', 'quantita', 'prezzo_medio', 'importo_venduto', 'food_cost_medio', 'food_cost_pct', 'n_documenti'],
@@ -156,6 +161,7 @@ Tabelle disponibili:
 - prenotazioni_summary: sede, periodo, turno, stato, n_prenotazioni, n_persone — prenotazioni aggregate da Pienissimo
 - venduto_categorie: sede, data_inizio, data_fine, categoria, tipologia, quantita, totale, food_cost_pct — venduto per categoria (menu engineering)
 - revenue_forecast: sede, data_competenza, previsione_incasso, valutazione, note_meteo — previsioni revenue prossimi giorni
+- v_forecast_mensile: tipo (consuntivo/in_corso/previsione), sede, anno, mese, mese_str, fatturato_reale, forecast_residuo, stima_coda, proiezione_mese, giorni_reali, giorni_mese — TOTALE MENSILE previsto: usa questa per "quanto chiudo questo mese", proiezioni mensili e confronti mese su mese
 - clienti_stats: sede, periodo, grouping_tipo, valore, n_clienti — statistiche clienti per canale/provenienza
 - chiusure_turni: sede, data, turno, incasso, quantita — chiusure per turno pranzo/cena
 Le sedi disponibili: MA (Mameli - Cagliari), PN (Predda Niedda - Sassari).
