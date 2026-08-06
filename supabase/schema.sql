@@ -1039,3 +1039,178 @@ BEGIN
     END IF;
   END LOOP;
 END $$;
+
+-- ═══════════════════════════════════════════════════════════════════
+-- 2026-08-05 — Viste KPI operatori e forecast mensile
+-- Aggiunte qui perche' schema.sql era andato fuori sincrono col database:
+-- v_operatore_mese risultava nel file ma NON a DB, e /kpi falliva con
+-- "Could not find the table 'public.v_operatore_mese' in the schema cache".
+-- Definizioni complete e riproducibili in supabase/migrations/.
+-- ═══════════════════════════════════════════════════════════════════
+
+-- v_kpi_operatori_mese: v_operatore_mese + target individuali e quantum reale.
+-- Usata da CamerieriBi (quantum_target, pct_target, stato_kpi).
+CREATE OR REPLACE VIEW v_kpi_operatori_mese AS
+WITH mappa AS (
+  SELECT upper(btrim(m.op_name_ipratico)) AS op_key, m.sede, m.employee_id
+  FROM employee_operator_mapping m
+  WHERE m.op_name_ipratico IS NOT NULL
+),
+target AS (
+  SELECT t.employee_id, t.sede, t.anno, t.mese,
+         t.quantum, t.target, t.quorum, t.premio_max_euro
+  FROM kpi_targets_individuale t
+  WHERE t.metrica = 'FATTURATO_VENDUTO'
+),
+quantum AS (
+  SELECT q.sede, upper(btrim(q.operator)) AS op_key, q.anno, q.mese,
+         q.quantum AS quantum_reale, q.coperti_gestiti, q.fatturato_totale
+  FROM v_kpi_quantum_mensile q
+  WHERE q.operator IS NOT NULL
+)
+SELECT
+  b.*,
+  t.quantum        AS quantum_target,
+  t.target         AS target_fatturato,
+  t.quorum         AS quorum_target,
+  t.premio_max_euro,
+  q.quantum_reale,
+  q.coperti_gestiti,
+  q.fatturato_totale AS fatturato_reale_operatore,
+  CASE WHEN t.target > 0
+       THEN round(100.0 * COALESCE(q.fatturato_totale, b.fatturato_stimato_operatore) / t.target, 2)
+  END AS pct_target,
+  CASE
+    WHEN t.target IS NULL THEN NULL
+    WHEN COALESCE(q.fatturato_totale, b.fatturato_stimato_operatore) >= t.target   THEN 'Sopra target'
+    WHEN COALESCE(q.fatturato_totale, b.fatturato_stimato_operatore) >= COALESCE(t.quantum, t.target) THEN 'In quorum'
+    ELSE 'Sotto quorum'
+  END AS stato_kpi
+FROM v_operatore_mese b
+LEFT JOIN mappa  m ON m.op_key = upper(btrim(b.operatore)) AND m.sede = b.sede
+LEFT JOIN target t ON t.employee_id = m.employee_id AND t.sede = b.sede AND t.anno = b.anno AND t.mese = b.mese
+LEFT JOIN quantum q ON q.op_key = upper(btrim(b.operatore)) AND q.sede = b.sede AND q.anno = b.anno AND q.mese = b.mese;
+
+GRANT SELECT ON v_kpi_operatori_mese TO anon, authenticated, service_role;
+
+-- v_forecast_mensile: totale MENSILE previsto per sede.
+-- NB: forecast_giornaliero ha la riga 'giorno' (totale) OLTRE a 'pranzo'/'cena':
+-- sommare i turni raddoppia la previsione. Si legge v_forecast_giornaliero.
+-- Definizione completa in supabase/migrations/20260805111144_crea_vista_forecast_mensile.sql
+CREATE OR REPLACE VIEW v_forecast_mensile AS
+WITH reale AS (
+  SELECT sede, data,
+         sum(totale_venduto_ipratico) AS venduto,
+         sum(coperti)                 AS coperti
+  FROM chiusure_giornaliere
+  WHERE sede IS NOT NULL
+  GROUP BY sede, data
+),
+fcast AS (
+  SELECT sede, data_competenza AS data,
+         previsione_incasso AS prev,
+         previsione_coperti AS prev_coperti
+  FROM v_forecast_giornaliero
+  WHERE sede IS NOT NULL AND previsione_incasso IS NOT NULL
+),
+dow_fcast AS (
+  SELECT sede, extract(isodow FROM data)::int AS dow, avg(prev) AS media
+  FROM fcast GROUP BY sede, extract(isodow FROM data)
+),
+dow_reale AS (
+  SELECT sede, extract(isodow FROM data)::int AS dow, avg(venduto) AS media
+  FROM reale
+  WHERE data >= current_date - 56 AND data < current_date
+  GROUP BY sede, extract(isodow FROM data)
+),
+sedi_l AS (
+  SELECT sede FROM reale UNION SELECT sede FROM fcast
+),
+limiti AS (
+  SELECT least((SELECT min(data) FROM reale), (SELECT min(data) FROM fcast)) AS dmin,
+         (date_trunc('month', current_date) + interval '1 month - 1 day')::date AS dmax
+),
+giorni AS (
+  SELECT s.sede, g::date AS data
+  FROM sedi_l s
+  CROSS JOIN limiti l
+  CROSS JOIN LATERAL generate_series(date_trunc('month', l.dmin)::date, l.dmax, interval '1 day') g
+),
+ultimo_reale AS (
+  SELECT sede, max(data) AS ultima FROM reale GROUP BY sede
+),
+comp AS (
+  SELECT g.sede, g.data,
+         date_trunc('month', g.data)::date AS data_mese,
+         CASE
+           WHEN r.venduto IS NOT NULL                           THEN 'reale'
+           WHEN g.data <= COALESCE(u.ultima, DATE '1900-01-01')  THEN 'chiuso'
+           WHEN f.prev IS NOT NULL                              THEN 'forecast'
+           ELSE 'stima'
+         END AS origine,
+         r.venduto, r.coperti, f.prev,
+         COALESCE(df.media, dr.media) AS stima
+  FROM giorni g
+  LEFT JOIN reale        r  ON r.sede = g.sede AND r.data = g.data
+  LEFT JOIN fcast        f  ON f.sede = g.sede AND f.data = g.data
+  LEFT JOIN ultimo_reale u  ON u.sede = g.sede
+  LEFT JOIN dow_fcast    df ON df.sede = g.sede AND df.dow = extract(isodow FROM g.data)::int
+  LEFT JOIN dow_reale    dr ON dr.sede = g.sede AND dr.dow = extract(isodow FROM g.data)::int
+),
+mensile AS (
+  SELECT
+    sede,
+    extract(year  FROM data_mese)::int AS anno,
+    extract(month FROM data_mese)::int AS mese,
+    data_mese,
+    to_char(data_mese, 'YYYY-MM') AS mese_str,
+    count(*)                                        AS giorni_mese,
+    count(*) FILTER (WHERE origine = 'reale')       AS giorni_reali,
+    count(*) FILTER (WHERE origine = 'forecast')    AS giorni_forecast,
+    count(*) FILTER (WHERE origine = 'stima')       AS giorni_stimati,
+    round(COALESCE(sum(venduto) FILTER (WHERE origine = 'reale'), 0), 2)    AS fatturato_reale,
+    round(COALESCE(sum(prev)    FILTER (WHERE origine = 'forecast'), 0), 2) AS forecast_residuo,
+    round(COALESCE(sum(stima)   FILTER (WHERE origine = 'stima'), 0), 2)    AS stima_coda,
+    COALESCE(sum(coperti) FILTER (WHERE origine = 'reale'), 0)::bigint      AS coperti_reali
+  FROM comp
+  GROUP BY sede, data_mese
+)
+SELECT
+  CASE
+    WHEN giorni_forecast + giorni_stimati = 0 THEN 'consuntivo'
+    WHEN giorni_reali = 0                     THEN 'previsione'
+    ELSE 'in_corso'
+  END AS tipo,
+  sede, anno, mese, data_mese, mese_str,
+  giorni_mese, giorni_reali, giorni_forecast, giorni_stimati,
+  fatturato_reale, forecast_residuo, stima_coda,
+  round(fatturato_reale + forecast_residuo + stima_coda, 2) AS proiezione_mese,
+  coperti_reali,
+  CASE
+    WHEN giorni_forecast + giorni_stimati = 0 THEN 'consuntivo'
+    WHEN giorni_stimati = 0                   THEN 'reale + forecast giornaliero'
+    ELSE 'reale + forecast + media giorno-settimana'
+  END AS metodo
+FROM mensile
+WHERE fatturato_reale > 0 OR forecast_residuo > 0 OR stima_coda > 0
+
+UNION ALL
+
+SELECT
+  'previsione'::text AS tipo,
+  p.sede, p.anno, p.mese, p.data_mese, p.mese_str,
+  extract(day FROM (date_trunc('month', p.data_mese) + interval '1 month - 1 day'))::bigint AS giorni_mese,
+  0::bigint AS giorni_reali, 0::bigint AS giorni_forecast,
+  extract(day FROM (date_trunc('month', p.data_mese) + interval '1 month - 1 day'))::bigint AS giorni_stimati,
+  0::numeric AS fatturato_reale,
+  0::numeric AS forecast_residuo,
+  round(p.fatturato_lordo, 2) AS stima_coda,
+  round(p.fatturato_lordo, 2) AS proiezione_mese,
+  0::bigint AS coperti_reali,
+  'proiezione anno precedente x tendenza'::text AS metodo
+FROM v_forecast_costi_perdite p
+WHERE p.tipo = 'previsione'
+  AND p.data_mese > (date_trunc('month', current_date))::date
+  AND p.fatturato_lordo IS NOT NULL;
+
+GRANT SELECT ON v_forecast_mensile TO anon, authenticated, service_role;
