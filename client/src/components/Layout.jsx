@@ -6,7 +6,7 @@ import {
   Building2, Settings, ChevronLeft, ChevronRight, RefreshCw,
   BarChart2, Lock, Wallet, UtensilsCrossed, CalendarDays,
   ChevronDown, Tag, MapPin, Archive, Brain, Cloud, Database, Award, BarChart3, Activity, Coins, Star, MessageSquare,
-  GitMerge, BookOpen, Scale, Landmark, GitCompareArrows, Percent, Package, Gauge
+  GitMerge, BookOpen, Scale, Landmark, GitCompareArrows, Percent, Package, Gauge, UserX, ShieldCheck
 } from 'lucide-react'
 import { data as dataApi } from '../api/client'
 
@@ -70,6 +70,10 @@ const NAV_GROUPS = [
     label: 'Costi & Margini',
     defaultOpen: false,
     items: [
+      // Prima voce del gruppo perche' e' la lettura d'insieme: le altre spiegano
+      // un pezzo di questi numeri. Tre livelli (Mameli, Predda Niedda, Gruppo) per
+      // non confondere il costo dell'azienda con quello dei singoli locali.
+      { id: 'controllo_costi', path: '/controllo-costi', icon: ShieldCheck, label: 'Controllo Costi',   desc: 'Semaforo su personale, food e fissi', alwaysEnabled: true },
       { id: 'costi_fissi',    path: '/costi-fissi',    icon: Wallet,    label: 'Costi Fissi',       desc: 'Affitti, consulenze, oneri (editabile)', alwaysEnabled: true },
       { id: 'fornitori',      path: '/fornitori',      icon: Building2, label: 'Fornitori & Fatture', desc: 'Fatture, costi, riconciliazione' },
       // Voce nuova: le analisi che 114.650 righe di dettaglio fattura rendono
@@ -114,6 +118,7 @@ const NAV_GROUPS = [
       // Queste due tab di AdminPanel esistevano già come route (/admin/unioni,
       // /admin/kpi) ma non erano raggiungibili da nessuna voce di menu.
       { id: 'admin_unioni',     path: '/admin/unioni',      icon: GitMerge,  label: 'Unioni & Doppioni',     desc: 'Merge dipendenti, link venduto',  alwaysEnabled: true },
+      { id: 'anagrafiche',      path: '/anagrafiche',       icon: UserX,     label: 'Anagrafiche da sistemare', desc: 'Reparto, ruolo, split, attivi', alwaysEnabled: true },
       { id: 'admin_kpi',        path: '/admin/kpi',         icon: Target,    label: 'KPI Config',            desc: 'Target mensili per operatore',    alwaysEnabled: true },
       { id: 'admin_ruoli',      path: '/admin/ruoli',       icon: Tag,       label: 'Ruoli & Reparti',       desc: 'Aggiungi e gestisci ruoli',       alwaysEnabled: true },
       { id: 'admin_sedi',       path: '/admin/sedi',        icon: MapPin,    label: 'Sedi',                  desc: 'Location e multi-sede',           alwaysEnabled: true },

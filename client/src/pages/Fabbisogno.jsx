@@ -39,6 +39,7 @@ import {
   ResponsiveContainer,
 } from 'recharts'
 import supabase from '../supabase'
+import CoperturaTimbrature from '../components/CoperturaTimbrature'
 import { fmtEur, fmtNum, fmtPct, NotaCopertura } from '../lib/tabella'
 
 // ── Costanti condivise ─────────────────────────────────────────────────────
@@ -833,10 +834,17 @@ export default function Fabbisogno() {
           {/* ── BLOCCO 3 ── */}
           <RiepilogoOperativo ob={obiettivo} sede={sede} />
 
+          {/* ── BLOCCO 4 ──
+              Il fabbisogno qui sopra dice quanta gente SERVE. Questo dice quanta
+              ce n'era davvero, ora per ora, secondo le timbrature. È il controllo
+              che chiude il cerchio: un turno può coprire il suo break-even e
+              avere comunque il personale nell'ora sbagliata. */}
+          <CoperturaTimbrature sede={sede} giorni={30} />
+
           <p className="text-[11px] text-gray-400">
             <CalendarDays size={11} className="inline mr-1" />
             Fonti (sola lettura, tutte filtrate lato server per sede): v_fabbisogno_turno,
-            v_tendenza_periodo, v_obiettivi_mese. Le soglie di pareggio e obiettivo si impostano in{' '}
+            v_tendenza_periodo, v_obiettivi_mese, v_presenza_oraria, v_affluenza_oraria. Le soglie di pareggio e obiettivo si impostano in{' '}
             <Link to="/obiettivi" className="text-indigo-600 hover:underline">Obiettivi &amp; Premi</Link>;
             il confronto fra i due turni in valore assoluto sta in{' '}
             <Link to="/turni-bi" className="text-indigo-600 hover:underline">Pranzo vs Cena</Link>.

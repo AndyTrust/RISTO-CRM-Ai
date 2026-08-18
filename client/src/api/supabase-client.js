@@ -103,6 +103,18 @@ function escapeLike(s) {
  * sembrano sbagliati senza causa visibile. Qui l'errore viene comunque loggato
  * e conservato, così la UI (Admin → Stato dati) può mostrarlo.
  */
+/**
+ * Avvisa le altre schede che un dato che entra nel BE o nei KPI è cambiato.
+ * PageStatsWidget e le pagine in ascolto ricaricano; senza questo restano su
+ * numeri vecchi finché non si aggiorna la pagina a mano.
+ */
+function notificaKpiAggiornati() {
+  try {
+    localStorage.setItem('crm_kpi_updated', JSON.stringify({ ts: Date.now() }))
+    window.dispatchEvent(new Event('crm-kpi-updated'))
+  } catch (_) { /* storage non disponibile: l'invalidazione è un di più, non un requisito */ }
+}
+
 const _apiErrors = []
 export function getApiErrors() { return [..._apiErrors] }
 export function clearApiErrors() { _apiErrors.length = 0 }
@@ -4465,7 +4477,7 @@ export const analisiCostiApi = {
       sbFetchPaged(() => supabase.from('buste_paga')
         .select('id, sede, anno, mese, costo_azienda, netto, employee_id, is_stima')
         .gte('anno', annoDa).lte('anno', annoA), 'id'),
-      sbFetchPaged(() => supabase.from('employees').select('id, reparto_id'), 'id'),
+      sbFetchPaged(() => supabase.from('employees').select('id, reparto_id, cost_split'), 'id'),
       sbFetch(supabase.from('reparti').select('id, nome')),
       sbFetchPaged(() => supabase.from('costi_fissi')
         .select('id, sede, anno, mese, importo, escludi_da_be')
@@ -4474,6 +4486,10 @@ export const analisiCostiApi = {
 
     const repartoDi = new Map(reparti.map(r => [r.id, r.nome]))
     const repartoDip = new Map(dipendenti.map(e => [e.id, repartoDi.get(e.reparto_id) ?? null]))
+    // Come si ripartisce il costo di chi serve entrambi i locali. Sta gia' su
+    // employees.cost_split ({"MA":0.5,"PN":0.5}) ed e' la stessa regola che usa
+    // v_costo_personale_per_sede: qui va solo applicata.
+    const splitDip = new Map(dipendenti.map(e => [e.id, e.cost_split || null]))
 
     // I reparti che servono entrambi i locali. Ricavati dai nomi perché
     // `reparti` non ha (ancora) un flag "struttura centrale": se un domani lo
@@ -4531,10 +4547,23 @@ export const analisiCostiApi = {
       const voce = b.is_stima ? 'persStima'
         : rep === null ? 'persNonAssegnato'
         : REPARTI_CENTRALI.has(rep) ? 'persCentrale' : 'persDiretto'
-      for (const t of [perSede[s], mese(s, m)]) {
-        t[voce] += costo
-        const nome = b.is_stima ? '(stima mese in corso)' : rep ?? '(reparto non assegnato)'
-        t.dettaglioReparti[nome] = (t.dettaglioReparti[nome] || 0) + costo
+      const nome = b.is_stima ? '(stima mese in corso)' : rep ?? '(reparto non assegnato)'
+
+      // Amministrazione e marketting lavorano per tutti e due i locali: il costo
+      // va diviso, non lasciato tutto sulla sede che compare in busta paga (che
+      // per tutti e sei e' MA e falsava il confronto fra le sedi). La quota sta
+      // in employees.cost_split; senza quella si divide a meta'.
+      const quote = (voce === 'persCentrale')
+        ? (splitDip.get(b.employee_id) || { MA: 0.5, PN: 0.5 })
+        : { [s]: 1 }
+
+      for (const [sedeQ, q] of Object.entries(quote)) {
+        if (!perSede[sedeQ] || !q) continue
+        const parte = costo * Number(q)
+        for (const t of [perSede[sedeQ], mese(sedeQ, m)]) {
+          t[voce] += parte
+          t.dettaglioReparti[nome] = (t.dettaglioReparti[nome] || 0) + parte
+        }
       }
     }
 
@@ -4606,13 +4635,161 @@ export const analisiCostiApi = {
   ),
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// CONTROLLO COSTI
+// Fonte unica della sezione: v_controllo_costi_mensile e v_controllo_costi_voci.
+// Nessuna percentuale e nessuna soglia si calcola qui: il semaforo arriva già
+// deciso dal database, altrimenti diventerebbe la settima implementazione del
+// break-even (ne esistono già sei, che non coincidono fra loro).
+// ═══════════════════════════════════════════════════════════════════
+export const controlloCosti = {
+  /**
+   * Righe mensili del cruscotto.
+   * @param livello  'MA' | 'PN' | 'GR' | 'TOT'  (omesso = tutti)
+   * @param modalita 'DIRETTO' (default) | 'PIENO'
+   * @param base     'NETTO' (default) | 'LORDO'
+   * @param annoDa/annoA  intervallo di anni, estremi inclusi
+   */
+  mensile: async ({ livello, modalita = 'DIRETTO', base = 'NETTO', annoDa, annoA } = {}) => {
+    const build = () => {
+      let q = supabase.from('v_controllo_costi_mensile').select('*')
+        .eq('modalita', modalita).eq('base', base)
+      const l = locationToSede(livello) || livello
+      if (l && l !== 'ALL') q = q.eq('livello', l)
+      if (annoDa) q = q.gte('anno', parseInt(annoDa))
+      if (annoA)  q = q.lte('anno', parseInt(annoA))
+      return q
+    }
+    // La vista non ha PK: si pagina sulla combinazione che è univoca.
+    const righe = await sbFetchPaged(build, ['anno', 'mese', 'livello'])
+    return righe.sort((a, b) =>
+      (a.anno - b.anno) || (a.mese - b.mese) || String(a.livello).localeCompare(String(b.livello)))
+  },
+
+  /** Righe voce per voce, con soglia in vigore ed esito semaforo già calcolati. */
+  voci: async ({ livello, modalita = 'DIRETTO', base = 'NETTO', anno, mese, annoDa } = {}) => {
+    const build = () => {
+      let q = supabase.from('v_controllo_costi_voci').select('*')
+        .eq('modalita', modalita).eq('base', base)
+      const l = locationToSede(livello) || livello
+      if (l && l !== 'ALL') q = q.eq('livello', l)
+      if (anno)   q = q.eq('anno', parseInt(anno))
+      if (mese)   q = q.eq('mese', parseInt(mese))
+      if (annoDa) q = q.gte('anno', parseInt(annoDa))
+      return q
+    }
+    const righe = await sbFetchPaged(build, ['anno', 'mese', 'livello', 'ordine'])
+    return righe.sort((a, b) =>
+      (a.anno - b.anno) || (a.mese - b.mese) ||
+      String(a.livello).localeCompare(String(b.livello)) || (a.ordine - b.ordine))
+  },
+
+  /** Soglie del semaforo. */
+  parametri: async () => {
+    const { data, error } = await supabase.from('parametri_costi').select('*')
+      .order('base').order('voce').order('livello')
+    if (error) throw error
+    return data ?? []
+  },
+
+  salvaParametro: async (d) => {
+    // Whitelist esplicita: mai `...d` grezzo, altrimenti il client può scrivere
+    // qualsiasi colonna, id e created_at incluse.
+    const payload = {
+      livello:        d.livello || 'ALL',
+      voce:           d.voce,
+      base:           d.base || 'NETTO',
+      soglia_verde:   parseFloat(d.soglia_verde),
+      soglia_gialla:  parseFloat(d.soglia_gialla),
+      obiettivo:      d.obiettivo === '' || d.obiettivo == null ? null : parseFloat(d.obiettivo),
+      driver_riparto: d.driver_riparto || 'FATTURATO',
+      valido_da:      d.valido_da || '2019-01-01',
+      valido_a:       d.valido_a || null,
+      note:           d.note || null,
+      updated_at:     new Date().toISOString(),
+    }
+    if (!(payload.soglia_verde <= payload.soglia_gialla)) {
+      throw new Error('La soglia verde deve essere minore o uguale alla gialla')
+    }
+    const { data, error } = await supabase.from('parametri_costi')
+      .upsert(payload, { onConflict: 'livello,voce,base,valido_da' }).select().single()
+    if (error) throw error
+    notificaKpiAggiornati()
+    return data
+  },
+
+  eliminaParametro: async (id) => {
+    const { error } = await supabase.from('parametri_costi').delete().eq('id', id)
+    if (error) throw error
+    notificaKpiAggiornati()
+    return { success: true }
+  },
+
+  /** Chi è food e chi è servizi: stato della classificazione fornitori. */
+  fornitoriClassificazione: async ({ stato, minSpesa12m } = {}) => {
+    const build = () => {
+      let q = supabase.from('v_fornitori_classificazione').select('*')
+      if (stato) q = q.eq('stato', stato)
+      if (minSpesa12m != null) q = q.gte('spesa_12m', parseFloat(minSpesa12m))
+      return q
+    }
+    const righe = await sbFetchPaged(build, 'fornitore_id')
+    return righe.sort((a, b) => (b.spesa_12m || 0) - (a.spesa_12m || 0))
+  },
+
+  /** Categorie disponibili per la riclassificazione. */
+  categorie: async () => {
+    const { data, error } = await supabase.from('fattura_categorie')
+      .select('*').neq('attivo', false).order('nome')
+    if (error) throw error
+    return data ?? []
+  },
+
+  /** Collega un fornitore a una categoria (è la riparazione dei 180 "SOLO_TESTO"). */
+  collegaCategoria: async (fornitoreId, categoriaId, categoriaTipo) => {
+    const payload = { categoria_id: categoriaId, updated_at: new Date().toISOString() }
+    // Allinea anche l'etichetta testuale: tenerle diverse è proprio il caso INCOERENTE.
+    if (categoriaTipo) payload.categoria = categoriaTipo
+    const { error } = await supabase.from('fornitori_fatture').update(payload).eq('id', fornitoreId)
+    if (error) throw error
+    notificaKpiAggiornati()
+    return { success: true }
+  },
+
+  /** SEDE / GRUPPO / MISTO per un fornitore. */
+  impostaAmbito: async (fornitoreId, ambito) => {
+    if (!['SEDE', 'GRUPPO', 'MISTO'].includes(ambito)) throw new Error(`Ambito non valido: ${ambito}`)
+    const { error } = await supabase.from('fornitori_fatture')
+      .update({ ambito_default: ambito, updated_at: new Date().toISOString() }).eq('id', fornitoreId)
+    if (error) throw error
+    notificaKpiAggiornati()
+    return { success: true }
+  },
+
+  /** Mappa categoria fornitore → voce di costo. */
+  mappaVoci: async () => {
+    const { data, error } = await supabase.from('mappa_voci_costo').select('*').order('voce').order('tipo')
+    if (error) throw error
+    return data ?? []
+  },
+
+  salvaMappaVoce: async (tipo, voce) => {
+    const { error } = await supabase.from('mappa_voci_costo')
+      .upsert({ tipo, voce, updated_at: new Date().toISOString() }, { onConflict: 'tipo' })
+    if (error) throw error
+    notificaKpiAggiornati()
+    return { success: true }
+  },
+}
+
+
 export default {
   modules, employees, chiusure, kpi, venduto,
   fornitori, pagamentiFatture, prodottiCatalogo, listinoApi, ricetteApi, chat, data, analytics, bustePaga, statistiche, turni,
   roles, admin, crmConfig, sediApi, operatorMapping, repartiApi,
   fattureCategorieApi, costiFissiApi, standardNazionaliApi, kpiTargetsApi, kpiPerformanceApi,
   beMensileApi, operatoreMeseApi, obiettiviProdottoApi, bonusApi,
-  fattureBi, bilanciApi, analisiCostiApi,
+  fattureBi, bilanciApi, analisiCostiApi, controlloCosti,
   calcBonusTeam, calcBonusIndividuale,
   verificaApi,
 }

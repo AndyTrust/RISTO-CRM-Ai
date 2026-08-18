@@ -15,6 +15,7 @@ import { periodToDates } from '../components/DateRangePicker'
 import PeriodFilter from '../components/PeriodFilter'
 import PageAssistant from '../components/PageAssistant'
 import PageStatsWidget from '../components/PageStatsWidget'
+import BreakEvenGiornaliero from '../components/BreakEvenGiornaliero'
 
 // ── Helpers periodo ──────────────────────────────────────────────────────────
 // Range mesi (1-12) coperto dal periodo selezionato.
@@ -318,6 +319,14 @@ function BESection({ beMensile, loading, meseRange, periodoAttivo }) {
             </div>
           )
         })()}
+      </div>
+
+      {/* Il mensile qui sopra dice se il mese ha chiuso in pareggio; questo dice
+          QUALI giorni l'hanno mancato. Stesse definizioni di costo, quindi nei
+          mesi chiusi la somma dei giorni torna al totale mensile: non sono due
+          misure concorrenti, sono la stessa a due granularità. */}
+      <div className="mt-6">
+        <BreakEvenGiornaliero sede={sede} giorni={45} />
       </div>
     </div>
   )

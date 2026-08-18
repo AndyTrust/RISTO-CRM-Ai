@@ -53,10 +53,23 @@ const QUERY_CRM_ALLOWED_TABLES = [
   'revenue_shift',
   'sondaggi_strutturati',
   'bookings_filling',
+  // Controllo Costi: sono viste di sintesi gia' aggregate per sede e mese,
+  // non contengono nomi ne' importi individuali di paga.
+  'v_controllo_costi_mensile',
+  'v_controllo_costi_voci',
 ]
 
 // Colonne consentite per tabella (esclude dati sensibili come importi paga)
 const QUERY_CRM_ALLOWED_COLUMNS = {
+  v_controllo_costi_mensile: ['livello', 'modalita', 'base', 'anno', 'mese', 'mese_str', 'fatturato', 'coperti',
+                              'personale', 'food', 'fissi_struttura', 'servizi_ricorrenti', 'commissioni_variabili',
+                              'non_classificato', 'quota_gruppo', 'costi_totali', 'margine',
+                              'pct_personale', 'pct_food', 'pct_fissi_struttura', 'pct_servizi_ricorrenti',
+                              'pct_commissioni_variabili', 'pct_non_classificato', 'pct_quota_gruppo', 'pct_costi_totali',
+                              'pct_spesa_certa', 'personale_ha_stima', 'gg_chiusure', 'gg_con_dgfe'],
+  v_controllo_costi_voci:    ['livello', 'modalita', 'base', 'anno', 'mese', 'mese_str', 'voce', 'fatturato',
+                              'importo', 'pct', 'soglia_verde', 'soglia_gialla', 'obiettivo', 'esito',
+                              'scostamento_obiettivo_eur', 'scostamento_obiettivo_pp', 'dato_stimato'],
   venduto_camerieri:         ['sede', 'operatore', 'data_inizio', 'data_fine', 'categoria', 'prodotto', 'quantita', 'totale'],
   chiusure_giornaliere:      ['sede', 'data', 'totale_venduto_dgfe', 'totale_venduto_ipratico', 'totale_fiscalizzato_fatture', 'n_doc_fiscali_emessi', 'coperti', 'coperto_medio', 'scontrino_medio'],
   varianti_camerieri:        ['sede', 'operatore', 'data_inizio', 'data_fine', 'variante', 'aggiunta_qty', 'aggiunta_importo', 'rimozione_qty', 'rimozione_importo'],

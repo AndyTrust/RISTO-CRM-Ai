@@ -7,6 +7,7 @@ import { createPortal } from 'react-dom'
 import { turni as turniApi, employees as empApi, repartiApi } from '../api/client'
 import { bustePaga as bustePagaApi, venduto as vendutoApi } from '../api/client'
 import supabase from '../supabase'
+import BozzaTurni from '../components/BozzaTurni'
 import { fetchPagedInfo } from '../api/paged'
 import { useOrdinamento, IconaOrdine, BottoneCsv, NotaCopertura } from '../lib/tabella'
 import useClaudeAI from '../hooks/useClaudeAI'
@@ -2258,6 +2259,14 @@ export default function TurniPage() {
       </div>
 
       <div className="min-h-[500px]">
+        {/* La bozza automatica sta sopra la settimana manuale: si genera, si
+            controlla, si approva. Con "Entrambe" non ha senso — le regole
+            (cassa alternata, riposi) valgono per sede — quindi ricade su MA. */}
+        {activeTab==='settimana' && (
+          <div className="mb-4">
+            <BozzaTurni sede={ctx.selectedSede === 'ALL' ? 'MA' : ctx.selectedSede} />
+          </div>
+        )}
         {activeTab==='settimana' && <SettimanaTab ctx={ctx}/>}
         {activeTab==='riepilogo' && <RiepilogoTab ctx={ctx}/>}
         {activeTab==='gestione'  && <GestioneTab  ctx={ctx}/>}

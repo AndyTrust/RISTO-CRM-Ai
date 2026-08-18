@@ -29,6 +29,7 @@ export {
   fattureBi,
   bilanciApi,
   analisiCostiApi,
+  controlloCosti,
   fattureCategorieApi,
   costiFissiApi,
   standardNazionaliApi,

@@ -67,6 +67,7 @@ import ContabilitaBi from './pages/ContabilitaBi'
 import CopertiBi from './pages/CopertiBi'
 import StatoDati from './pages/StatoDati'
 import AnalisiReparti from './pages/AnalisiReparti'
+import AnagraficheQualita from './pages/AnagraficheQualita'
 import SondaggiPage from './pages/SondaggiPage'
 import RecensioniPage from './pages/RecensioniPage'
 import BilanciPage from './pages/BilanciPage'
@@ -74,6 +75,7 @@ import CostiPrezziBi from './pages/CostiPrezziBi'
 import CatalogoArticoli from './pages/CatalogoArticoli'
 import ObiettiviPremi from './pages/ObiettiviPremi'
 import Fabbisogno from './pages/Fabbisogno'
+import ControlloCosti from './pages/ControlloCosti'
 import { modules as modulesApi, crmConfig } from './api/client'
 
 export const ModulesContext = React.createContext({})
@@ -176,6 +178,7 @@ export default function App() {
           <Route path="/impostazioni" element={<Settings />} />
           <Route path="/costi-fissi" element={<CostiFissiPage />} />
           <Route path="/analisi-reparti" element={<AnalisiReparti />} />
+          <Route path="/anagrafiche" element={<AnagraficheQualita />} />
           <Route path="/reparti" element={<Navigate to="/analisi-reparti" replace />} />
           <Route path="/sondaggi" element={<SondaggiPage />} />
           <Route path="/recensioni" element={<RecensioniPage />} />
@@ -196,6 +199,12 @@ export default function App() {
               catalogo, alert prezzi, Pareto, confronto fra fornitori. */}
           <Route path="/catalogo-articoli" element={<CatalogoArticoli />} />
           <Route path="/catalogo-articoli/:sezione" element={<CatalogoArticoli />} />
+          {/* CONTROLLO COSTI — la lettura unica di personale, food, fissi e
+              break-even, su tre livelli (Mameli, Predda Niedda, Gruppo). Sotto-route
+              come /costi-prezzi e /bilanci: un'analisi che non si puo' linkare non si
+              puo' nemmeno discutere. */}
+          <Route path="/controllo-costi" element={<ControlloCosti />} />
+          <Route path="/controllo-costi/:sezione" element={<ControlloCosti />} />
           {/* BILANCI — ogni sottosezione ha una sotto-route propria e linkabile */}
           <Route path="/bilanci" element={<BilanciPage />} />
           <Route path="/bilanci/:sezione" element={<BilanciPage />} />
