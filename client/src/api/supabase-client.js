@@ -4846,25 +4846,34 @@ export const insightApi = {
 // Vale solo quella con is_corrente, e le viste la isolano gia'.
 export const commercialistaApi = {
   quadro: async () => {
-    const [saldo, notule, mensile, acconti, pratiche] = await Promise.all([
+    const [saldo, notule, mensile, acconti, pratiche, voci, incidenza] = await Promise.all([
       supabase.from('v_notule_saldo').select('*'),
       supabase.from('v_notule_riepilogo').select('*').order('data_avviso', { ascending: false }),
       supabase.from('v_notule_costo_mensile').select('*'),
       supabase.from('v_notule_acconti').select('*').order('data_acconto', { ascending: true }),
       supabase.from('v_notule_pratiche_dipendente').select('*').order('costo_totale', { ascending: false }),
+      // Le singole righe della notula corrente: servono a mostrare, sotto ogni
+      // barra del grafico, le voci esatte che la compongono. Senza queste la
+      // pagina puo' dire quanto, non perche'.
+      supabase.from('v_notule_voci').select('*').order('riga_ordine', { ascending: true }),
+      // Fatturato e costo del personale degli stessi mesi, per dire quanto
+      // pesa lo studio invece di dire soltanto quanto costa.
+      supabase.from('v_notule_incidenza').select('*'),
     ])
     // Una vista che fallisce non deve far sparire tutte le altre: la sezione
     // corrispondente resta vuota e il resto della pagina si vede lo stesso.
-    for (const r of [saldo, notule, mensile, acconti, pratiche]) {
+    for (const r of [saldo, notule, mensile, acconti, pratiche, voci, incidenza]) {
       if (r.error && r === saldo) throw r.error
       if (r.error) console.error('commercialistaApi:', r.error)
     }
     return {
-      saldo:    saldo.data ?? [],
-      notule:   notule.data ?? [],
-      mensile:  mensile.data ?? [],
-      acconti:  acconti.data ?? [],
-      pratiche: pratiche.data ?? [],
+      saldo:     saldo.data ?? [],
+      notule:    notule.data ?? [],
+      mensile:   mensile.data ?? [],
+      acconti:   acconti.data ?? [],
+      pratiche:  pratiche.data ?? [],
+      voci:      voci.data ?? [],
+      incidenza: incidenza.data ?? [],
     }
   },
 
