@@ -413,7 +413,15 @@ export const chiusure = {
       return applyDateRange(q, p.from, p.to)
     }
     if (p.from || p.to) {
-      const rows = await sbFetchPaged(build, 'id')
+      // Ordinare per `id` costava 8,4 s e faceva scattare lo statement_timeout di
+    // 8 s: con LIMIT 1000 il planner sceglieva la chiave primaria e scartava a
+    // una a una decine di migliaia di righe (METRO: 25.737 "Rows Removed by
+    // Filter"). Ordinando prima per `data_fattura` si usa ux_fatture_righe_naturale
+    // (p_iva, data_fattura, …), che il filtro `p_iva` rende selettivo: ~300 ms
+    // anche a offset profondo. `id` resta in coda perche' la paginazione a
+    // .range() richiede un ordinamento TOTALE, e `data_fattura` da sola ha
+    // duplicati (vedi il commento in testa a paged.js).
+    const rows = await sbFetchPaged(build, ['data_fattura', 'id'])
       return rows.sort((a, b) => String(b.data).localeCompare(String(a.data)))
     }
     const giorni = parseInt(p.limit) || 90

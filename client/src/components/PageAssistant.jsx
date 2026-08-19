@@ -18,6 +18,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { MessageSquare, X, Send, Bot, User, Loader, ChevronDown, ChevronUp, Wrench, AlertCircle, Lightbulb } from 'lucide-react'
 import supabase from '../supabase'
+import { PROFILO_ESPERTO, erroreAI } from '../lib/aiProfilo'
 
 const API_ENDPOINT = '/api/assistant'
 
@@ -341,12 +342,15 @@ export default function PageAssistant({ pagina, systemContext, tools = [], onToo
   }, [open, messages.length])
 
   const buildSystemPrompt = useCallback(() => {
-    let sys = `Sei l'assistente AI del CRM gestionale. Puoi accedere ai dati del ristorante (chiusure, venduto, dipendenti, fatture, KPI). Parla in italiano.
-Pagina corrente: **${pagina}**.
-Rispondi sempre in italiano, in modo conciso e diretto.
-Quando esegui azioni (registrare pagamenti, modificare dati), conferma brevemente quello che hai fatto.
-Hai accesso diretto al database CRM tramite lo strumento **query_crm**: usalo SEMPRE per rispondere a domande sui dati reali (venduto, coperti, camerieri, fatture, KPI, buste paga, ecc.) invece di rispondere con dati generici o inventati.
-Quando cerchi errori o incongruenze nei dati, esegui query per confrontare i valori e segnala anomalie specifiche con i dati reali.`
+    let sys = `${PROFILO_ESPERTO}
+
+## Contesto di questa sessione
+
+Sei aperto dentro la pagina **${pagina}** del CRM: dai per scontato che la domanda riguardi quello che l'utente ha davanti, ma non limitarti a quei dati se la risposta richiede di guardare altrove.
+
+Il database lo interroghi con lo strumento **query_crm**: usalo SEMPRE per qualunque domanda sui numeri — venduto, coperti, operatori, fatture, fornitori, costi, KPI — e non rispondere mai con valori generici o ricordati. Se cerchi incongruenze, confronta i valori con più query e riporta le anomalie con i dati reali che le dimostrano.
+
+Quando esegui un'azione che modifica i dati (registrare un pagamento, correggere un campo), conferma in una riga cosa hai scritto e su quale record.`
     if (systemContext) sys += `\n\n${systemContext}`
     const allTools = [...tools, QUERY_CRM_TOOL]
     if (allTools.length > 0) {
@@ -384,12 +388,15 @@ Usa questi strumenti per eseguire azioni concrete e rispondere con dati reali.`
         tools: allToolDefs,
       }),
     })
-    if (res.status === 401) {
-      throw new Error('Sessione scaduta: ricarica la pagina e accedi di nuovo.')
-    }
     if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }))
-      throw new Error(err.error || `HTTP ${res.status}`)
+      // Mai propagare il payload upstream: l'errore va mostrato in italiano e
+      // con l'indicazione di chi lo può risolvere (utente o amministratore).
+      const payload = await res.json().catch(() => null)
+      const e = erroreAI(res.status, payload)
+      const err = new Error(e.testo)
+      err.dettaglio = e.dettaglio
+      err.admin = e.admin
+      throw err
     }
     return await res.json()
   }, [buildSystemPrompt, tools])
@@ -494,7 +501,7 @@ Usa questi strumenti per eseguire azioni concrete e rispondere con dati reali.`
       await processResponse(response, apiMessages)
     } catch (e) {
       setMessages(prev => prev.filter(m => !m.loading))
-      setError(e.message)
+      setError({ testo: e.message, dettaglio: e.dettaglio ?? null, admin: e.admin === true })
     } finally {
       setLoading(false)
     }
@@ -558,9 +565,17 @@ Usa questi strumenti per eseguire azioni concrete e rispondere con dati reali.`
             {messages.map((msg) => <Message key={msg.id} msg={msg}/>)}
 
             {error && (
-              <div className="flex items-start gap-2 bg-red-50 border border-red-200 rounded-xl p-3">
-                <AlertCircle size={14} className="text-red-500 flex-shrink-0 mt-0.5"/>
-                <p className="text-xs text-red-600">{error}</p>
+              <div className={`flex items-start gap-2 rounded-xl p-3 border ${error.admin ? 'bg-amber-50 border-amber-200' : 'bg-red-50 border-red-200'}`}>
+                <AlertCircle size={14} className={`flex-shrink-0 mt-0.5 ${error.admin ? 'text-amber-500' : 'text-red-500'}`}/>
+                <div className="min-w-0">
+                  <p className={`text-xs ${error.admin ? 'text-amber-700' : 'text-red-600'}`}>{error.testo}</p>
+                  {error.dettaglio && (
+                    <p className="text-[11px] mt-1 text-slate-500">{error.dettaglio}</p>
+                  )}
+                  {error.admin && (
+                    <p className="text-[11px] mt-1 text-slate-500">Il resto del CRM continua a funzionare: sono solo le risposte dell'assistente a essere sospese.</p>
+                  )}
+                </div>
               </div>
             )}
 

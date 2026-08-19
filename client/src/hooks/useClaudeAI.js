@@ -437,8 +437,14 @@ export default function useClaudeAI() {
     })
 
     if (!response.ok) {
-      const err = await response.json().catch(() => ({ error: response.statusText }))
-      throw new Error(err.error || `Errore ${response.status}`)
+      const payload = await response.json().catch(() => null)
+      const e = new Error(
+        (payload && (payload.error?.message || payload.error || payload.message)) ||
+        `Errore ${response.status}`
+      )
+      e.status = response.status
+      e.payload = payload
+      throw e
     }
 
     if (stream && onChunk) {
@@ -447,6 +453,12 @@ export default function useClaudeAI() {
       const decoder = new TextDecoder()
       let full = ''
       let buffer = ''
+      // La Edge Function claude-proxy, nel ramo streaming, inoltra il corpo di
+      // Anthropic senza propagarne lo status: un errore upstream arriva qui
+      // come 200 con dentro un JSON invece di eventi SSE. Senza questi due
+      // contatori la chat mostrerebbe una risposta vuota al posto dell'errore.
+      let grezzo = ''
+      let eventiVisti = 0
 
       while (true) {
         // Se il chiamante ha abortito (es. componente smontato) chiudiamo il reader
@@ -454,23 +466,53 @@ export default function useClaudeAI() {
         const { done, value } = await reader.read()
         if (done) break
         // stream:true mantiene i caratteri multibyte spezzati tra i chunk
-        buffer += decoder.decode(value, { stream: true })
+        const pezzo = decoder.decode(value, { stream: true })
+        if (grezzo.length < 4000) grezzo += pezzo
+        buffer += pezzo
         // Processa solo le righe complete (terminate da newline); l'eventuale
         // riga parziale resta nel buffer fino alla read() successiva.
         const lines = buffer.split('\n')
         buffer = lines.pop() ?? ''
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue
+          // Il catch qui sotto è volutamente muto (righe SSE parziali o eventi
+          // che non ci interessano): un evento `error` va quindi messo da parte
+          // e rilanciato fuori, altrimenti verrebbe inghiottito.
+          let evtErrore = null
           try {
             const event = JSON.parse(line.slice(6))
-            if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
+            eventiVisti++
+            if (event.type === 'error') {
+              evtErrore = event
+            } else if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
               full += event.delta.text
               if (signal?.aborted) { await reader.cancel().catch(() => {}); return full }
               onChunk(full)
             }
           } catch { }
+          if (evtErrore) {
+            await reader.cancel().catch(() => {})
+            const e = new Error(evtErrore.error?.message || 'Errore durante la risposta')
+            e.status = 0
+            e.payload = evtErrore
+            throw e
+          }
         }
       }
+
+      if (eventiVisti === 0) {
+        // Nessun evento SSE: quasi sempre è un errore upstream travestito da 200.
+        let payload = null
+        try { payload = JSON.parse(grezzo) } catch { /* non era JSON */ }
+        const e = new Error(
+          (payload && (payload.error?.message || payload.error)) ||
+          'Il servizio AI non ha risposto.'
+        )
+        e.status = 0
+        e.payload = payload ?? grezzo
+        throw e
+      }
+
       return full
     }
 

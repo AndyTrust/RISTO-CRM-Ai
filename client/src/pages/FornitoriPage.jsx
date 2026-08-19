@@ -476,16 +476,37 @@ function FornitoreDetail({ fornitore, onClose, onUpdated, dateFrom, dateTo }) {
         if (dateTo)   q = q.lte('data_fattura', dateTo)
         return q
       }
-      const [resFat, prods] = await Promise.all([
+      // allSettled, non all: le due letture sono indipendenti e con `all` un
+      // solo guasto su fatture_righe azzerava anche fatture e trend (il trend è
+      // derivato dalle fatture), lasciando la scheda vuota per intero.
+      const [esitoFat, esitoProd] = await Promise.allSettled([
         fetchPagedInfo(buildFat, 'id'),
         // getRighe è già paginata lato API (aggrega su fatture_righe).
         fornitoriApi.getRighe({ p_iva: fornitore.p_iva, from: dateFrom, to: dateTo }),
       ])
       if (mia !== richiestaRef.current) return
-      const fats = resFat.righe.sort((a, b) => String(b.data_fattura || '').localeCompare(String(a.data_fattura || '')))
-      setFatture(fats)
-      setTroncato(resFat.troncato)
-      setProdotti(Array.isArray(prods) ? prods : [])
+
+      if (esitoFat.status === 'fulfilled') {
+        const resFat = esitoFat.value
+        setFatture(resFat.righe.sort((a, b) => String(b.data_fattura || '').localeCompare(String(a.data_fattura || ''))))
+        setTroncato(resFat.troncato)
+      } else {
+        console.error('FornitoreDetail fatture:', esitoFat.reason)
+        setFatture([])
+        setTroncato(false)
+      }
+
+      if (esitoProd.status === 'fulfilled') {
+        setProdotti(Array.isArray(esitoProd.value) ? esitoProd.value : [])
+      } else {
+        console.error('FornitoreDetail prodotti:', esitoProd.reason)
+        setProdotti([])
+      }
+
+      const guasti = []
+      if (esitoFat.status === 'rejected')  guasti.push('le fatture')
+      if (esitoProd.status === 'rejected') guasti.push('i prodotti')
+      setLoadError(guasti.length ? `Non è stato possibile caricare ${guasti.join(' e ')}.` : null)
     } catch (e) {
       if (mia !== richiestaRef.current) return
       console.error('FornitoreDetail loadData error:', e)

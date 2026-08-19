@@ -120,7 +120,10 @@ export default async function handler(req, res) {
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    return res.status(500).json({ error: 'ANTHROPIC_API_KEY non configurata nelle env Vercel' });
+    return res.status(500).json({
+      code: 'chiave_mancante',
+      error: "Il servizio AI non è configurato: manca la chiave API nelle variabili d'ambiente del progetto.",
+    });
   }
 
   // 1. Autenticazione — prima di qualunque altra cosa.
@@ -141,7 +144,7 @@ export default async function handler(req, res) {
     const body = {
       model: model || DEFAULT_MODEL,
       max_tokens: 4096,
-      system: system || `Sei un assistente AI del CRM gestionale ${appName}. Rispondi in italiano.`,
+      system: system || `Sei l'analista di riferimento del CRM gestionale ${appName}: analisi finanziaria, contabilità e fiscalità di un pubblico esercizio, amministrazione del personale. Rispondi in italiano, con i dati reali e mai a memoria.`,
       messages,
     };
 
@@ -161,14 +164,72 @@ export default async function handler(req, res) {
     });
 
     if (!response.ok) {
+      // Il corpo dell'errore upstream NON va rimandato al browser: contiene
+      // dettagli di fatturazione e messaggi in inglese che l'utente si è visto
+      // stampare a schermo. Resta nei log Vercel, al frontend va solo un codice.
       const errText = await response.text();
-      return res.status(response.status).json({ error: errText });
+      console.error('[assistant] Anthropic %d: %s', response.status, errText);
+      const { code, error } = traduciErroreUpstream(response.status, errText);
+      return res.status(response.status).json({ code, error });
     }
 
     const data = await response.json();
     return res.status(200).json(data);
   } catch (error) {
     console.error('Assistant API error:', error);
-    return res.status(500).json({ error: error.message });
+    return res.status(500).json({
+      code: 'generico',
+      error: 'Il servizio AI non ha risposto. Riprova fra poco.',
+    });
   }
+}
+
+/**
+ * Traduce la risposta d'errore di Anthropic in un codice stabile più una frase
+ * in italiano. Il codice serve al frontend per decidere se è un problema che
+ * l'utente può risolvere (riprovare) o che va segnalato all'amministratore.
+ */
+function traduciErroreUpstream(status, corpo) {
+  const testo = String(corpo || '').toLowerCase();
+
+  if (testo.includes('credit balance')) {
+    return {
+      code: 'credito_esaurito',
+      error: "Il servizio AI è sospeso: il credito dell'account Anthropic è esaurito.",
+    };
+  }
+  if (testo.includes('authentication_error') || testo.includes('invalid x-api-key') || status === 401) {
+    return {
+      code: 'chiave_non_valida',
+      error: "Il servizio AI non riesce ad autenticarsi: la chiave API non è valida o è stata revocata.",
+    };
+  }
+  if (status === 403 || testo.includes('permission_error')) {
+    return {
+      code: 'chiave_non_valida',
+      error: "La chiave API non è abilitata per questa operazione.",
+    };
+  }
+  if (status === 429 || testo.includes('rate_limit')) {
+    return {
+      code: 'troppe_richieste',
+      error: 'Troppe richieste in poco tempo. Riprova fra qualche secondo.',
+    };
+  }
+  if (status === 529 || status === 503 || testo.includes('overloaded')) {
+    return {
+      code: 'sovraccarico',
+      error: 'Il servizio AI è momentaneamente sovraccarico. Riprova fra un minuto.',
+    };
+  }
+  if (status === 413 || testo.includes('too large') || testo.includes('exceed')) {
+    return {
+      code: 'richiesta_troppo_grande',
+      error: 'La conversazione è diventata troppo lunga per una singola richiesta.',
+    };
+  }
+  return {
+    code: 'generico',
+    error: 'Il servizio AI non ha risposto. Riprova; il dettaglio è nei log del server.',
+  };
 }

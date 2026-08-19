@@ -8,6 +8,7 @@ import React, { useEffect, useState, useRef, useCallback } from 'react'
 import supabase from '../supabase'
 import useClaudeAI, { buildCrmContext, saveMemory, loadMemory } from '../hooks/useClaudeAI'
 import { BottoneCsv } from '../lib/tabella'
+import { PROFILO_ESPERTO, erroreAI } from '../lib/aiProfilo'
 import {
   Bot, Plus, Trash2, Send, Database, Copy, Check, Brain,
   ChevronDown, BookMarked, X, Loader2, Settings2, AlertCircle
@@ -19,29 +20,29 @@ const MODELS = [
   { id: 'claude-haiku-4-5-20251001', name: 'Haiku 4.5', desc: 'Veloce',       color: 'text-green-600 bg-green-50' },
 ]
 
-const SYSTEM_BASE = `Sei l'assistente AI del Risto CRM — ristorante italiano con due sedi:
-- Le sedi disponibili sono configurabili in Admin → Sedi
+const SYSTEM_BASE = `${PROFILO_ESPERTO}
 
-Hai accesso completo ai dati del CRM: chiusure cassa, venduto per operatore, fatture acquisto,
-buste paga, turni, KPI camerieri.
+## Il gruppo
 
-Il contesto include la tabella "Media coperti per turno" con i dati REALI da iPratico:
-coperti pranzo e cena distinti, per giorno della settimana e per sede (MA=Mameli, PN=Predda Niedda).
-Usa sempre questi dati quando ti chiedono di coperti per turno, media pranzo/cena, split giornaliero.
+Due locali: **MA = Mameli**, **PN = Predda Niedda**. L'elenco completo delle sedi è configurabile in Admin → Sedi. Quando confronti, tienile sempre distinte: hanno affitti, organici e stagionalità diversi.
 
-Puoi SALVARE informazioni nella memoria del CRM usando questa sintassi ESATTA nella tua risposta:
+## I dati che ricevi
+
+Nel contesto trovi lo snapshot del CRM: chiusure di cassa, venduto per operatore, fatture di acquisto, buste paga, turni, KPI dei camerieri.
+
+Include la tabella "Media coperti per turno" con i dati reali da iPratico — coperti di pranzo e di cena distinti, per giorno della settimana e per sede. Usa sempre quelli quando la domanda riguarda i coperti per turno, la media pranzo/cena o lo split giornaliero: non stimarli dal totale.
+
+## Memoria
+
+Puoi salvare informazioni nella memoria del CRM usando questa sintassi ESATTA dentro la tua risposta:
 SALVA_MEMORIA[sezione/chiave]=valore
 
 Esempi:
 SALVA_MEMORIA[generale/obiettivo_fatturato_mensile]=€45.000
 SALVA_MEMORIA[turni/regola_costo_personale_max]=28%
 SALVA_MEMORIA[kpi/top_cameriere_marzo]=MARIO ROSSI con 280 coperti
-Quando salvi in memoria, menzionalo nella risposta in modo naturale.
 
-Puoi analizzare KPI, confrontare sedi, suggerire miglioramenti, calcolare costi,
-ottimizzare turni, e rispondere a qualsiasi domanda sui dati del ristorante.
-
-Rispondi sempre in italiano. Sii conciso ma preciso.`
+Salva quando emerge un parametro, una regola o una decisione che servirà anche nelle prossime sessioni. Quando lo fai, dillo nella risposta in modo naturale.`
 
 // ─── Sezioni memoria rapida ─────────────────────────────────────────────────
 const SEZIONI_MEMORIA = [
@@ -420,7 +421,10 @@ export default function ChatClaude() {
       }
     } catch (err) {
       if (err?.name === 'AbortError') return
-      if (montatoRef.current) setError(err.message)
+      if (montatoRef.current) {
+        const e = erroreAI(err.status ?? 0, err.payload ?? err.message)
+        setError({ testo: e.testo, dettaglio: e.dettaglio, admin: e.admin })
+      }
     } finally {
       if (abortRef.current === controller) abortRef.current = null
       if (montatoRef.current) {
@@ -601,13 +605,13 @@ export default function ChatClaude() {
               {messages.map(m => <MsgBubble key={m.id} msg={m}/>)}
               {streaming && <MsgBubble msg={{ role: 'assistant', content: streamText }} isStreaming/>}
               {error && (
-                <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-600 flex items-start gap-2">
+                <div className={`p-3 rounded-xl text-sm flex items-start gap-2 border ${error.admin ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-red-50 border-red-200 text-red-600'}`}>
                   <span>⚠️</span>
                   <div>
-                    <p className="font-medium">Errore</p>
-                    <p>{error}</p>
-                    {error.includes('ANTHROPIC_API_KEY') && (
-                      <p className="text-xs mt-1">→ Aggiungi la chiave in Supabase → Edge Functions → claude-proxy → Secrets → ANTHROPIC_API_KEY</p>
+                    <p className="font-medium">{error.testo}</p>
+                    {error.dettaglio && <p className="text-xs mt-1 text-slate-600">{error.dettaglio}</p>}
+                    {error.admin && (
+                      <p className="text-xs mt-1 text-slate-500">La chiave di questa chat sta in Supabase → Edge Functions → claude-proxy → Secrets → ANTHROPIC_API_KEY. Il resto del CRM continua a funzionare.</p>
                     )}
                   </div>
                 </div>
