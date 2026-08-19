@@ -6,7 +6,8 @@ import {
   Building2, Settings, ChevronLeft, ChevronRight, RefreshCw,
   BarChart2, Lock, Wallet, UtensilsCrossed, CalendarDays,
   ChevronDown, Tag, MapPin, Archive, Brain, Cloud, Database, Award, BarChart3, Activity, Coins, Star, MessageSquare,
-  GitMerge, BookOpen, Scale, Landmark, GitCompareArrows, Percent, Package, Gauge, UserX, ShieldCheck
+  GitMerge, BookOpen, Scale, Landmark, GitCompareArrows, Percent, Package, Gauge, UserX, ShieldCheck,
+  FileSpreadsheet
 } from 'lucide-react'
 import { data as dataApi } from '../api/client'
 
@@ -20,6 +21,7 @@ const NAV_GROUPS = [
     items: [
       { id: 'dashboard',    path: '/dashboard',    icon: LayoutDashboard, label: 'Dashboard',       desc: 'KPI sintetici e andamento sedi' },
       { id: 'stato_dati',   path: '/stato-dati',   icon: Activity,        label: 'Stato Dati',      desc: 'Semafori salute dati 🟢🟡🔴', alwaysEnabled: true },
+      { id: 'import_excel', path: '/importa-excel', icon: FileSpreadsheet, label: 'Import Excel',    desc: 'Foglio GIORNALIERA dell\'amministrazione', alwaysEnabled: true },
     ]
   },
   // 2) OPERATIVO — quotidiano (incassi, vendite)

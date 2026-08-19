@@ -66,6 +66,7 @@ import TurniAnalysisBi from './pages/TurniAnalysisBi'
 import ContabilitaBi from './pages/ContabilitaBi'
 import CopertiBi from './pages/CopertiBi'
 import StatoDati from './pages/StatoDati'
+import ImportExcel from './pages/ImportExcel'
 import AnalisiReparti from './pages/AnalisiReparti'
 import AnagraficheQualita from './pages/AnagraficheQualita'
 import SondaggiPage from './pages/SondaggiPage'
@@ -175,6 +176,7 @@ export default function App() {
           <Route path="/statistiche" element={isEnabled('statistiche') ? <StatisticheSala /> : <DisabledModule name="Statistiche Sala" />} />
           <Route path="/turni" element={isEnabled('turni') ? <TurniPage /> : <DisabledModule name="Turni" />} />
           <Route path="/stato-dati" element={<StatoDati />} />
+          <Route path="/importa-excel" element={<ImportExcel />} />
           <Route path="/impostazioni" element={<Settings />} />
           <Route path="/costi-fissi" element={<CostiFissiPage />} />
           <Route path="/analisi-reparti" element={<AnalisiReparti />} />
