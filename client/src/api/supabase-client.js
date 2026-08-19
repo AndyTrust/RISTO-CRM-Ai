@@ -4840,3 +4840,40 @@ export const insightApi = {
     return data ?? []
   },
 }
+
+// ── Commercialista: notule, acconti, saldo ───────────────────────────────────
+// Le fatture ELSO REI sono acconti, non il costo: il costo sta nelle notule.
+// Vale solo quella con is_corrente, e le viste la isolano gia'.
+export const commercialistaApi = {
+  quadro: async () => {
+    const [saldo, notule, mensile, acconti, pratiche] = await Promise.all([
+      supabase.from('v_notule_saldo').select('*'),
+      supabase.from('v_notule_riepilogo').select('*').order('data_avviso', { ascending: false }),
+      supabase.from('v_notule_costo_mensile').select('*'),
+      supabase.from('v_notule_acconti').select('*').order('data_acconto', { ascending: true }),
+      supabase.from('v_notule_pratiche_dipendente').select('*').order('costo_totale', { ascending: false }),
+    ])
+    // Una vista che fallisce non deve far sparire tutte le altre: la sezione
+    // corrispondente resta vuota e il resto della pagina si vede lo stesso.
+    for (const r of [saldo, notule, mensile, acconti, pratiche]) {
+      if (r.error && r === saldo) throw r.error
+      if (r.error) console.error('commercialistaApi:', r.error)
+    }
+    return {
+      saldo:    saldo.data ?? [],
+      notule:   notule.data ?? [],
+      mensile:  mensile.data ?? [],
+      acconti:  acconti.data ?? [],
+      pratiche: pratiche.data ?? [],
+    }
+  },
+
+  righeNotula: async (notula_id) => {
+    const { data, error } = await supabase
+      .from('notule_righe').select('*')
+      .eq('notula_id', notula_id)
+      .order('riga_ordine', { ascending: true })
+    if (error) throw error
+    return data ?? []
+  },
+}

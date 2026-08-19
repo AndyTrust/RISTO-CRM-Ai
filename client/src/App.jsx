@@ -78,6 +78,7 @@ import ObiettiviPremi from './pages/ObiettiviPremi'
 import Fabbisogno from './pages/Fabbisogno'
 import ControlloCosti from './pages/ControlloCosti'
 import InsightPage from './pages/InsightPage'
+import CommercialistaPage from './pages/CommercialistaPage'
 import { modules as modulesApi, crmConfig } from './api/client'
 
 export const ModulesContext = React.createContext({})
@@ -177,6 +178,7 @@ export default function App() {
           <Route path="/statistiche" element={isEnabled('statistiche') ? <StatisticheSala /> : <DisabledModule name="Statistiche Sala" />} />
           <Route path="/turni" element={isEnabled('turni') ? <TurniPage /> : <DisabledModule name="Turni" />} />
           <Route path="/analisi" element={<InsightPage />} />
+          <Route path="/commercialista" element={<CommercialistaPage />} />
           <Route path="/stato-dati" element={<StatoDati />} />
           <Route path="/importa-excel" element={<ImportExcel />} />
           <Route path="/impostazioni" element={<Settings />} />

@@ -96,6 +96,7 @@ const NAV_GROUPS = [
     defaultOpen: false,
     items: [
       { id: 'bilanci',        path: '/bilanci',                     icon: BookOpen,          label: 'Panoramica',         desc: 'Bilanci depositati per anno', alwaysEnabled: true, exact: true },
+      { id: 'commercialista', path: '/commercialista',              icon: Scale,             label: 'Commercialista',     desc: 'Notule, acconti e conto aperto', alwaysEnabled: true },
       { id: 'bilanci_ce',     path: '/bilanci/conto-economico',     icon: Scale,             label: 'Conto Economico',    desc: 'Riclassificato + confronto YoY', alwaysEnabled: true },
       { id: 'bilanci_sp',     path: '/bilanci/stato-patrimoniale',  icon: Landmark,          label: 'Stato Patrimoniale', desc: 'Attivo, passivo, patrimonio netto', alwaysEnabled: true },
       { id: 'bilanci_ric',    path: '/bilanci/riconciliazione',     icon: GitCompareArrows,  label: 'Bilancio vs CRM',    desc: 'Scostamento civilistico ↔ gestionale', alwaysEnabled: true },
