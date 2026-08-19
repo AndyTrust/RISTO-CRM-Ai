@@ -4801,3 +4801,42 @@ export default {
   calcBonusTeam, calcBonusIndividuale,
   verificaApi,
 }
+
+// ── Analisi precalcolate (crm_insight) ───────────────────────────────────────
+// La pagina Analisi legge soltanto qui: le schede le scrive un agente che gira
+// per conto suo con l'abbonamento Claude, non il browser. Nessuna chiave API
+// nel client, nessuna chiamata esterna a ogni apertura della pagina.
+export const insightApi = {
+  // Solo l'ultima versione di ogni analisi (la vista fa il distinct on slug).
+  correnti: async ({ categoria, sede, severita } = {}) => {
+    let q = supabase.from('v_crm_insight_corrente').select('*')
+    if (categoria) q = q.eq('categoria', categoria)
+    if (sede === 'gruppo') q = q.is('sede', null)
+    else if (sede)        q = q.eq('sede', sede)
+    if (severita) q = q.eq('severita', severita)
+    // Ordine di lettura: prima i critici, poi l'ordine deciso da chi le scrive.
+    const { data, error } = await q
+      .order('categoria', { ascending: true })
+      .order('ordine', { ascending: true })
+      .limit(500)
+    if (error) throw error
+    return data ?? []
+  },
+
+  // Lo storico di una singola analisi: serve a vedere come si e' mosso un numero.
+  storico: async (slug, limite = 30) => {
+    const { data, error } = await supabase
+      .from('crm_insight').select('*')
+      .eq('slug', slug)
+      .order('generato_il', { ascending: false })
+      .limit(limite)
+    if (error) throw error
+    return data ?? []
+  },
+
+  stato: async () => {
+    const { data, error } = await supabase.from('v_crm_insight_stato').select('*')
+    if (error) throw error
+    return data ?? []
+  },
+}

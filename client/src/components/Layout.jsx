@@ -7,7 +7,7 @@ import {
   BarChart2, Lock, Wallet, UtensilsCrossed, CalendarDays,
   ChevronDown, Tag, MapPin, Archive, Brain, Cloud, Database, Award, BarChart3, Activity, Coins, Star, MessageSquare,
   GitMerge, BookOpen, Scale, Landmark, GitCompareArrows, Percent, Package, Gauge, UserX, ShieldCheck,
-  FileSpreadsheet
+  FileSpreadsheet, Sparkles
 } from 'lucide-react'
 import { data as dataApi } from '../api/client'
 
@@ -20,6 +20,7 @@ const NAV_GROUPS = [
     defaultOpen: true,
     items: [
       { id: 'dashboard',    path: '/dashboard',    icon: LayoutDashboard, label: 'Dashboard',       desc: 'KPI sintetici e andamento sedi' },
+      { id: 'analisi',      path: '/analisi',      icon: Sparkles,        label: 'Analisi',         desc: 'Cosa dicono i dati, letto e spiegato', alwaysEnabled: true },
       { id: 'stato_dati',   path: '/stato-dati',   icon: Activity,        label: 'Stato Dati',      desc: 'Semafori salute dati 🟢🟡🔴', alwaysEnabled: true },
       { id: 'import_excel', path: '/importa-excel', icon: FileSpreadsheet, label: 'Import Excel',    desc: 'Foglio GIORNALIERA dell\'amministrazione', alwaysEnabled: true },
     ]
