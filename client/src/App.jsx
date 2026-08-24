@@ -81,6 +81,7 @@ import InsightPage from './pages/InsightPage'
 import CommercialistaPage from './pages/CommercialistaPage'
 import F24Page from './pages/F24Page'
 import Scadenzario from './pages/Scadenzario'
+import RatePiani from './pages/RatePiani'
 import { modules as modulesApi, crmConfig } from './api/client'
 
 export const ModulesContext = React.createContext({})
@@ -187,6 +188,8 @@ export default function App() {
           <Route path="/f24" element={<F24Page />} />
           {/* Scadenzario: fatture aperte + costi fissi pianificati */}
           <Route path="/scadenzario" element={<Scadenzario />} />
+          {/* Rate & Piani: le scadenze certe, staccate dal resto dello scadenzario */}
+          <Route path="/rate-piani" element={<RatePiani />} />
           <Route path="/stato-dati" element={<StatoDati />} />
           <Route path="/importa-excel" element={<ImportExcel />} />
           <Route path="/impostazioni" element={<Settings />} />

@@ -4962,7 +4962,8 @@ export const scadenzarioApi = {
   piani: async () => {
     const { data, error } = await supabase
       .from('v_rateali_piani').select('*')
-      .order('sede', { ascending: true }).order('piano', { ascending: true })
+      .order('chiuso', { ascending: true })
+      .order('sede', { ascending: true }).order('piano_key', { ascending: true })
     if (error) throw error
     return data ?? []
   },
@@ -4970,7 +4971,7 @@ export const scadenzarioApi = {
   // Tutte le rate, anche quelle senza data: servono per far vedere quanto manca ancora.
   rate: async () => {
     const { data, error } = await supabase
-      .from('rateali').select('sede,piano,piano_key,n_rata,scadenza,importo')
+      .from('v_rateali_rate').select('*')
       .order('piano_key', { ascending: true }).order('n_rata', { ascending: true })
     if (error) throw error
     return data ?? []
@@ -4983,6 +4984,46 @@ export const scadenzarioApi = {
       .select('id,sede,fornitore,documento,data_documento,importo,pagato,data_pagamento,metodo,categoria,crm_stato,crm_totale,crm_pagato,esito')
       .neq('esito', 'allineata')
       .order('importo', { ascending: false })
+    if (error) throw error
+    return data ?? []
+  },
+
+  // ---- Modifiche ---------------------------------------------------------
+  // Il sito non puo' scrivere sul disco di nessuno: la RPC aggiorna il CRM e
+  // accoda la cella da riscrivere nel workbook. Poi APPLICA_AL_FOGLIO.bat sul
+  // PC svuota la coda. Finche' la coda non e' vuota, foglio e CRM divergono.
+  segnaFatturaPagata: async ({ fatturaId, pagato, data = null, metodo = null, autore = null }) => {
+    const { data: out, error } = await supabase.rpc('segna_fattura_pagata', {
+      p_fattura_id: fatturaId, p_pagato: pagato, p_data: data, p_metodo: metodo, p_autore: autore,
+    })
+    if (error) throw error
+    return out
+  },
+
+  segnaRata: async ({ rataId, pagata = null, scadenza = null, importo = null, dataPagamento = null, autore = null }) => {
+    const { data, error } = await supabase.rpc('segna_rata', {
+      p_rata_id: rataId, p_pagata: pagata, p_scadenza: scadenza,
+      p_importo: importo, p_data_pagamento: dataPagamento, p_autore: autore,
+    })
+    if (error) throw error
+    return data
+  },
+
+  segnaPianoChiuso: async ({ pianoKey, chiuso, nota = null }) => {
+    const { data, error } = await supabase.rpc('segna_piano_chiuso', {
+      p_piano_key: pianoKey, p_chiuso: chiuso, p_nota: nota,
+    })
+    if (error) throw error
+    return data
+  },
+
+  // Che cosa aspetta ancora di essere scritto nei file Excel.
+  codaFoglio: async () => {
+    const { data, error } = await supabase
+      .from('modifiche_foglio')
+      .select('id,creato_il,stato,tipo,sede,foglio,descrizione,campo,valore_vecchio,valore_nuovo,applicato_il,esito')
+      .order('creato_il', { ascending: false })
+      .limit(200)
     if (error) throw error
     return data ?? []
   },

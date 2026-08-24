@@ -24,6 +24,15 @@
  * Per non contare due volte lo stesso denaro, le voci "Ratei cartelle e
  * finanziamenti" di costi_fissi — che erano la stima mensile di questi stessi
  * piani — sono escluse dallo scadenzario.
+ *
+ * Il dettaglio rata per rata sta in Costi & Margini → Rate & Piani: qui resta
+ * solo il totale, perche' in mezzo alle fatture una rata si perde.
+ *
+ * MODIFICHE. Da qui si puo' segnare una fattura pagata. La RPC aggiorna la
+ * fattura, la riga corrispondente del registro del foglio, e accoda la cella
+ * PAGATO da riscrivere nel workbook: a scrivere il file ci pensa
+ * APPLICA_AL_FOGLIO.bat sul PC. Finche' la coda non e' vuota, su quelle celle
+ * il foglio dice ancora la cosa vecchia — ed e' scritto in cima alla pagina.
  */
 import React, { useEffect, useMemo, useState } from 'react'
 import {
@@ -32,7 +41,9 @@ import {
 import {
   CalendarClock, AlertTriangle, Building2, Wallet, RefreshCw, Info,
   ChevronDown, ChevronRight, Clock, TrendingUp, Landmark, GitCompareArrows,
+  Pencil, Save, X, FileSpreadsheet, ArrowRight,
 } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { scadenzarioApi } from '../api/supabase-client'
 import PageAssistant from '../components/PageAssistant'
 
@@ -97,12 +108,87 @@ function Sezione({ titolo, icona: Icona, sottotitolo, children, apertoDefault = 
   )
 }
 
+/** Il pannellino per segnare pagata una fattura, dentro l'elenco. */
+function ModificaSaldo({ riga, onChiudi, onSalvato }) {
+  const totale = Math.abs(parseFloat(riga.importo) || 0)
+  const [pagato, setPagato] = useState(totale.toFixed(2))
+  const [data, setData]     = useState(new Date().toISOString().slice(0, 10))
+  const [metodo, setMetodo] = useState('Unicredit')
+  const [busy, setBusy]     = useState(false)
+  const [err, setErr]       = useState(null)
+
+  const salva = async () => {
+    setBusy(true); setErr(null)
+    try {
+      const out = await scadenzarioApi.segnaFatturaPagata({
+        fatturaId: riga.chiave,
+        pagato: parseFloat(String(pagato).replace(',', '.')),
+        data, metodo, autore: 'CRM',
+      })
+      onSalvato(out)
+    } catch (e) { setErr(e.message || String(e)) } finally { setBusy(false) }
+  }
+
+  return (
+    <tr className="bg-gray-900/80">
+      <td colSpan={8} className="px-4 py-4">
+        <p className="text-sm text-white mb-3">
+          {riga.descrizione} · {riga.riferimento || 'senza numero'} · da pagare {eur(riga.importo)}
+        </p>
+        <div className="flex flex-wrap items-end gap-4">
+          <div>
+            <label className="block text-[11px] text-gray-400 mb-1">Importo pagato</label>
+            <input type="text" inputMode="decimal" value={pagato} onChange={e => setPagato(e.target.value)}
+              className="bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-sm text-white w-32 tabular-nums" />
+          </div>
+          <div className="flex gap-1 pb-0.5">
+            <button onClick={() => setPagato(totale.toFixed(2))}
+              className="px-3 py-1.5 rounded text-xs bg-gray-800 text-gray-300 hover:bg-gray-700">tutto</button>
+            <button onClick={() => setPagato('0.00')}
+              className="px-3 py-1.5 rounded text-xs bg-gray-800 text-gray-300 hover:bg-gray-700">niente</button>
+          </div>
+          <div>
+            <label className="block text-[11px] text-gray-400 mb-1">Pagata il</label>
+            <input type="date" value={data} onChange={e => setData(e.target.value)}
+              className="bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
+          </div>
+          <div>
+            <label className="block text-[11px] text-gray-400 mb-1">Con</label>
+            <select value={metodo} onChange={e => setMetodo(e.target.value)}
+              className="bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-sm text-white">
+              {['Unicredit','Carta','Contanti','Addebito conto','SumUp','PayPal','Sardex','Worldline','Premio'].map(m =>
+                <option key={m} value={m}>{m}</option>)}
+            </select>
+          </div>
+          <div className="flex gap-2 ml-auto">
+            <button onClick={salva} disabled={busy}
+              className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm px-4 py-1.5 rounded">
+              <Save size={14} /> {busy ? 'Salvo…' : 'Salva'}
+            </button>
+            <button onClick={onChiudi}
+              className="flex items-center gap-2 bg-gray-700 hover:bg-gray-600 text-white text-sm px-3 py-1.5 rounded">
+              <X size={14} /> Annulla
+            </button>
+          </div>
+        </div>
+        <p className="text-[11px] text-gray-500 mt-3">
+          Salvando si aggiorna la fattura nel CRM e si mette in coda la cella PAGATO da riscrivere nel foglio
+          dell'amministrazione. Il foglio cambia davvero solo quando qualcuno lancia APPLICA_AL_FOGLIO.bat sul PC.
+        </p>
+        {err && <p className="text-xs text-rose-300 mt-2">{err}</p>}
+      </td>
+    </tr>
+  )
+}
+
 export default function Scadenzario() {
   const [righe, setRighe] = useState([])
   const [piani, setPiani] = useState([])
   const [rate, setRate]   = useState([])
   const [ricon, setRicon] = useState([])
   const [riconTot, setRiconTot] = useState([])
+  const [coda, setCoda]   = useState([])
+  const [inModifica, setInModifica] = useState(null)
   const [busy, setBusy]   = useState(true)
   const [err, setErr]     = useState(null)
   const [sede, setSede]   = useState('Tutte')
@@ -118,8 +204,9 @@ export default function Scadenzario() {
       scadenzarioApi.rate(),
       scadenzarioApi.riconciliazione(),
       scadenzarioApi.riconciliazioneTotali(),
+      scadenzarioApi.codaFoglio(),
     ])
-      .then(([e, p, r, rc, rt]) => { setRighe(e); setPiani(p); setRate(r); setRicon(rc); setRiconTot(rt) })
+      .then(([e, p, r, rc, rt, cd]) => { setRighe(e); setPiani(p); setRate(r); setRicon(rc); setRiconTot(rt); setCoda(cd) })
       .catch(e => setErr(e.message || String(e)))
       .finally(() => setBusy(false))
   }, [])
@@ -189,13 +276,17 @@ export default function Scadenzario() {
     () => piani.filter(p => sede === 'Tutte' || p.sede === sede),
     [piani, sede])
 
+  const pianiAttivi = useMemo(() => pianiVisti.filter(p => !p.chiuso), [pianiVisti])
+  const inCoda = useMemo(() => coda.filter(c => c.stato === 'DA_APPLICARE'), [coda])
+
   const rateiTot = useMemo(() => {
     const n = a => a.reduce((s, x) => s + (parseFloat(x) || 0), 0)
+    const attivi = pianiVisti.filter(p => !p.chiuso)
     return {
-      residuoDatato:  n(pianiVisti.map(p => p.residuo_datato)),
-      residuoStimato: n(pianiVisti.map(p => p.residuo_stimato_non_datato)),
+      residuoDatato:  n(attivi.map(p => p.residuo_datato)),
+      residuoStimato: n(attivi.map(p => p.residuo_stimato_non_datato)),
       giaVersato:     n(pianiVisti.map(p => p.gia_versato)),
-      rateSenzaData:  pianiVisti.reduce((s, p) => s + (p.rate_senza_data || 0), 0),
+      rateSenzaData:  attivi.reduce((s, p) => s + (p.rate_senza_data || 0), 0),
     }
   }, [pianiVisti])
 
@@ -264,6 +355,20 @@ export default function Scadenzario() {
 
         {err && (
           <div className="bg-rose-900/20 border border-rose-700/50 rounded-lg px-4 py-3 text-sm text-rose-200">{err}</div>
+        )}
+
+        {inCoda.length > 0 && (
+          <div className="bg-blue-900/20 border border-blue-700/50 rounded-xl px-5 py-4">
+            <p className="text-sm font-semibold text-blue-200 flex items-center gap-2 mb-1">
+              <FileSpreadsheet size={15} /> {inCoda.length} {inCoda.length === 1 ? 'cella aspetta' : 'celle aspettano'} di essere scritte nei file Excel
+            </p>
+            <p className="text-[13px] text-blue-100/80 leading-relaxed">
+              Le modifiche fatte qui valgono gia' sul CRM. Per portarle anche dentro Mameli26.xlsx e
+              Predda_Niedda26.xlsx serve un doppio clic su <span className="font-mono">APPLICA_AL_FOGLIO.bat</span>,
+              nella cartella CRM-App sul PC dell'amministrazione. Finche' non lo si lancia, su quelle celle il
+              foglio dice ancora la cosa vecchia.
+            </p>
+          </div>
         )}
 
         {/* L'avvertimento sui termini di pagamento */}
@@ -361,12 +466,11 @@ export default function Scadenzario() {
           </Sezione>
         )}
 
-        {/* RATEI — i piani di rateizzazione della scheda RATEALI */}
+        {/* RATEI — sintesi; il dettaglio sta nella pagina dedicata */}
         {pianiVisti.length > 0 && (
           <Sezione titolo="Ratei e piani di rateizzazione" icona={Landmark}
-                   sottotitolo={`${pianiVisti.length} piani · ${eur0(rateiTot.residuoDatato)} gia' calendarizzati`}>
-
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-4">
+                   sottotitolo={`${pianiAttivi.length} piani attivi · ${eur0(rateiTot.residuoDatato)} a calendario`}>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
               <div className="bg-gray-900/50 border border-gray-700 rounded-lg p-4">
                 <p className="text-xs text-gray-400">Rate future con data certa</p>
                 <p className="text-2xl font-bold text-white tabular-nums mt-1">{eur(rateiTot.residuoDatato)}</p>
@@ -374,7 +478,9 @@ export default function Scadenzario() {
               </div>
               <div className="bg-gray-900/50 border border-gray-700 rounded-lg p-4">
                 <p className="text-xs text-gray-400">Rate previste ma senza data</p>
-                <p className="text-2xl font-bold text-amber-300 tabular-nums mt-1">≈ {eur(rateiTot.residuoStimato)}</p>
+                <p className="text-2xl font-bold text-amber-300 tabular-nums mt-1">
+                  {rateiTot.residuoStimato ? '≈ ' + eur(rateiTot.residuoStimato) : '—'}
+                </p>
                 <p className="text-[11px] text-gray-500 mt-1">
                   {rateiTot.rateSenzaData} rate elencate sul piano ma non ancora compilate
                 </p>
@@ -382,74 +488,15 @@ export default function Scadenzario() {
               <div className="bg-gray-900/50 border border-gray-700 rounded-lg p-4">
                 <p className="text-xs text-gray-400">Gia' versato sui piani</p>
                 <p className="text-2xl font-bold text-emerald-300 tabular-nums mt-1">{eur(rateiTot.giaVersato)}</p>
-                <p className="text-[11px] text-gray-500 mt-1">somma delle rate con scadenza passata</p>
+                <p className="text-[11px] text-gray-500 mt-1">somma delle rate risultate pagate</p>
               </div>
-            </div>
-
-            {rateiTot.rateSenzaData > 0 && (
-              <div className="bg-amber-900/20 border border-amber-700/50 rounded-lg px-4 py-3 mb-4">
-                <p className="text-[13px] text-amber-100/90 leading-relaxed">
-                  <strong>Il conto vero e' piu' alto di quello scritto qui sopra a sinistra.</strong> Sul foglio
-                  RATEALI molti piani hanno le rate numerate fino in fondo ma la scadenza e l'importo compilati
-                  solo per le prime: {rateiTot.rateSenzaData} rate esistono come impegno e non hanno una data.
-                  La stima a fianco le valorizza alla rata di regime del piano — e' un ordine di grandezza,
-                  non un impegno certo. Basta completare le colonne Scadenza e Importo sul foglio perche'
-                  diventino esatte.
-                </p>
-              </div>
-            )}
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-[11px] uppercase tracking-wider text-gray-500 border-b border-gray-700">
-                    <th className="py-2 pr-3">Piano</th>
-                    <th className="py-2 px-3">Sede</th>
-                    <th className="py-2 px-3 text-right">Rate</th>
-                    <th className="py-2 px-3 text-right">Rata</th>
-                    <th className="py-2 px-3">Prossima</th>
-                    <th className="py-2 px-3 text-right">Residuo a calendario</th>
-                    <th className="py-2 pl-3 text-right">Residuo stimato</th>
-                  </tr>
-                </thead>
-                <tbody className="text-gray-300">
-                  {pianiVisti.map(p => (
-                    <tr key={p.piano_key} className="border-b border-gray-800">
-                      <td className="py-2 pr-3 text-white font-medium">{p.piano}</td>
-                      <td className="py-2 px-3 text-xs text-gray-400">
-                        {p.sede === 'MA' ? 'Mameli' : 'Predda Niedda'}
-                      </td>
-                      <td className="py-2 px-3 text-right tabular-nums text-xs text-gray-400 whitespace-nowrap">
-                        {p.rate_scadute}/{p.rate_totali}
-                        {p.rate_senza_data > 0 && (
-                          <span className="text-amber-400 ml-1" title={`${p.rate_senza_data} rate senza data`}>
-                            (+{p.rate_senza_data} da datare)
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-2 px-3 text-right tabular-nums text-xs text-gray-400">{eur(p.rata_tipo)}</td>
-                      <td className="py-2 px-3 text-xs whitespace-nowrap">
-                        {p.prossima_scadenza
-                          ? <span className="text-white">{dataIt(p.prossima_scadenza)}</span>
-                          : <span className="text-amber-400">da definire</span>}
-                      </td>
-                      <td className="py-2 px-3 text-right tabular-nums font-semibold text-white">
-                        {p.residuo_datato ? eur(p.residuo_datato) : '—'}
-                      </td>
-                      <td className="py-2 pl-3 text-right tabular-nums text-amber-300">
-                        {parseFloat(p.residuo_stimato_non_datato) > 0 ? '≈ ' + eur(p.residuo_stimato_non_datato) : '—'}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
             </div>
 
             {prossimeRate.length > 0 && (
               <>
-                <p className="text-xs font-semibold text-gray-300 mt-5 mb-2">Le prossime rate, in ordine di scadenza</p>
+                <p className="text-xs font-semibold text-gray-300 mt-5 mb-2">Le prossime rate</p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                  {prossimeRate.map(r => (
+                  {prossimeRate.slice(0, 6).map(r => (
                     <div key={r.chiave} className="bg-gray-900/50 border border-gray-700 rounded-lg px-3 py-2 flex items-center justify-between">
                       <div className="min-w-0">
                         <p className="text-xs text-white truncate">{r.descrizione}</p>
@@ -463,6 +510,12 @@ export default function Scadenzario() {
                 </div>
               </>
             )}
+
+            <Link to="/rate-piani"
+              className="mt-4 inline-flex items-center gap-2 text-sm text-blue-300 hover:text-blue-200">
+              Apri Rate &amp; Piani — calendario, avanzamento di ogni piano, rate da datare
+              <ArrowRight size={14} />
+            </Link>
           </Sezione>
         )}
 
@@ -592,15 +645,21 @@ export default function Scadenzario() {
                   <th className="py-2 px-3">Sede</th>
                   <th className="py-2 px-3">Data</th>
                   <th className="py-2 px-3 text-right">Anzianita'</th>
-                  <th className="py-2 pl-3 text-right">Importo</th>
+                  <th className="py-2 px-3 text-right">Importo</th>
+                  <th className="py-2 pl-3 text-right w-24"></th>
                 </tr>
               </thead>
               <tbody className="text-gray-300">
                 {elenco.map(r => {
                   const fatt = r.origine === 'fattura'
                   const fa = fasciaDi(r.giorni_anzianita)
+                  if (inModifica === r.chiave) {
+                    return <ModificaSaldo key={r.chiave} riga={r}
+                             onChiudi={() => setInModifica(null)}
+                             onSalvato={() => { setInModifica(null); carica() }} />
+                  }
                   return (
-                    <tr key={r.chiave} className="border-b border-gray-800/60">
+                    <tr key={r.chiave} className="border-b border-gray-800/60 group">
                       <td className="py-2 pr-3 whitespace-nowrap">
                         <span className={`text-[11px] px-2 py-0.5 rounded ${
                           fatt ? 'bg-purple-900/40 text-purple-300' : 'bg-slate-700/50 text-slate-300'}`}>
@@ -621,9 +680,23 @@ export default function Scadenzario() {
                           style={{ color: fatt ? fa.col : '#6b7280' }}>
                         {fatt ? `${r.giorni_anzianita} gg` : (r.stato === 'PREVISTO' ? 'previsto' : '—')}
                       </td>
-                      <td className={`py-2 pl-3 text-right tabular-nums font-semibold whitespace-nowrap ${
+                      <td className={`py-2 px-3 text-right tabular-nums font-semibold whitespace-nowrap ${
                         parseFloat(r.importo) < 0 ? 'text-cyan-300' : 'text-white'}`}>
                         {eur(r.importo)}
+                      </td>
+                      <td className="py-2 pl-3 text-right">
+                        {fatt && (
+                          <button onClick={() => setInModifica(r.chiave)}
+                            className="opacity-0 group-hover:opacity-100 focus:opacity-100 transition inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 whitespace-nowrap">
+                            <Pencil size={11} /> saldo
+                          </button>
+                        )}
+                        {r.origine === 'rateale' && (
+                          <Link to="/rate-piani"
+                            className="opacity-0 group-hover:opacity-100 focus:opacity-100 transition inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 whitespace-nowrap">
+                            <Pencil size={11} /> rata
+                          </Link>
+                        )}
                       </td>
                     </tr>
                   )
@@ -633,6 +706,8 @@ export default function Scadenzario() {
           </div>
           <p className="text-[11px] text-gray-600 mt-3">
             * la data e' quella della fattura, non la scadenza: i termini di pagamento non sono a sistema.
+            Passando col mouse su una riga compare il pulsante per segnare il saldo: aggiorna il CRM e mette in
+            coda la cella PAGATO da riscrivere nel foglio.
           </p>
         </Sezione>
 
