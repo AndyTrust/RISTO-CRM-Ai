@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import supabase from '../supabase'
+import { svuotaAllAggiornamento } from '../lib/aggiornamento'
 
 /**
  * useCoperturaTavoli — da quando esiste davvero `statistiche_tavoli`.
@@ -20,6 +21,8 @@ import supabase from '../supabase'
  * @returns {{ da: string|null, a: string|null, caricamento: boolean, errore: string|null }}
  */
 let cache = null
+// Il periodo coperto si allunga a ogni caricamento di statistiche_tavoli.
+svuotaAllAggiornamento(() => { cache = null })
 
 export function useCoperturaTavoli() {
   const [stato, setStato] = useState(() =>

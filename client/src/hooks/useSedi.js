@@ -5,6 +5,7 @@
  */
 import { useState, useEffect } from 'react'
 import supabase from '../supabase'
+import { svuotaAllAggiornamento } from '../lib/aggiornamento'
 
 let _cache = null
 let _fetching = false
@@ -55,6 +56,12 @@ export function invalidateSediCache() {
   _cache = null
   _fetching = false
 }
+
+// L'elenco sedi e' in cache di modulo: sopravvive al rimontaggio delle pagine.
+// Se qualcuno aggiunge una sede dal pannello admin mentre la scheda e' aperta,
+// senza questo la tendina continuerebbe a mostrare le vecchie.
+svuotaAllAggiornamento(invalidateSediCache)
+
 
 /**
  * Hook principale.

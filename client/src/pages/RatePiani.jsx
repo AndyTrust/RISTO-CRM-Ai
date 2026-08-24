@@ -105,7 +105,9 @@ function ModificaRata({ rata, onChiudi, onSalvato }) {
   }
 
   return (
-    <tr className="bg-gray-900/80">
+    // data-modifica-in-corso: vedi lib/aggiornamento.jsx — blocca il rimontaggio
+    // automatico mentre l'editor della rata e' aperto.
+    <tr className="bg-gray-900/80" data-modifica-in-corso="">
       <td colSpan={7} className="px-4 py-4">
         <div className="flex flex-wrap items-end gap-4">
           <div>

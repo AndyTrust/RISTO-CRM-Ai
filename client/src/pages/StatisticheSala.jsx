@@ -13,6 +13,7 @@ import { useOrdinamento, IconaOrdine, BottoneCsv, NotaCopertura } from '../lib/t
 import { useCoperturaTavoli } from '../hooks/useCoperturaTavoli'
 import PageStatsWidget from '../components/PageStatsWidget'
 import { useTabParam } from '../hooks/useTabParam'
+import { svuotaAllAggiornamento } from '../lib/aggiornamento'
 
 const COLORS = ['#6366f1', '#3b82f6', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#ef4444', '#14b8a6']
 const SEDE_LABEL = { MA: 'Mameli (MA)', PN: 'Predda Niedda (PN)' }
@@ -500,6 +501,7 @@ function TabTurni({ location, fromDate, toDate }) {
 // Copertura della vista chiesta ai dati (stessa filosofia di useCoperturaTavoli):
 // niente date cablate, cache di modulo perché non cambia durante la sessione.
 let cacheCoperturaAffluenza = null
+svuotaAllAggiornamento(() => { cacheCoperturaAffluenza = null })
 
 const ORDINE_DOW = [1, 2, 3, 4, 5, 6, 0] // Lun → Dom
 

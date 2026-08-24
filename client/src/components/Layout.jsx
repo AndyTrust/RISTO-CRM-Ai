@@ -1,4 +1,4 @@
-import React, { useContext, useState, useEffect, useRef } from 'react'
+import React, { useContext, useState, useEffect } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { ModulesContext } from '../App'
 import {
@@ -9,7 +9,7 @@ import {
   GitMerge, BookOpen, Scale, Landmark, GitCompareArrows, Percent, Package, Gauge, UserX, ShieldCheck,
   FileSpreadsheet, Sparkles
 } from 'lucide-react'
-import { data as dataApi } from '../api/client'
+import { useAggiornamento } from '../lib/aggiornamento'
 
 // ── Struttura navigazione a due livelli: sezioni → sottopagine con descrizione ───
 // Riorganizzazione 2026-06-19 — sequenza logica: panoramica → operativo → personale → sala → BI → costi → admin
@@ -250,27 +250,34 @@ function NavGroup({ group, collapsed, isEnabled }) {
 export default function Layout({ children }) {
   const { modules, isEnabled } = useContext(ModulesContext)
   const [collapsed, setCollapsed] = useState(false)
-  const [syncing, setSyncing] = useState(false)
-  const [syncMsg, setSyncMsg] = useState(null)
-  // Timer del messaggio di sync: va ripulito a ogni nuovo sync e all'unmount
-  const syncMsgTimer = useRef(null)
-  useEffect(() => () => clearTimeout(syncMsgTimer.current), [])
+  // Il pulsante qui sotto chiamava dataApi.sync(), che da quando il CRM legge
+  // da Supabase non sincronizza piu' niente: contava le righe di cinque tabelle
+  // e rispondeva "N file aggiornati" senza che una sola query della pagina
+  // venisse rifatta. Ora fa la cosa che dice: alza la versione globale, la
+  // pagina si rimonta e rilegge tutto. Vedi lib/aggiornamento.jsx.
+  const { aggiorna, aggiornatoAlle, inCorso } = useAggiornamento()
 
-  const handleSync = async () => {
-    setSyncing(true)
-    setSyncMsg(null)
-    try {
-      const r = await dataApi.sync()
-      const n = r.results?.filter(x => !x.skipped).length || 0
-      setSyncMsg(`✓ ${n} file aggiornati`)
-    } catch (e) {
-      setSyncMsg(`⚠ ${e.error || 'Errore sync'}`)
-    } finally {
-      setSyncing(false)
-      clearTimeout(syncMsgTimer.current)
-      syncMsgTimer.current = setTimeout(() => setSyncMsg(null), 4000)
-    }
-  }
+  // Rinfresca l'etichetta "aggiornato alle" ogni minuto anche senza eventi,
+  // cosi' il "3 min fa" non resta congelato.
+  const [, setTic] = useState(0)
+  useEffect(() => {
+    const t = setInterval(() => setTic(n => n + 1), 60 * 1000)
+    return () => clearInterval(t)
+  }, [])
+
+  const daQuanto = (() => {
+    if (!aggiornatoAlle) return null
+    const min = Math.floor((Date.now() - aggiornatoAlle.getTime()) / 60000)
+    if (min < 1) return 'adesso'
+    if (min === 1) return '1 min fa'
+    if (min < 60) return `${min} min fa`
+    const ore = Math.floor(min / 60)
+    return ore === 1 ? "1 ora fa" : `${ore} ore fa`
+  })()
+
+  const oraAggiornamento = aggiornatoAlle
+    ? aggiornatoAlle.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })
+    : '--:--'
 
   return (
     <div className="flex h-screen overflow-hidden bg-gray-50">
@@ -315,21 +322,23 @@ export default function Layout({ children }) {
           </div>
         )}
 
-        {/* Sync button */}
+        {/* Aggiornamento dati — stato sempre visibile + ricarica manuale */}
         <div className="px-2 pb-3 border-t border-white/10 pt-2">
           <button
-            onClick={handleSync}
-            disabled={syncing}
-            title="Sincronizza dati"
+            onClick={aggiorna}
+            disabled={inCorso}
+            title={`Dati letti alle ${oraAggiornamento}. Clicca per rileggerli adesso.`}
             className={`flex items-center gap-2 w-full px-2.5 py-2 rounded-lg text-xs font-medium transition-colors ${
-              syncing ? 'bg-white/5 text-gray-500' : 'bg-white/8 text-gray-300 hover:bg-white/15 hover:text-white'
+              inCorso ? 'bg-white/5 text-gray-500' : 'bg-white/8 text-gray-300 hover:bg-white/15 hover:text-white'
             } ${collapsed ? 'justify-center' : ''}`}
           >
-            <RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />
-            {!collapsed && <span>{syncing ? 'Sync in corso...' : 'Aggiorna dati'}</span>}
+            <RefreshCw size={13} className={inCorso ? 'animate-spin' : ''} />
+            {!collapsed && <span>{inCorso ? 'Aggiornamento...' : 'Aggiorna dati'}</span>}
           </button>
-          {!collapsed && syncMsg && (
-            <p className="text-[10px] text-gray-400 mt-1 px-1">{syncMsg}</p>
+          {!collapsed && (
+            <p className="text-[10px] text-gray-500 mt-1 px-1">
+              Dati delle {oraAggiornamento}{daQuanto ? ` · ${daQuanto}` : ''}
+            </p>
           )}
         </div>
 

@@ -83,14 +83,30 @@ import F24Page from './pages/F24Page'
 import Scadenzario from './pages/Scadenzario'
 import RatePiani from './pages/RatePiani'
 import { modules as modulesApi, crmConfig } from './api/client'
+import { ProviderAggiornamento, useAggiornamento } from './lib/aggiornamento'
 
 export const ModulesContext = React.createContext({})
 
+// Il provider sta SOPRA tutto il resto perche' anche il caricamento dei moduli
+// e del flag di setup deve rifarsi quando si torna sul CRM: se qualcuno abilita
+// un modulo dal pannello admin, la scheda gia' aperta deve accorgersene.
 export default function App() {
+  return (
+    <ProviderAggiornamento>
+      <AppInterno />
+    </ProviderAggiornamento>
+  )
+}
+
+function AppInterno() {
+  const { versione } = useAggiornamento()
   const [modules, setModules] = useState([])
   const [loading, setLoading] = useState(true)
   const [setupCompleted, setSetupCompleted] = useState(null)
 
+  // [versione] e non []: a ogni aggiornamento globale si rileggono anche moduli
+  // e setup. `loading` viene spento e mai piu' riacceso, altrimenti ogni ritorno
+  // sulla scheda farebbe lampeggiare la schermata di avvio col logo.
   useEffect(() => {
     Promise.all([
       modulesApi.getAll(),
@@ -104,7 +120,7 @@ export default function App() {
       setSetupCompleted(notDone ? false : true)
     }).catch(console.error)
       .finally(() => setLoading(false))
-  }, [])
+  }, [versione])
 
   const toggleModule = async (id) => {
     // Ottimisticamente aggiorna UI
@@ -152,7 +168,10 @@ export default function App() {
     <ErrorBoundary>
     <ModulesContext.Provider value={{ modules, toggleModule, saveModules, isEnabled }}>
       <Layout>
-        <Routes>
+        {/* key={versione}: alzare il contatore smonta la pagina corrente e ne
+            monta una nuova, che rifa' le sue query. E' il modo per aggiornare
+            tutte le pagine senza doverle modificare una per una. */}
+        <Routes key={versione}>
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/setup" element={<SetupWizard onComplete={() => setSetupCompleted(true)} />} />
           <Route path="/dashboard" element={isEnabled('dashboard') ? <Dashboard /> : <DisabledModule name="Dashboard" />} />

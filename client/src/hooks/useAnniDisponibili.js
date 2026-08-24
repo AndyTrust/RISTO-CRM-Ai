@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import supabase from '../supabase'
+import { svuotaAllAggiornamento } from '../lib/aggiornamento'
 
 /**
  * useAnniDisponibili — elenco degli anni REALMENTE presenti in una tabella.
@@ -25,6 +26,9 @@ import supabase from '../supabase'
  * @returns {{ anni: number[], caricamento: boolean, errore: string|null }}
  */
 const cache = new Map()
+// Gli anni disponibili cambiano quando si carica un anno nuovo: la cache va
+// svuotata all'aggiornamento globale, altrimenti i filtri restano indietro.
+svuotaAllAggiornamento(() => cache.clear())
 
 export function useAnniDisponibili(tabella, colonna, opts = {}) {
   const { tipo = 'data', fallback = null } = opts

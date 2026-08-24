@@ -130,7 +130,9 @@ function ModificaSaldo({ riga, onChiudi, onSalvato }) {
   }
 
   return (
-    <tr className="bg-gray-900/80">
+    // data-modifica-in-corso: finche' questa riga e' aperta l'aggiornamento
+    // automatico non rimonta la pagina, altrimenti quanto digitato sparirebbe.
+    <tr className="bg-gray-900/80" data-modifica-in-corso="">
       <td colSpan={8} className="px-4 py-4">
         <p className="text-sm text-white mb-3">
           {riga.descrizione} · {riga.riferimento || 'senza numero'} · da pagare {eur(riga.importo)}
