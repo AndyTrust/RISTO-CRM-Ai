@@ -2300,7 +2300,7 @@ export const bustePaga = {
     // le 1000 righe, PostgREST troncava in silenzio → costo personale sottostimato
     const build = () => {
       let q = supabase.from('buste_paga')
-        .select('id,sede,anno,mese,netto,costo_azienda,paga_base,totale_competenze,employee_code')
+        .select('id,sede,anno,mese,netto,costo_azienda,paga_base,totale_competenze,employee_code,employee_name')
       if (p.anno) q = q.eq('anno', parseInt(p.anno))
       const sedeFiltro = locationToSede(p.sede || p.location)
       if (sedeFiltro) q = q.eq('sede', sedeFiltro)
@@ -2317,7 +2317,10 @@ export const bustePaga = {
       // Cascata costo azienda: reale → lordo×1.44 → paga_base×1.47 → netto×1.79
       const costoAz = stimaCostoAzienda(r)
       map[key].totale_costo += costoAz
-      if (r.employee_code) map[key].emps.add(r.employee_code)
+      // Conta la persona anche quando employee_code manca: l'identita' di
+      // ripiego e' il nome del cedolino, altrimenti il mese sparisce dal conteggio.
+      const chiaveDip = r.employee_code || r.employee_name
+      if (chiaveDip) map[key].emps.add(chiaveDip)
     }
     return Object.values(map).map(r => ({
       sede: r.sede, location: r.location, anno: r.anno, mese: r.mese,
@@ -4882,6 +4885,57 @@ export const commercialistaApi = {
       .from('notule_righe').select('*')
       .eq('notula_id', notula_id)
       .order('riga_ordine', { ascending: true })
+    if (error) throw error
+    return data ?? []
+  },
+}
+
+// ── F24 — deleghe di versamento ──────────────────────────────────────────────
+//
+// REGOLA CONTABILE DA NON PERDERE MAI DI VISTA:
+// gli importi F24 NON vanno sommati al costo del personale. I contributi del
+// DM10 sono ESATTAMENTE gli stessi soldi che stanno gia' nei cedolini
+// (buste_paga): l'F24 e' il mezzo con cui si versano, non un costo in piu'.
+// Le due fonti si RICONCILIANO — v_f24_riconciliazione_contributi — e basta.
+//
+// Fonte: PDF "Modello F24 in scadenza al GGMMAAAA" prodotti dallo studio.
+// La data nel nome del file e' la SCADENZA: la competenza e' il mese PRIMA
+// (F24 del 16/02/2026 = gennaio 2026). Il campo mese_competenza gia' lo applica.
+export const f24Api = {
+  quadro: async () => {
+    const [deleghe, righe, codici, mensile, perCodice, avvisi, riconc, copertura] = await Promise.all([
+      supabase.from('f24_deleghe').select('*').order('scadenza', { ascending: true }).order('pagina', { ascending: true }),
+      supabase.from('f24_righe').select('*'),
+      supabase.from('f24_codici').select('*').order('sezione').order('codice'),
+      supabase.from('v_f24_mensile').select('*').order('mese_competenza', { ascending: true }),
+      supabase.from('v_f24_per_codice').select('*').order('mese_competenza', { ascending: true }),
+      supabase.from('v_f24_avvisi_bonari').select('*').order('totale_versato', { ascending: false }),
+      supabase.from('v_f24_riconciliazione_contributi').select('*').order('mese_competenza', { ascending: true }),
+      supabase.from('v_f24_copertura').select('*').order('mese_competenza', { ascending: true }),
+    ])
+    // Una vista che fallisce non deve far sparire tutta la pagina: solo le
+    // deleghe sono indispensabili, il resto degrada a sezione vuota.
+    for (const r of [deleghe, righe, codici, mensile, perCodice, avvisi, riconc, copertura]) {
+      if (r.error && r === deleghe) throw r.error
+      if (r.error) console.error('f24Api:', r.error)
+    }
+    return {
+      deleghe:    deleghe.data ?? [],
+      righe:      righe.data ?? [],
+      codici:     codici.data ?? [],
+      mensile:    mensile.data ?? [],
+      perCodice:  perCodice.data ?? [],
+      avvisi:     avvisi.data ?? [],
+      riconc:     riconc.data ?? [],
+      copertura:  copertura.data ?? [],
+    }
+  },
+
+  righeDelega: async (delega_id) => {
+    const { data, error } = await supabase
+      .from('f24_righe').select('*')
+      .eq('delega_id', delega_id)
+      .order('sezione', { ascending: true }).order('codice', { ascending: true })
     if (error) throw error
     return data ?? []
   },

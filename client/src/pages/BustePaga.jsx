@@ -164,14 +164,18 @@ function qualitaDato(c) {
   if (!c) return 'stima'
   if (c.note && c.note.startsWith('Stima ')) return 'previsione'
   if (c.note === 'stima_da_gennaio_2026') return 'stima'
-  if (c.file_name && c.totale_competenze) return 'certo'
-  if (c.totale_competenze) return 'parziale'
+  // Cedolino e LUL sono lo stesso documento: il Libro Unico del Lavoro E' la
+  // busta paga. Distinguerli faceva sembrare "parziale" un dato che e' certo.
+  // Unica discriminante: la lorda c'e' (dato reale) oppure no (stima).
+  if (c.totale_competenze) return 'certo'
   return 'stima'
 }
 
 const QUALITY = {
-  certo:      { label: 'Da PDF',     sym: '✓', cls: 'bg-emerald-900/40 text-emerald-300 border-emerald-700', dot: 'bg-emerald-400' },
-  parziale:   { label: 'Da LUL',    sym: '≈', cls: 'bg-yellow-900/40 text-yellow-300 border-yellow-700',   dot: 'bg-yellow-400' },
+  certo:      { label: 'Da cedolino', sym: '✓', cls: 'bg-emerald-900/40 text-emerald-300 border-emerald-700', dot: 'bg-emerald-400' },
+  // 'parziale' resta definito per retrocompatibilita' ma non viene piu' prodotto
+  // da qualitaDato(): cedolino PDF e LUL sono la stessa fonte.
+  parziale:   { label: 'Da cedolino', sym: '✓', cls: 'bg-emerald-900/40 text-emerald-300 border-emerald-700', dot: 'bg-emerald-400' },
   previsione: { label: 'Previsione', sym: '⚡', cls: 'bg-amber-900/40 text-amber-300 border-amber-700',     dot: 'bg-amber-400' },
   stima:      { label: 'Stima',      sym: '~', cls: 'bg-red-900/40 text-red-300 border-red-700',            dot: 'bg-red-400' },
 }
@@ -333,15 +337,9 @@ function SchedaDipendente({ emp, onClose, employeeRecord, reparti }) {
             <div className="flex items-center gap-2 bg-emerald-900/20 border border-emerald-800/40 rounded-lg px-3 py-2">
               <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
               <span className="text-xs text-emerald-300 font-medium">{stats.certi} certi</span>
-              <span className="text-xs text-gray-500">Da PDF individuale</span>
+              <span className="text-xs text-gray-500">Cedolino / LUL letto</span>
             </div>
-            {stats.parziali > 0 && (
-              <div className="flex items-center gap-2 bg-yellow-900/20 border border-yellow-800/40 rounded-lg px-3 py-2">
-                <span className="w-2 h-2 rounded-full bg-yellow-400"></span>
-                <span className="text-xs text-yellow-300 font-medium">{stats.parziali} parziali</span>
-                <span className="text-xs text-gray-500">Da LUL (lorda nota)</span>
-              </div>
-            )}
+
             {stats.stime > 0 && (
               <div className="flex items-center gap-2 bg-red-900/20 border border-red-800/40 rounded-lg px-3 py-2">
                 <span className="w-2 h-2 rounded-full bg-red-400"></span>
@@ -781,7 +779,15 @@ function RiepilogoTab({ anno, mese, sedeFilter, riepilogo }) {
   const kpis = useMemo(() => {
     const totNetto = filtered.reduce((s, r) => s + (r.totale_netto || 0), 0)
     const totCosto = filtered.reduce((s, r) => s + (r.totale_costo || 0), 0)
-    const nDip = Math.max(...filtered.map(r => r.n_dipendenti || 0), 0)
+    // Le righe arrivano gia' spezzate per sede: il massimo secco contava una
+    // sede sola. Si somma prima per mese (MA + PN) e poi si prende il picco.
+    const perMese = {}
+    for (const r of filtered) {
+      const k = `${r.anno}-${r.mese}`
+      perMese[k] = (perMese[k] || 0) + (r.n_dipendenti || 0)
+    }
+    const valoriMese = Object.values(perMese)
+    const nDip = valoriMese.length ? Math.max(...valoriMese) : 0
     return { totNetto, totCosto, nDip, media: nDip > 0 ? totNetto / nDip : 0 }
   }, [filtered])
 
@@ -986,13 +992,12 @@ function DipendentiTab({ cedolini, sedeFilter, anno, employees: employeesData = 
         <KpiCard label="Dipendenti" value={byEmployee.length} color="blue" icon={Users} sub={`anno ${anno}`}/>
         <KpiCard label="Full Time" value={globalStats.ft} color="green" icon={User2} sub="100% ore"/>
         <KpiCard label="Part Time" value={globalStats.pt} color="amber" icon={User2} sub="< 100% ore"/>
-        <KpiCard label="Cedolini Da PDF" value={`${globalStats.certiTot}/${globalStats.totCed}`} color="purple" icon={FileText} sub="fonte certa"/>
+        <KpiCard label="Cedolini letti" value={`${globalStats.certiTot}/${globalStats.totCed}`} color="purple" icon={FileText} sub="fonte certa (cedolino/LUL)"/>
       </div>
 
       {/* Legenda qualità */}
       <div className="bg-gray-800/40 border border-gray-700 rounded-lg px-4 py-3 flex flex-wrap gap-4 text-xs text-gray-400">
-        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-emerald-400"></span><strong className="text-emerald-300">Da PDF</strong> — netto e lorda estratti dal cedolino PDF individuale</span>
-        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-yellow-400"></span><strong className="text-yellow-300">Da LUL</strong> — lorda nota dal LUL mensile, ma senza file individuale tracciato</span>
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-emerald-400"></span><strong className="text-emerald-300">Da cedolino</strong> — netto e lorda letti dal cedolino (il LUL e' lo stesso documento)</span>
         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-amber-400"></span><strong className="text-amber-300">Previsione</strong> — media dei mesi precedenti dello stesso anno, in attesa del cedolino</span>
         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-red-400"></span><strong className="text-red-300">Stima</strong> — valore stimato (es. proiezione da gennaio), in attesa del PDF</span>
       </div>
@@ -1174,14 +1179,14 @@ function AnalisiTab({ cedolini, sedeFilter, anno }) {
 
   // Qualità dati
   const qualStats = useMemo(() => {
-    const certi    = filtered.filter(c => qualitaDato(c) === 'certo')
-    const parziali = filtered.filter(c => qualitaDato(c) === 'parziale')
-    const stime    = filtered.filter(c => qualitaDato(c) === 'stima')
+    const certi      = filtered.filter(c => qualitaDato(c) === 'certo')
+    const previsioni = filtered.filter(c => qualitaDato(c) === 'previsione')
+    const stime      = filtered.filter(c => qualitaDato(c) === 'stima')
     const sumNetto = arr => arr.reduce((s, c) => s + (parseFloat(c.netto) || 0), 0)
     return [
-      { label: 'Da PDF', n: certi.length,    netto: sumNetto(certi),    color: '#10b981' },
-      { label: 'Da LUL', n: parziali.length, netto: sumNetto(parziali), color: '#f59e0b' },
-      { label: 'Stima',  n: stime.length,    netto: sumNetto(stime),    color: '#ef4444' },
+      { label: 'Da cedolino', n: certi.length,      netto: sumNetto(certi),      color: '#10b981' },
+      { label: 'Previsione',  n: previsioni.length, netto: sumNetto(previsioni), color: '#f59e0b' },
+      { label: 'Stima',       n: stime.length,      netto: sumNetto(stime),      color: '#ef4444' },
     ]
   }, [filtered])
 
@@ -1224,8 +1229,7 @@ function AnalisiTab({ cedolini, sedeFilter, anno }) {
         </div>
         <div className="bg-gray-900/30 rounded-lg px-4 py-2 text-xs text-gray-400">
           <strong className="text-gray-300">Come leggere:</strong>{' '}
-          <span className="text-emerald-300">Da PDF</span> = cedolino individuale estratto (fonte certa) ·{' '}
-          <span className="text-yellow-300">Da LUL</span> = netto/lorda dal Libro Unico Lavoro ·{' '}
+          <span className="text-emerald-300">Da cedolino</span> = netto e lorda letti dal cedolino, che e' lo stesso documento del LUL (fonte certa) ·{' '}
           <span className="text-amber-300">Previsione</span> = media mesi precedenti, in attesa del cedolino ·{' '}
           <span className="text-red-300">Stima</span> = proiezione da inizio anno
         </div>

@@ -79,6 +79,7 @@ import Fabbisogno from './pages/Fabbisogno'
 import ControlloCosti from './pages/ControlloCosti'
 import InsightPage from './pages/InsightPage'
 import CommercialistaPage from './pages/CommercialistaPage'
+import F24Page from './pages/F24Page'
 import { modules as modulesApi, crmConfig } from './api/client'
 
 export const ModulesContext = React.createContext({})
@@ -179,6 +180,10 @@ export default function App() {
           <Route path="/turni" element={isEnabled('turni') ? <TurniPage /> : <DisabledModule name="Turni" />} />
           <Route path="/analisi" element={<InsightPage />} />
           <Route path="/commercialista" element={<CommercialistaPage />} />
+          {/* F24 — deleghe di versamento. Sta sotto PERSONALE perche' la meta'
+              degli importi sono contributi dei dipendenti, ma NON va mai sommato
+              al costo del personale: sono gli stessi soldi dei cedolini. */}
+          <Route path="/f24" element={<F24Page />} />
           <Route path="/stato-dati" element={<StatoDati />} />
           <Route path="/importa-excel" element={<ImportExcel />} />
           <Route path="/impostazioni" element={<Settings />} />

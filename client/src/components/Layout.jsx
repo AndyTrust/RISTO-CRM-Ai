@@ -78,6 +78,12 @@ const NAV_GROUPS = [
       // non confondere il costo dell'azienda con quello dei singoli locali.
       { id: 'controllo_costi', path: '/controllo-costi', icon: ShieldCheck, label: 'Controllo Costi',   desc: 'Semaforo su personale, food e fissi', alwaysEnabled: true },
       { id: 'costi_fissi',    path: '/costi-fissi',    icon: Wallet,    label: 'Costi Fissi',       desc: 'Affitti, consulenze, oneri (editabile)', alwaysEnabled: true },
+      // Imposte, IVA e contributi effettivamente versati, letti dalle deleghe F24.
+      // Sta qui e non sotto Personale perche' la domanda a cui risponde e' "quanto
+      // ci costa lo Stato", non "quanto ci costa il personale": meta' degli importi
+      // sono contributi dei dipendenti, ma NON vanno mai sommati al costo del
+      // personale - sono gli stessi soldi dei cedolini, versati.
+      { id: 'f24',            path: '/f24',            icon: Receipt,   label: 'F24 · Imposte & Tributi', desc: 'Ogni codice tributo spiegato, con quanto si spende', alwaysEnabled: true },
       { id: 'fornitori',      path: '/fornitori',      icon: Building2, label: 'Fornitori & Fatture', desc: 'Fatture, costi, riconciliazione' },
       // Voce nuova: le analisi che 114.650 righe di dettaglio fattura rendono
       // possibili per la prima volta (prezzi per articolo, merceologico, sedi).
