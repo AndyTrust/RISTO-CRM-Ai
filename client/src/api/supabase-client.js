@@ -4957,4 +4957,47 @@ export const scadenzarioApi = {
     if (error) throw error
     return data ?? []
   },
+
+  // Sintesi dei piani di rateizzazione della scheda RATEALI dei fogli.
+  piani: async () => {
+    const { data, error } = await supabase
+      .from('v_rateali_piani').select('*')
+      .order('sede', { ascending: true }).order('piano', { ascending: true })
+    if (error) throw error
+    return data ?? []
+  },
+
+  // Tutte le rate, anche quelle senza data: servono per far vedere quanto manca ancora.
+  rate: async () => {
+    const { data, error } = await supabase
+      .from('rateali').select('sede,piano,piano_key,n_rata,scadenza,importo')
+      .order('piano_key', { ascending: true }).order('n_rata', { ascending: true })
+    if (error) throw error
+    return data ?? []
+  },
+
+  // Esito del confronto riga-per-riga fra il foglio dell'amministrazione e le fatture elettroniche.
+  riconciliazione: async () => {
+    const { data, error } = await supabase
+      .from('v_riconciliazione_excel')
+      .select('id,sede,fornitore,documento,data_documento,importo,pagato,data_pagamento,metodo,categoria,crm_stato,crm_totale,crm_pagato,esito')
+      .neq('esito', 'allineata')
+      .order('importo', { ascending: false })
+    if (error) throw error
+    return data ?? []
+  },
+
+  // Conteggi complessivi: li calcolo qui perche' la vista non ha una versione aggregata.
+  riconciliazioneTotali: async () => {
+    const { data, error } = await supabase
+      .from('v_riconciliazione_excel').select('esito,importo')
+    if (error) throw error
+    const m = {}
+    for (const r of data ?? []) {
+      const a = (m[r.esito] ||= { esito: r.esito, n: 0, importo: 0 })
+      a.n += 1
+      a.importo += parseFloat(r.importo) || 0
+    }
+    return Object.values(m).sort((a, b) => b.n - a.n)
+  },
 }

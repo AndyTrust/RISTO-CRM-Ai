@@ -13,6 +13,17 @@
  *
  * I costi fissi invece sono pianificati fino a dicembre: quelli sono previsioni
  * vere, con la data quando c'e' e fine mese quando manca.
+ *
+ * I RATEI arrivano dalla scheda RATEALI dei due fogli e sono l'unica parte di
+ * questa pagina con scadenze certe: la rata ha la sua data scritta sopra. Il
+ * foglio pero' non ha una colonna PAGATO, quindi una rata con scadenza passata
+ * si considera versata — assunzione che regge, perche' la somma delle rate
+ * scadute nel mese coincide al centesimo con la riga RATEI pagata nella scheda
+ * FORNITORI. Le rate elencate senza data sono impegni futuri che
+ * l'amministrazione non ha ancora compilato: esistono, ma non sanno quando.
+ * Per non contare due volte lo stesso denaro, le voci "Ratei cartelle e
+ * finanziamenti" di costi_fissi — che erano la stima mensile di questi stessi
+ * piani — sono escluse dallo scadenzario.
  */
 import React, { useEffect, useMemo, useState } from 'react'
 import {
@@ -20,7 +31,7 @@ import {
 } from 'recharts'
 import {
   CalendarClock, AlertTriangle, Building2, Wallet, RefreshCw, Info,
-  ChevronDown, ChevronRight, Clock, TrendingUp,
+  ChevronDown, ChevronRight, Clock, TrendingUp, Landmark, GitCompareArrows,
 } from 'lucide-react'
 import { scadenzarioApi } from '../api/supabase-client'
 import PageAssistant from '../components/PageAssistant'
@@ -88,6 +99,10 @@ function Sezione({ titolo, icona: Icona, sottotitolo, children, apertoDefault = 
 
 export default function Scadenzario() {
   const [righe, setRighe] = useState([])
+  const [piani, setPiani] = useState([])
+  const [rate, setRate]   = useState([])
+  const [ricon, setRicon] = useState([])
+  const [riconTot, setRiconTot] = useState([])
   const [busy, setBusy]   = useState(true)
   const [err, setErr]     = useState(null)
   const [sede, setSede]   = useState('Tutte')
@@ -97,7 +112,16 @@ export default function Scadenzario() {
 
   const carica = React.useCallback(() => {
     setBusy(true); setErr(null)
-    scadenzarioApi.elenco().then(setRighe).catch(e => setErr(e.message || String(e))).finally(() => setBusy(false))
+    Promise.all([
+      scadenzarioApi.elenco(),
+      scadenzarioApi.piani(),
+      scadenzarioApi.rate(),
+      scadenzarioApi.riconciliazione(),
+      scadenzarioApi.riconciliazioneTotali(),
+    ])
+      .then(([e, p, r, rc, rt]) => { setRighe(e); setPiani(p); setRate(r); setRicon(rc); setRiconTot(rt) })
+      .catch(e => setErr(e.message || String(e)))
+      .finally(() => setBusy(false))
   }, [])
   useEffect(carica, [carica])
 
@@ -106,6 +130,7 @@ export default function Scadenzario() {
     if (sede !== 'Tutte') r = r.filter(x => (x.sede || 'Da assegnare') === sede)
     if (vista === 'fatture') r = r.filter(x => x.origine === 'fattura')
     if (vista === 'costi')   r = r.filter(x => x.origine === 'costo_fisso')
+    if (vista === 'ratei')   r = r.filter(x => x.origine === 'rateale')
     if (fascia) r = r.filter(x => x.origine === 'fattura' && fasciaDi(x.giorni_anzianita).id === fascia)
     return r
   }, [righe, sede, vista, fascia])
@@ -113,11 +138,13 @@ export default function Scadenzario() {
   const kpi = useMemo(() => {
     const f  = filtrate.filter(x => x.origine === 'fattura')
     const cf = filtrate.filter(x => x.origine === 'costo_fisso')
+    const rt = filtrate.filter(x => x.origine === 'rateale')
     const somma = a => a.reduce((s, x) => s + (parseFloat(x.importo) || 0), 0)
     const vecchie = f.filter(x => x.giorni_anzianita > 60)
     return {
-      totale: somma(filtrate), fatture: somma(f), costi: somma(cf),
-      vecchie: somma(vecchie), nVecchie: vecchie.length, nFatture: f.length, nCosti: cf.length,
+      totale: somma(filtrate), fatture: somma(f), costi: somma(cf), ratei: somma(rt),
+      vecchie: somma(vecchie), nVecchie: vecchie.length,
+      nFatture: f.length, nCosti: cf.length, nRatei: rt.length,
     }
   }, [filtrate])
 
@@ -156,6 +183,41 @@ export default function Scadenzario() {
     }
     return Object.values(m).sort((a, b) => b.importo - a.importo)
   }, [filtrate])
+
+  // Piani di rateizzazione, filtrati per sede come tutto il resto
+  const pianiVisti = useMemo(
+    () => piani.filter(p => sede === 'Tutte' || p.sede === sede),
+    [piani, sede])
+
+  const rateiTot = useMemo(() => {
+    const n = a => a.reduce((s, x) => s + (parseFloat(x) || 0), 0)
+    return {
+      residuoDatato:  n(pianiVisti.map(p => p.residuo_datato)),
+      residuoStimato: n(pianiVisti.map(p => p.residuo_stimato_non_datato)),
+      giaVersato:     n(pianiVisti.map(p => p.gia_versato)),
+      rateSenzaData:  pianiVisti.reduce((s, p) => s + (p.rate_senza_data || 0), 0),
+    }
+  }, [pianiVisti])
+
+  // Le prossime rate con data certa, in ordine di scadenza
+  const prossimeRate = useMemo(
+    () => righe.filter(x => x.origine === 'rateale'
+        && (sede === 'Tutte' || x.sede === sede))
+      .sort((a, b) => String(a.scadenza).localeCompare(String(b.scadenza))),
+    [righe, sede])
+
+  const ESITI = {
+    pagata_solo_su_excel: { label: 'Pagata sul foglio, aperta nel CRM', col: '#fbbf24' },
+    saldata_solo_su_crm:  { label: 'Saldata nel CRM, vuota sul foglio', col: '#60a5fa' },
+    importo_difforme:     { label: 'Importo pagato diverso dal dovuto', col: '#f87171' },
+    non_agganciata:       { label: 'Riga di foglio senza fattura elettronica', col: '#a78bfa' },
+    fuori_sdi:            { label: 'Fuori dal ciclo SdI (affitti, ratei, banca, estero)', col: '#94a3b8' },
+    allineata:            { label: 'Allineata', col: '#34d399' },
+  }
+  const riconVisti = useMemo(
+    () => ricon.filter(r => (sede === 'Tutte' || r.sede === sede)
+      && r.esito !== 'fuori_sdi' && r.esito !== 'non_agganciata'),
+    [ricon, sede])
 
   const elenco = useMemo(() => {
     const r = [...filtrate]
@@ -233,6 +295,7 @@ export default function Scadenzario() {
           <Bottone attivo={vista === 'tutto'}   onClick={() => { setVista('tutto'); setFascia(null) }}>Tutto</Bottone>
           <Bottone attivo={vista === 'fatture'} onClick={() => setVista('fatture')}>Solo fatture</Bottone>
           <Bottone attivo={vista === 'costi'}   onClick={() => { setVista('costi'); setFascia(null) }}>Solo costi fissi</Bottone>
+          <Bottone attivo={vista === 'ratei'}   onClick={() => { setVista('ratei'); setFascia(null) }}>Solo rate</Bottone>
           {fascia && (
             <button onClick={() => setFascia(null)}
               className="ml-2 text-xs px-2 py-1 rounded bg-blue-900/40 text-blue-300 border border-blue-700">
@@ -242,13 +305,15 @@ export default function Scadenzario() {
         </div>
 
         {/* KPI */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
           <Kpi label="Totale da pagare" value={eur0(kpi.totale)} tone="blue" icon={Wallet}
                sub={`${filtrate.length} voci`} />
           <Kpi label="Fatture fornitore" value={eur0(kpi.fatture)} tone="purple" icon={Building2}
                sub={`${kpi.nFatture} documenti ancora aperti`} />
           <Kpi label="Costi fissi previsti" value={eur0(kpi.costi)} tone="slate" icon={CalendarClock}
                sub={`${kpi.nCosti} voci pianificate`} />
+          <Kpi label="Rate con data certa" value={eur0(kpi.ratei)} tone="amber" icon={Landmark}
+               sub={`${kpi.nRatei} rate gia' calendarizzate`} />
           <Kpi label="Fatture oltre 60 giorni" value={eur0(kpi.vecchie)}
                tone={kpi.vecchie > 0 ? 'rose' : 'slate'} icon={AlertTriangle}
                sub={`${kpi.nVecchie} documenti`} />
@@ -295,6 +360,179 @@ export default function Scadenzario() {
             </div>
           </Sezione>
         )}
+
+        {/* RATEI — i piani di rateizzazione della scheda RATEALI */}
+        {pianiVisti.length > 0 && (
+          <Sezione titolo="Ratei e piani di rateizzazione" icona={Landmark}
+                   sottotitolo={`${pianiVisti.length} piani · ${eur0(rateiTot.residuoDatato)} gia' calendarizzati`}>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-4">
+              <div className="bg-gray-900/50 border border-gray-700 rounded-lg p-4">
+                <p className="text-xs text-gray-400">Rate future con data certa</p>
+                <p className="text-2xl font-bold text-white tabular-nums mt-1">{eur(rateiTot.residuoDatato)}</p>
+                <p className="text-[11px] text-gray-500 mt-1">{prossimeRate.length} rate scritte a calendario sul foglio</p>
+              </div>
+              <div className="bg-gray-900/50 border border-gray-700 rounded-lg p-4">
+                <p className="text-xs text-gray-400">Rate previste ma senza data</p>
+                <p className="text-2xl font-bold text-amber-300 tabular-nums mt-1">≈ {eur(rateiTot.residuoStimato)}</p>
+                <p className="text-[11px] text-gray-500 mt-1">
+                  {rateiTot.rateSenzaData} rate elencate sul piano ma non ancora compilate
+                </p>
+              </div>
+              <div className="bg-gray-900/50 border border-gray-700 rounded-lg p-4">
+                <p className="text-xs text-gray-400">Gia' versato sui piani</p>
+                <p className="text-2xl font-bold text-emerald-300 tabular-nums mt-1">{eur(rateiTot.giaVersato)}</p>
+                <p className="text-[11px] text-gray-500 mt-1">somma delle rate con scadenza passata</p>
+              </div>
+            </div>
+
+            {rateiTot.rateSenzaData > 0 && (
+              <div className="bg-amber-900/20 border border-amber-700/50 rounded-lg px-4 py-3 mb-4">
+                <p className="text-[13px] text-amber-100/90 leading-relaxed">
+                  <strong>Il conto vero e' piu' alto di quello scritto qui sopra a sinistra.</strong> Sul foglio
+                  RATEALI molti piani hanno le rate numerate fino in fondo ma la scadenza e l'importo compilati
+                  solo per le prime: {rateiTot.rateSenzaData} rate esistono come impegno e non hanno una data.
+                  La stima a fianco le valorizza alla rata di regime del piano — e' un ordine di grandezza,
+                  non un impegno certo. Basta completare le colonne Scadenza e Importo sul foglio perche'
+                  diventino esatte.
+                </p>
+              </div>
+            )}
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-[11px] uppercase tracking-wider text-gray-500 border-b border-gray-700">
+                    <th className="py-2 pr-3">Piano</th>
+                    <th className="py-2 px-3">Sede</th>
+                    <th className="py-2 px-3 text-right">Rate</th>
+                    <th className="py-2 px-3 text-right">Rata</th>
+                    <th className="py-2 px-3">Prossima</th>
+                    <th className="py-2 px-3 text-right">Residuo a calendario</th>
+                    <th className="py-2 pl-3 text-right">Residuo stimato</th>
+                  </tr>
+                </thead>
+                <tbody className="text-gray-300">
+                  {pianiVisti.map(p => (
+                    <tr key={p.piano_key} className="border-b border-gray-800">
+                      <td className="py-2 pr-3 text-white font-medium">{p.piano}</td>
+                      <td className="py-2 px-3 text-xs text-gray-400">
+                        {p.sede === 'MA' ? 'Mameli' : 'Predda Niedda'}
+                      </td>
+                      <td className="py-2 px-3 text-right tabular-nums text-xs text-gray-400 whitespace-nowrap">
+                        {p.rate_scadute}/{p.rate_totali}
+                        {p.rate_senza_data > 0 && (
+                          <span className="text-amber-400 ml-1" title={`${p.rate_senza_data} rate senza data`}>
+                            (+{p.rate_senza_data} da datare)
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-2 px-3 text-right tabular-nums text-xs text-gray-400">{eur(p.rata_tipo)}</td>
+                      <td className="py-2 px-3 text-xs whitespace-nowrap">
+                        {p.prossima_scadenza
+                          ? <span className="text-white">{dataIt(p.prossima_scadenza)}</span>
+                          : <span className="text-amber-400">da definire</span>}
+                      </td>
+                      <td className="py-2 px-3 text-right tabular-nums font-semibold text-white">
+                        {p.residuo_datato ? eur(p.residuo_datato) : '—'}
+                      </td>
+                      <td className="py-2 pl-3 text-right tabular-nums text-amber-300">
+                        {parseFloat(p.residuo_stimato_non_datato) > 0 ? '≈ ' + eur(p.residuo_stimato_non_datato) : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {prossimeRate.length > 0 && (
+              <>
+                <p className="text-xs font-semibold text-gray-300 mt-5 mb-2">Le prossime rate, in ordine di scadenza</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                  {prossimeRate.map(r => (
+                    <div key={r.chiave} className="bg-gray-900/50 border border-gray-700 rounded-lg px-3 py-2 flex items-center justify-between">
+                      <div className="min-w-0">
+                        <p className="text-xs text-white truncate">{r.descrizione}</p>
+                        <p className="text-[11px] text-gray-500">
+                          {r.sede === 'MA' ? 'Mameli' : 'Predda Niedda'} · {dataIt(r.scadenza)}
+                        </p>
+                      </div>
+                      <span className="text-sm font-semibold tabular-nums text-white ml-3 whitespace-nowrap">{eur(r.importo)}</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </Sezione>
+        )}
+
+        {/* RICONCILIAZIONE — foglio dell'amministrazione contro fatture elettroniche */}
+        <Sezione titolo="Riconciliazione col foglio dell'amministrazione" icona={GitCompareArrows}
+                 sottotitolo={`${riconVisti.length} righe da guardare`}
+                 apertoDefault={riconVisti.length > 0}>
+          <p className="text-[13px] text-gray-400 leading-relaxed mb-4">
+            Le 1.801 righe della scheda FORNITORI dei due fogli sono state agganciate una per una alle fatture
+            elettroniche ricevute, confrontando numero documento, importo e data. La colonna PAGATO del foglio e'
+            l'unico posto dove i pagamenti vengono registrati: quando dice pagato e il CRM dice aperta, ha ragione
+            il foglio e la fattura viene chiusa. La data del pagamento non ha una colonna sua — sta dentro la nota
+            accanto al mezzo, tipo <span className="font-mono text-gray-300">Unicredit 23/02/2026</span> — ed e'
+            da li' che viene letta.
+          </p>
+
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-2 mb-4">
+            {riconTot.map(t => (
+              <div key={t.esito} className="bg-gray-900/50 border border-gray-700 rounded-lg p-3">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ background: ESITI[t.esito]?.col || '#64748b' }} />
+                  <p className="text-[11px] text-gray-400 leading-tight">{ESITI[t.esito]?.label || t.esito}</p>
+                </div>
+                <p className="text-lg font-bold text-white tabular-nums">{t.n}</p>
+                <p className="text-[11px] text-gray-500">{eur0(t.importo)}</p>
+              </div>
+            ))}
+          </div>
+
+          {riconVisti.length === 0 ? (
+            <p className="text-sm text-emerald-300">
+              Nessuno scarto: su tutte le fatture agganciate il foglio e il CRM dicono la stessa cosa.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-[11px] uppercase tracking-wider text-gray-500 border-b border-gray-700">
+                    <th className="py-2 pr-3">Cosa non torna</th>
+                    <th className="py-2 px-3">Fornitore</th>
+                    <th className="py-2 px-3">Doc.</th>
+                    <th className="py-2 px-3">Data</th>
+                    <th className="py-2 px-3 text-right">Foglio: dovuto</th>
+                    <th className="py-2 px-3 text-right">Foglio: pagato</th>
+                    <th className="py-2 pl-3">Stato CRM</th>
+                  </tr>
+                </thead>
+                <tbody className="text-gray-300">
+                  {riconVisti.map(r => (
+                    <tr key={r.id} className="border-b border-gray-800/60">
+                      <td className="py-2 pr-3">
+                        <span className="text-[11px] px-2 py-0.5 rounded whitespace-nowrap"
+                              style={{ background: (ESITI[r.esito]?.col || '#64748b') + '22',
+                                       color: ESITI[r.esito]?.col || '#94a3b8' }}>
+                          {ESITI[r.esito]?.label || r.esito}
+                        </span>
+                      </td>
+                      <td className="py-2 px-3 text-white">{r.fornitore}</td>
+                      <td className="py-2 px-3 text-[11px] font-mono text-gray-500">{r.documento}</td>
+                      <td className="py-2 px-3 text-xs text-gray-400 whitespace-nowrap">{dataIt(r.data_documento)}</td>
+                      <td className="py-2 px-3 text-right tabular-nums">{eur(r.importo)}</td>
+                      <td className="py-2 px-3 text-right tabular-nums font-semibold text-white">{eur(r.pagato)}</td>
+                      <td className="py-2 pl-3 text-xs text-gray-400">{r.crm_stato || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Sezione>
 
         {/* Fornitori */}
         {perFornitore.length > 0 && (
@@ -400,9 +638,12 @@ export default function Scadenzario() {
 
         <p className="text-[11px] text-gray-600 pb-6">
           Fonti: fatture con stato APERTA o PARZIALE in fatture_importate (i doppioni sono esclusi, le note di
-          credito compaiono in negativo perche' riducono l'esposizione) e costi fissi pianificati dal mese
-          corrente in avanti. Gli F24 non sono qui: le deleghe future arrivano dallo studio e non sono ancora
-          note — quelle gia' pagate stanno in Costi &amp; Margini → F24.
+          credito compaiono in negativo perche' riducono l'esposizione); costi fissi pianificati dal mese corrente
+          in avanti; rate dei piani di rateizzazione dalla scheda RATEALI dei fogli Mameli26.xlsx e
+          Predda_Niedda26.xlsx. Le voci "Ratei cartelle e finanziamenti" dei costi fissi sono escluse apposta:
+          erano la stima mensile degli stessi piani e sommarle conterebbe lo stesso denaro due volte.
+          Gli F24 non sono qui: le deleghe future arrivano dallo studio e non sono ancora note — quelle gia'
+          pagate stanno in Costi &amp; Margini → F24.
         </p>
       </div>
       <PageAssistant
@@ -412,6 +653,8 @@ export default function Scadenzario() {
           "Quali fatture sono ferme da piu' di 90 giorni?",
           "Quanto pesano i costi fissi dei prossimi tre mesi?",
           "A quale fornitore devo di piu'?",
+          "Quali rate scadono nei prossimi due mesi?",
+          "Ci sono fatture che il foglio da' pagate ma il CRM no?",
         ]}
       />
     </div>
