@@ -84,6 +84,10 @@ const NAV_GROUPS = [
       // sono contributi dei dipendenti, ma NON vanno mai sommati al costo del
       // personale - sono gli stessi soldi dei cedolini, versati.
       { id: 'f24',            path: '/f24',            icon: Receipt,   label: 'F24 · Imposte & Tributi', desc: 'Ogni codice tributo spiegato, con quanto si spende', alwaysEnabled: true },
+      // Che cosa resta da pagare: fatture fornitore ancora aperte e costi fissi
+      // gia' pianificati. Attenzione: i termini di pagamento delle fatture non
+      // sono a sistema, quindi la pagina ragiona per anzianita' e lo dichiara.
+      { id: 'scadenzario',    path: '/scadenzario',    icon: CalendarDays, label: 'Scadenzario',       desc: 'Fatture aperte e costi fissi in arrivo', alwaysEnabled: true },
       { id: 'fornitori',      path: '/fornitori',      icon: Building2, label: 'Fornitori & Fatture', desc: 'Fatture, costi, riconciliazione' },
       // Voce nuova: le analisi che 114.650 righe di dettaglio fattura rendono
       // possibili per la prima volta (prezzi per articolo, merceologico, sedi).

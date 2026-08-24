@@ -80,6 +80,7 @@ import ControlloCosti from './pages/ControlloCosti'
 import InsightPage from './pages/InsightPage'
 import CommercialistaPage from './pages/CommercialistaPage'
 import F24Page from './pages/F24Page'
+import Scadenzario from './pages/Scadenzario'
 import { modules as modulesApi, crmConfig } from './api/client'
 
 export const ModulesContext = React.createContext({})
@@ -184,6 +185,8 @@ export default function App() {
               degli importi sono contributi dei dipendenti, ma NON va mai sommato
               al costo del personale: sono gli stessi soldi dei cedolini. */}
           <Route path="/f24" element={<F24Page />} />
+          {/* Scadenzario: fatture aperte + costi fissi pianificati */}
+          <Route path="/scadenzario" element={<Scadenzario />} />
           <Route path="/stato-dati" element={<StatoDati />} />
           <Route path="/importa-excel" element={<ImportExcel />} />
           <Route path="/impostazioni" element={<Settings />} />

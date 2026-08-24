@@ -4940,3 +4940,21 @@ export const f24Api = {
     return data ?? []
   },
 }
+
+// ── Scadenzario — tutto quello che resta da pagare ───────────────────────────
+//
+// Due sorgenti con affidabilita' diversa, e la pagina lo dice a chiare lettere:
+// le fatture aperte NON hanno i termini di pagamento a sistema (ne' i fogli
+// dell'amministrazione ne' il campo scadenza_pagamento, che sulle saldate
+// contiene la data in cui si e' pagato), quindi l'anzianita' si conta dalla
+// data fattura; i costi fissi hanno la data quando l'amministrazione l'ha
+// messa, altrimenti si assume fine mese. Il flag scadenza_certa distingue.
+export const scadenzarioApi = {
+  elenco: async () => {
+    const { data, error } = await supabase
+      .from('v_scadenzario').select('*')
+      .order('scadenza', { ascending: true })
+    if (error) throw error
+    return data ?? []
+  },
+}
