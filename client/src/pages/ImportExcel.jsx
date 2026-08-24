@@ -22,27 +22,15 @@ import {
   Upload, FileSpreadsheet, CheckCircle2, AlertTriangle, XCircle, Loader,
 } from 'lucide-react'
 import { supabase } from '../supabase'
+import { caricaXLSX } from '../lib/sheetjs'
 
 /**
  * SheetJS si carica da CDN al primo uso invece di essere una dipendenza npm:
  * il CRM e' in produzione e aggiungere un pacchetto al build per una pagina
  * usata due volte al mese non vale il rischio di rompere il deploy.
  */
-const CDN_XLSX = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'
-let caricamentoXLSX = null
-
-function caricaXLSX() {
-  if (window.XLSX) return Promise.resolve(window.XLSX)
-  if (caricamentoXLSX) return caricamentoXLSX
-  caricamentoXLSX = new Promise((ok, ko) => {
-    const s = document.createElement('script')
-    s.src = CDN_XLSX
-    s.onload = () => (window.XLSX ? ok(window.XLSX) : ko(new Error('SheetJS non disponibile')))
-    s.onerror = () => { caricamentoXLSX = null; ko(new Error('Non riesco a caricare SheetJS: sei offline?')) }
-    document.head.appendChild(s)
-  })
-  return caricamentoXLSX
-}
+// Il caricatore di SheetJS sta in lib/sheetjs.js: lo usa anche "Rileggi i
+// fogli" dello Scadenzario, e una copia sola evita che le due divergano.
 
 // stessa mappa dello script Python
 const COLONNE = {

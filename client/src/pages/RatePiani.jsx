@@ -32,6 +32,7 @@ import {
 } from 'lucide-react'
 import { scadenzarioApi } from '../api/supabase-client'
 import PageAssistant from '../components/PageAssistant'
+import RileggiFogli from '../components/RileggiFogli'
 
 const eur = (v, dec = 2) => {
   const n = v === null || v === undefined || v === '' ? null : parseFloat(v)
@@ -374,6 +375,10 @@ export default function RatePiani() {
             <RefreshCw size={14} className={busy ? 'animate-spin' : ''} /> Ricarica
           </button>
         </div>
+
+        {/* Le rate vengono dalla scheda RATEALI degli stessi due file: il
+            pulsante rilegge tutto, FORNITORI compresa. */}
+        <RileggiFogli scuro compatto onFatto={carica} />
 
         {err && <div className="bg-rose-900/20 border border-rose-700/50 rounded-lg px-4 py-3 text-sm text-rose-200">{err}</div>}
 

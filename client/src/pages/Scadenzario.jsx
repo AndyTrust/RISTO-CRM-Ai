@@ -46,6 +46,7 @@ import {
 import { Link } from 'react-router-dom'
 import { scadenzarioApi } from '../api/supabase-client'
 import PageAssistant from '../components/PageAssistant'
+import RileggiFogli from '../components/RileggiFogli'
 
 const eur = (v, dec = 2) => {
   const n = v === null || v === undefined || v === '' ? null : parseFloat(v)
@@ -354,6 +355,13 @@ export default function Scadenzario() {
             <RefreshCw size={14} className={busy ? 'animate-spin' : ''} /> Ricarica
           </button>
         </div>
+
+        {/* Rilettura dei fogli. Sta in cima e non in fondo perche' e' la domanda
+            da farsi PRIMA di leggere i numeri: di quando sono? Fino a ieri il
+            registro era stato caricato una volta sola a mano, e questa pagina
+            mostrava aperte 162 fatture che l'amministrazione aveva gia' pagato
+            sull'xlsx (43.505,58 EUR sulla sola Mameli). */}
+        <RileggiFogli scuro onFatto={carica} />
 
         {err && (
           <div className="bg-rose-900/20 border border-rose-700/50 rounded-lg px-4 py-3 text-sm text-rose-200">{err}</div>

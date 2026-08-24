@@ -4988,6 +4988,33 @@ export const scadenzarioApi = {
     return data ?? []
   },
 
+  // ---- Rilettura dei fogli ------------------------------------------------
+  // Il registro dei pagamenti era stato caricato una volta sola, a mano: da li'
+  // in poi l'amministrazione segnava un pagamento sull'xlsx e lo Scadenzario
+  // continuava a mostrare quella fattura aperta. sincronizza_foglio rifa' lo
+  // specchio del foglio, riabbina le righe alle fatture elettroniche e chiude
+  // quelle che il foglio da' per pagate. La griglia si manda grezza: come si
+  // legge lo decide Postgres, in un posto solo, condiviso con lo script del PC.
+  sincronizzaFoglio: async ({ sede, fornitori = null, rateali = null, origine = 'CRM' }) => {
+    const { data, error } = await supabase.rpc('sincronizza_foglio', {
+      p_sede: sede, p_fornitori: fornitori, p_rateali: rateali, p_origine: origine,
+    })
+    if (error) throw error
+    return data
+  },
+
+  // Quando i fogli sono stati riletti l'ultima volta, per sede. Un dato che non
+  // dichiara la propria eta' e' peggio di un dato assente.
+  ultimeSincronie: async () => {
+    const { data, error } = await supabase
+      .from('sincronie_foglio')
+      .select('id,quando,sede,origine,ok,esito,errore')
+      .order('quando', { ascending: false })
+      .limit(20)
+    if (error) throw error
+    return data ?? []
+  },
+
   // ---- Modifiche ---------------------------------------------------------
   // Il sito non puo' scrivere sul disco di nessuno: la RPC aggiorna il CRM e
   // accoda la cella da riscrivere nel workbook. Poi APPLICA_AL_FOGLIO.bat sul
