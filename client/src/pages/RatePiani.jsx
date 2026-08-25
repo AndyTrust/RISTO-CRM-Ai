@@ -56,6 +56,21 @@ const dataIt = d => d ? new Date(d).toLocaleDateString('it-IT', { day: '2-digit'
 const oggiIso = () => new Date().toISOString().slice(0, 10)
 const sedeLabel = s => s === 'MA' ? 'Mameli' : s === 'PN' ? 'Predda Niedda' : (s || '—')
 
+/**
+ * Quanto manca alla scadenza, o quanto e' passata.
+ * Serve da quando una rata scaduta puo' comparire ancora fra quelle da pagare:
+ * prima non succedeva mai — con la vecchia regola una rata con la data alle
+ * spalle era automaticamente «versata» — e il testo diceva «fra -18 gg».
+ */
+const quandoScade = (gg) => {
+  if (gg == null) return null
+  if (gg === 0) return 'oggi'
+  if (gg === 1) return 'domani'
+  if (gg > 0) return `fra ${gg} gg`
+  if (gg === -1) return 'scaduta ieri'
+  return `scaduta da ${-gg} gg`
+}
+
 const STATI = {
   'PAGATA':        { col: '#34d399', icona: CheckCircle2,  label: 'Versata' },
   'DA PAGARE':     { col: '#fbbf24', icona: CalendarClock, label: 'Da pagare' },
@@ -274,9 +289,9 @@ function Piano({ piano, rate, onRicarica }) {
                         {r.data_pagamento ? dataIt(r.data_pagamento) : (r.pagata === null ? '' : '—')}
                       </td>
                       <td className="py-2 px-3 text-right text-xs tabular-nums whitespace-nowrap"
-                          style={{ color: r.stato === 'DA PAGARE' && r.giorni_a_scadenza <= 15 ? '#fbbf24' : '#6b7280' }}>
-                        {r.stato === 'DA PAGARE' && r.giorni_a_scadenza != null
-                          ? (r.giorni_a_scadenza === 0 ? 'oggi' : `${r.giorni_a_scadenza} gg`)
+                          style={{ color: DA_SALDARE.includes(r.stato) && r.giorni_a_scadenza <= 15 ? '#fbbf24' : '#6b7280' }}>
+                        {DA_SALDARE.includes(r.stato) && r.giorni_a_scadenza != null
+                          ? quandoScade(r.giorni_a_scadenza)
                           : ''}
                       </td>
                       <td className="py-2 pl-3 text-right">
@@ -480,7 +495,7 @@ export default function RatePiani() {
                           {sedeLabel(r.sede)} · {dataIt(r.scadenza)}
                           {r.giorni_a_scadenza != null && (
                             <span className={urgente ? 'text-amber-300 ml-1' : 'ml-1'}>
-                              ({r.giorni_a_scadenza === 0 ? 'oggi' : `fra ${r.giorni_a_scadenza} gg`})
+                              ({quandoScade(r.giorni_a_scadenza)})
                             </span>
                           )}
                         </p>
