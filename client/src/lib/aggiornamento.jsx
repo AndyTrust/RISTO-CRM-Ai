@@ -89,9 +89,16 @@ function modificaInCorso() {
   }
 }
 
-// Quanto si aspetta il PC prima di rinunciare. Lo script gira ogni minuto:
-// 50 secondi coprono il caso normale piu' il tempo della rilettura.
-const FINESTRA_ATTESA = 50 * 1000
+// Quanto si aspetta il PC prima di rinunciare.
+//
+// Lo script sul PC gira ogni minuto a un orario fisso, quindi chi preme il
+// pulsante cade in un punto qualsiasi di quel minuto: l'attesa e' uniforme fra
+// zero e sessanta secondi, piu' i venti scarsi che serve a rileggere i due
+// file. La prima misura sul campo ha dato 27 secondi e la seconda 49: con una
+// finestra di 50 secondi, un click su sei sarebbe finito in un falso "il PC
+// non risponde", che e' il modo piu' rapido per far smettere di fidarsi di un
+// messaggio. Novanta secondi coprono il caso peggiore vero.
+const FINESTRA_ATTESA = 90 * 1000
 const PASSO_ATTESA = 2000
 
 export const AggiornamentoContext = React.createContext({
