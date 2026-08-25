@@ -8,11 +8,16 @@
  * quel giorno bisogna pagarla. Qui stanno da sole, col calendario davanti.
  *
  * COME SI LEGGE UNA RATA.
- * Il foglio RATEALI non ha una colonna PAGATO. Finche' nessuno la tocca dal
- * CRM, una rata con scadenza passata si considera versata — assunzione che
- * regge, perche' la somma delle rate scadute nel mese coincide al centesimo
- * con la riga RATEI pagata nella scheda FORNITORI. Dal momento in cui qualcuno
- * la segna a mano, vale quello che ha detto la persona.
+ * Il foglio RATEALI non ha una colonna PAGATO, ma la prova esiste altrove: le
+ * rate non si pagano una per una, ogni mese parte un addebito unico che nella
+ * scheda FORNITORI e' una riga col fornitore RATEI o RATE. Mese pagato sul
+ * foglio = rate di quel mese versate; la somma torna al centesimo.
+ *
+ * Fino a ieri la regola era «scadenza passata = versata». Comoda, quasi sempre
+ * vera, e inutile proprio quando servirebbe: con quella lettura una rata
+ * SALTATA non puo' esistere, e il giorno in cui l'azienda non paga il CRM
+ * continua a dire che ha pagato. Ora la presunzione vale solo dove non ci sono
+ * prove — le rate anteriori a gennaio 2026, che il foglio non copre.
  *
  * LE RATE SENZA DATA sono numerate sul piano ma con scadenza e importo vuoti:
  * sono impegni veri di cui il foglio non sa ancora il quando. Si vedono a
@@ -28,11 +33,12 @@ import {
 } from 'recharts'
 import {
   Landmark, RefreshCw, Info, ChevronDown, ChevronRight, CalendarClock,
-  CheckCircle2, CircleDashed, AlertTriangle, Archive, Pencil, X, Save, FileSpreadsheet,
+  CheckCircle2, CircleDashed, AlertTriangle, AlertOctagon, Archive, Pencil, X, Save, FileSpreadsheet,
 } from 'lucide-react'
 import { scadenzarioApi } from '../api/supabase-client'
 import PageAssistant from '../components/PageAssistant'
 import RileggiFogli from '../components/RileggiFogli'
+import Avvisi from '../components/Avvisi'
 
 const eur = (v, dec = 2) => {
   const n = v === null || v === undefined || v === '' ? null : parseFloat(v)
@@ -51,11 +57,18 @@ const oggiIso = () => new Date().toISOString().slice(0, 10)
 const sedeLabel = s => s === 'MA' ? 'Mameli' : s === 'PN' ? 'Predda Niedda' : (s || '—')
 
 const STATI = {
-  'PAGATA':      { col: '#34d399', icona: CheckCircle2, label: 'Versata' },
-  'DA PAGARE':   { col: '#fbbf24', icona: CalendarClock, label: 'Da pagare' },
-  'DA DEFINIRE': { col: '#a78bfa', icona: CircleDashed, label: 'Senza data' },
-  'CHIUSA':      { col: '#64748b', icona: Archive,      label: 'Piano chiuso' },
+  'PAGATA':        { col: '#34d399', icona: CheckCircle2,  label: 'Versata' },
+  'DA PAGARE':     { col: '#fbbf24', icona: CalendarClock, label: 'Da pagare' },
+  // SALTATA esiste da quando "versata" non significa piu' "con la data
+  // passata": e' una rata che il foglio non risulta abbia pagato.
+  'SALTATA':       { col: '#f87171', icona: AlertOctagon,  label: 'Non pagata' },
+  'DA VERIFICARE': { col: '#fb923c', icona: AlertTriangle, label: 'Da verificare' },
+  'DA DEFINIRE':   { col: '#a78bfa', icona: CircleDashed,  label: 'Senza data' },
+  'CHIUSA':        { col: '#64748b', icona: Archive,       label: 'Piano chiuso' },
 }
+
+// Una rata che deve ancora uscire di cassa, comunque la si chiami.
+const DA_SALDARE = ['DA PAGARE', 'SALTATA', 'DA VERIFICARE']
 
 function Kpi({ label, value, sub, tone = 'slate', icon: Icon }) {
   const t = {
@@ -165,10 +178,10 @@ function ModificaRata({ rata, onChiudi, onSalvato }) {
 }
 
 function Piano({ piano, rate, onRicarica }) {
-  const [aperto, setAperto] = useState(!piano.chiuso && piano.rate_da_pagare > 0)
+  const [aperto, setAperto] = useState(!piano.chiuso && (piano.rate_da_pagare > 0 || piano.rate_saltate > 0))
   const [inModifica, setInModifica] = useState(null)
   const mie = rate.filter(r => r.piano_key === piano.piano_key)
-  const pagate = piano.rate_scadute || 0
+  const pagate = piano.rate_versate || 0
   const avanzamento = piano.rate_totali ? Math.round(100 * pagate / piano.rate_totali) : 0
 
   return (
@@ -336,7 +349,7 @@ export default function RatePiani() {
   }, [rate, sede])
 
   const prossime = useMemo(() => rate
-    .filter(r => r.stato === 'DA PAGARE' && (sede === 'Tutte' || r.sede === sede))
+    .filter(r => DA_SALDARE.includes(r.stato) && (sede === 'Tutte' || r.sede === sede))
     .sort((a, b) => String(a.scadenza).localeCompare(String(b.scadenza))), [rate, sede])
 
   const inCoda = coda.filter(c => c.stato === 'DA_APPLICARE')
@@ -375,6 +388,8 @@ export default function RatePiani() {
             <RefreshCw size={14} className={busy ? 'animate-spin' : ''} /> Ricarica
           </button>
         </div>
+
+        <Avvisi scuro />
 
         {/* Le rate vengono dalla scheda RATEALI degli stessi due file: il
             pulsante rilegge tutto, FORNITORI compresa. */}
@@ -560,11 +575,19 @@ export default function RatePiani() {
             <Info size={15} /> Come si leggono queste rate
           </p>
           <p className="text-[13px] text-gray-400 leading-relaxed">
-            Il foglio RATEALI <strong>non ha una colonna per il pagato</strong>. Finche' nessuno interviene, una
-            rata con scadenza passata si considera versata: e' l'unica lettura possibile, e regge, perche' la
-            somma delle rate scadute nel mese coincide al centesimo con la riga RATEI pagata nella scheda
-            FORNITORI — 1.440,29 € al mese su Mameli e 431,59 su Predda Niedda. Dal momento in cui si segna una
-            rata a mano da questa pagina, vale quello che si e' scritto qui.
+            Il foglio RATEALI <strong>non ha una colonna per il pagato</strong>, ma la prova c'e' lo stesso: le
+            rate non si pagano una per una, ogni mese parte un addebito unico che nella scheda FORNITORI e' una
+            riga col fornitore <strong>RATEI</strong> o <strong>RATE</strong>. Se quella riga risulta pagata, le
+            rate di quel mese sono versate — la somma torna al centesimo, 1.440,29 € al mese su Mameli e 431,59
+            su Predda Niedda. Se non c'e', la rata compare come <strong>non pagata</strong>.
+          </p>
+          <p className="text-[13px] text-gray-400 leading-relaxed mt-2">
+            Prima la regola era un'altra: una rata con la scadenza alle spalle veniva data per versata. Comoda e
+            quasi sempre vera, ma con quella lettura una rata saltata non poteva esistere — il giorno in cui
+            l'azienda non paga, il CRM continuerebbe a dire che ha pagato. Quello che non sappiamo resta
+            comunque tale: il foglio parte da gennaio 2026, quindi le rate precedenti restano presunte versate,
+            e un mese chiuso senza nessuna riga sul foglio e' <strong>da verificare</strong>, non saltato.
+            Segnando una rata a mano da questa pagina, vale quello che si e' scritto qui.
           </p>
         </div>
 

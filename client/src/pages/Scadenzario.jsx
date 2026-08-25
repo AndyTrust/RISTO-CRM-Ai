@@ -47,6 +47,7 @@ import { Link } from 'react-router-dom'
 import { scadenzarioApi } from '../api/supabase-client'
 import PageAssistant from '../components/PageAssistant'
 import RileggiFogli from '../components/RileggiFogli'
+import Avvisi from '../components/Avvisi'
 
 const eur = (v, dec = 2) => {
   const n = v === null || v === undefined || v === '' ? null : parseFloat(v)
@@ -355,6 +356,13 @@ export default function Scadenzario() {
             <RefreshCw size={14} className={busy ? 'animate-spin' : ''} /> Ricarica
           </button>
         </div>
+
+        {/* Gli avvisi stanno PRIMA di tutto il resto, compresa la rilettura:
+            se una rata non e' stata pagata, quella e' la notizia della pagina,
+            non i totali. Il testo lo scrive la vista v_avvisi, cosi' la fascia
+            qui, il pallino nel menu e la notifica del mattino dicono la stessa
+            identica frase. */}
+        <Avvisi scuro />
 
         {/* Rilettura dei fogli. Sta in cima e non in fondo perche' e' la domanda
             da farsi PRIMA di leggere i numeri: di quando sono? Fino a ieri il

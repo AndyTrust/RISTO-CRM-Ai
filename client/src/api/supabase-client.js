@@ -4988,6 +4988,21 @@ export const scadenzarioApi = {
     return data ?? []
   },
 
+  // ---- Avvisi --------------------------------------------------------------
+  // Le cose che meritano di essere dette prima che diventino un danno: una rata
+  // saltata, una scadenza vicina, la rilettura dei fogli ferma. Il testo degli
+  // avvisi lo scrive la vista v_avvisi, non il frontend: la stessa frase deve
+  // arrivare identica alla fascia in cima alla pagina, al pallino nel menu e
+  // alla notifica del mattino.
+  avvisi: async () => {
+    const { data, error } = await supabase
+      .from('v_avvisi').select('*')
+      .order('gravita', { ascending: true })
+      .order('scadenza', { ascending: true, nullsFirst: true })
+    if (error) throw error
+    return data ?? []
+  },
+
   // ---- Rilettura dei fogli ------------------------------------------------
   // Il registro dei pagamenti era stato caricato una volta sola, a mano: da li'
   // in poi l'amministrazione segnava un pagamento sull'xlsx e lo Scadenzario

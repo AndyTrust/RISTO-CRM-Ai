@@ -10,6 +10,7 @@ import {
   FileSpreadsheet, Sparkles
 } from 'lucide-react'
 import { useAggiornamento } from '../lib/aggiornamento'
+import { scadenzarioApi } from '../api/supabase-client'
 
 // ── Struttura navigazione a due livelli: sezioni → sottopagine con descrizione ───
 // Riorganizzazione 2026-06-19 — sequenza logica: panoramica → operativo → personale → sala → BI → costi → admin
@@ -153,7 +154,7 @@ const NAV_GROUPS = [
 ]
 
 // ── Gruppo con dropdown ────────────────────────────────────────────────────
-function NavGroup({ group, collapsed, isEnabled }) {
+function NavGroup({ group, collapsed, isEnabled, pallini = {} }) {
   const location = useLocation()
 
   // Apri automaticamente il gruppo se contiene la pagina attiva
@@ -225,11 +226,24 @@ function NavGroup({ group, collapsed, isEnabled }) {
                 }}
                 onClick={e => { if (!enabled) e.preventDefault() }}
               >
-                <Icon size={15} className="flex-shrink-0" />
+                <span className="relative flex-shrink-0">
+                  <Icon size={15} />
+                  {/* Il pallino c'e' solo quando qualcosa merita davvero di essere
+                      guardato (rata non pagata, scadenza vicina, dati fermi). Se
+                      comparisse sempre non lo guarderebbe piu' nessuno. */}
+                  {pallini[item.id] > 0 && collapsed && (
+                    <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-rose-500 ring-2 ring-gray-900" />
+                  )}
+                </span>
                 {!collapsed && (
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between gap-1">
                       <span className="truncate text-[15px] font-semibold leading-tight">{item.label}</span>
+                      {pallini[item.id] > 0 && (
+                        <span className="flex-shrink-0 min-w-[18px] px-1 h-[18px] rounded-full bg-rose-500 text-white text-[10px] font-bold flex items-center justify-center">
+                          {pallini[item.id]}
+                        </span>
+                      )}
                       {!enabled && <Lock size={9} className="text-gray-600 flex-shrink-0" />}
                     </div>
                     {item.desc && (
@@ -279,6 +293,22 @@ export default function Layout({ children }) {
     ? aggiornatoAlle.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })
     : '--:--'
 
+  // Quante cose meritano attenzione adesso: gravita' 1 (una rata non risulta
+  // pagata) e 2 (scaduto da controllare, oppure la rilettura dei fogli si e'
+  // fermata). Le scadenze in arrivo NON contano: sono un promemoria, e un
+  // numero rosso permanente accanto a una voce di menu smette di significare
+  // qualcosa dopo due giorni.
+  const [nAvvisi, setNAvvisi] = useState(0)
+  useEffect(() => {
+    let vivo = true
+    scadenzarioApi.avvisi()
+      .then(r => { if (vivo) setNAvvisi(r.filter(x => x.gravita <= 2).length) })
+      .catch(() => {})
+    return () => { vivo = false }
+  }, [aggiornatoAlle])
+
+  const pallini = { scadenzario: nAvvisi, 'rate-piani': nAvvisi }
+
   return (
     <div className="flex h-screen overflow-hidden bg-gray-50">
 
@@ -308,6 +338,7 @@ export default function Layout({ children }) {
               group={group}
               collapsed={collapsed}
               isEnabled={isEnabled}
+              pallini={pallini}
             />
           ))}
         </nav>
