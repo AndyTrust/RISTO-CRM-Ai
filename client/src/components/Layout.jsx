@@ -267,9 +267,16 @@ export default function Layout({ children }) {
   // Il pulsante qui sotto chiamava dataApi.sync(), che da quando il CRM legge
   // da Supabase non sincronizza piu' niente: contava le righe di cinque tabelle
   // e rispondeva "N file aggiornati" senza che una sola query della pagina
-  // venisse rifatta. Ora fa la cosa che dice: alza la versione globale, la
-  // pagina si rimonta e rilegge tutto. Vedi lib/aggiornamento.jsx.
-  const { aggiorna, aggiornatoAlle, inCorso } = useAggiornamento()
+  // venisse rifatta. Ora fa due cose vere: chiede al PC di rileggere i fogli
+  // Excel e poi rilegge il database. Vedi lib/aggiornamento.jsx.
+  const { aggiornatoAlle, inCorso, fase, rileggiFogli } = useAggiornamento()
+
+  const etichettaFase = {
+    chiedo:  'Chiedo al PC...',
+    attendo: 'Rileggo i fogli...',
+    fatto:   'Aggiornato',
+    scaduto: 'Il PC non risponde',
+  }[fase] || null
 
   // Rinfresca l'etichetta "aggiornato alle" ogni minuto anche senza eventi,
   // cosi' il "3 min fa" non resta congelato.
@@ -356,19 +363,21 @@ export default function Layout({ children }) {
         {/* Aggiornamento dati — stato sempre visibile + ricarica manuale */}
         <div className="px-2 pb-3 border-t border-white/10 pt-2">
           <button
-            onClick={aggiorna}
+            onClick={rileggiFogli}
             disabled={inCorso}
-            title={`Dati letti alle ${oraAggiornamento}. Clicca per rileggerli adesso.`}
+            title={`Dati letti alle ${oraAggiornamento}. Clicca per far rileggere i fogli Excel al PC e aggiornare tutto.`}
             className={`flex items-center gap-2 w-full px-2.5 py-2 rounded-lg text-xs font-medium transition-colors ${
               inCorso ? 'bg-white/5 text-gray-500' : 'bg-white/8 text-gray-300 hover:bg-white/15 hover:text-white'
             } ${collapsed ? 'justify-center' : ''}`}
           >
             <RefreshCw size={13} className={inCorso ? 'animate-spin' : ''} />
-            {!collapsed && <span>{inCorso ? 'Aggiornamento...' : 'Aggiorna dati'}</span>}
+            {!collapsed && <span>{etichettaFase || 'Aggiorna dati'}</span>}
           </button>
           {!collapsed && (
-            <p className="text-[10px] text-gray-500 mt-1 px-1">
-              Dati delle {oraAggiornamento}{daQuanto ? ` · ${daQuanto}` : ''}
+            <p className={`text-[10px] mt-1 px-1 ${fase === 'scaduto' ? 'text-amber-400' : 'text-gray-500'}`}>
+              {fase === 'scaduto'
+                ? 'Il PC dell\'amministrazione non ha risposto: questi sono i dati dell\'ultima rilettura riuscita.'
+                : <>Dati delle {oraAggiornamento}{daQuanto ? ` · ${daQuanto}` : ''}</>}
             </p>
           )}
         </div>

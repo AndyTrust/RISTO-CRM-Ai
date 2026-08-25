@@ -1,4 +1,5 @@
 import React from 'react'
+import { scadenzarioApi } from '../api/supabase-client'
 
 /**
  * aggiornamento.jsx — un solo posto che decide QUANDO il CRM rilegge i dati.
@@ -33,6 +34,16 @@ import React from 'react'
  *   - al ripristino dalla bfcache (indietro del browser: nessun montaggio);
  *   - ogni SOGLIA_PERIODICA mentre la scheda è visibile e in uso;
  *   - a mano, dal pulsante nella sidebar.
+ *
+ * IL PULSANTE FA UNA COSA IN PIU'
+ * Rileggere il database non basta se nel frattempo l'amministrazione ha
+ * cambiato l'Excel: quei numeri stanno sul disco del PC e Supabase non li ha
+ * ancora visti. Il browser pero' non puo' aprire un file locale senza che
+ * qualcuno lo scelga a mano. Quindi il pulsante CHIEDE: lascia una richiesta
+ * su Supabase, lo script sul PC la trova al giro successivo (gira ogni minuto),
+ * rilegge i fogli e la chiude. Qui si aspetta quella conferma, al massimo
+ * FINESTRA_ATTESA, e poi si aggiorna comunque - dicendo com'e' andata, perche'
+ * un'attesa finita male senza dirlo e' peggio di nessuna attesa.
  *
  * La soglia
  * ---------
@@ -78,11 +89,18 @@ function modificaInCorso() {
   }
 }
 
+// Quanto si aspetta il PC prima di rinunciare. Lo script gira ogni minuto:
+// 50 secondi coprono il caso normale piu' il tempo della rilettura.
+const FINESTRA_ATTESA = 50 * 1000
+const PASSO_ATTESA = 2000
+
 export const AggiornamentoContext = React.createContext({
   versione: 1,
   aggiornatoAlle: null,
   inCorso: false,
+  fase: null,
   aggiorna: () => {},
+  rileggiFogli: async () => {},
 })
 
 export function useAggiornamento() {
@@ -93,6 +111,7 @@ export function ProviderAggiornamento({ children }) {
   const [versione, setVersione] = React.useState(1)
   const [aggiornatoAlle, setAggiornatoAlle] = React.useState(() => new Date())
   const [inCorso, setInCorso] = React.useState(false)
+  const [fase, setFase] = React.useState(null)  // chiedo | attendo | fatto | scaduto
 
   // Serve dentro i listener senza rimetterli a ogni aggiornamento.
   const ultimoRef = React.useRef(Date.now())
@@ -108,6 +127,40 @@ export function ProviderAggiornamento({ children }) {
     const t = setTimeout(() => setInCorso(false), 900)
     return () => clearTimeout(t)
   }, [])
+
+  /**
+   * Chiede al PC di rileggere i fogli, aspetta la conferma, poi aggiorna.
+   * Restituisce sempre un esito, anche quando va male: chi ha premuto ha
+   * diritto di sapere se sta guardando numeri riletti adesso o quelli di prima.
+   */
+  const rileggiFogli = React.useCallback(async () => {
+    setInCorso(true)
+    setFase('chiedo')
+    let esito = { ok: false, motivo: 'ignoto' }
+    try {
+      const richiesta = await scadenzarioApi.chiediRilettura('CRM')
+      const chiestaIl = richiesta?.chiesta_il ? new Date(richiesta.chiesta_il).getTime() : Date.now()
+      setFase('attendo')
+
+      const scadenza = Date.now() + FINESTRA_ATTESA
+      while (Date.now() < scadenza) {
+        await new Promise(r => setTimeout(r, PASSO_ATTESA))
+        let stato = null
+        try { stato = await scadenzarioApi.statoRilettura() } catch (_) { continue }
+        const ultima = stato?.ultima_sincronia ? new Date(stato.ultima_sincronia).getTime() : 0
+        // La rilettura vale se e' avvenuta DOPO che l'abbiamo chiesta: una
+        // sincronia di due minuti fa non e' una risposta alla nostra domanda.
+        if (ultima > chiestaIl) { esito = { ok: true }; break }
+      }
+      if (!esito.ok) esito = { ok: false, motivo: 'attesa' }
+    } catch (e) {
+      esito = { ok: false, motivo: 'errore', dettaglio: e.message }
+    }
+    setFase(esito.ok ? 'fatto' : 'scaduto')
+    aggiorna()
+    setTimeout(() => setFase(null), 6000)
+    return esito
+  }, [aggiorna])
 
   const aggiornaSeVecchio = React.useCallback((soglia) => {
     if (Date.now() - ultimoRef.current < soglia) return
@@ -145,8 +198,8 @@ export function ProviderAggiornamento({ children }) {
   }, [aggiorna, aggiornaSeVecchio])
 
   const valore = React.useMemo(
-    () => ({ versione, aggiornatoAlle, inCorso, aggiorna }),
-    [versione, aggiornatoAlle, inCorso, aggiorna]
+    () => ({ versione, aggiornatoAlle, inCorso, fase, aggiorna, rileggiFogli }),
+    [versione, aggiornatoAlle, inCorso, fase, aggiorna, rileggiFogli]
   )
 
   return (

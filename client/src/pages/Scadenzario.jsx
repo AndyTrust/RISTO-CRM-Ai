@@ -45,6 +45,7 @@ import {
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { scadenzarioApi } from '../api/supabase-client'
+import { useAggiornamento } from '../lib/aggiornamento'
 import PageAssistant from '../components/PageAssistant'
 import RileggiFogli from '../components/RileggiFogli'
 import Avvisi from '../components/Avvisi'
@@ -216,6 +217,8 @@ export default function Scadenzario() {
   }, [])
   useEffect(carica, [carica])
 
+  const { inCorso, fase, rileggiFogli } = useAggiornamento()
+
   const filtrate = useMemo(() => {
     let r = righe
     if (sede !== 'Tutte') r = r.filter(x => (x.sede || 'Da assegnare') === sede)
@@ -351,9 +354,18 @@ export default function Scadenzario() {
               Fatture fornitore ancora aperte e costi fissi gia' pianificati
             </p>
           </div>
-          <button onClick={carica}
-            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium px-4 py-2 rounded-lg transition">
-            <RefreshCw size={14} className={busy ? 'animate-spin' : ''} /> Ricarica
+          {/* "Ricarica" non rilegge solo il database: chiede prima al PC di
+              rileggere i fogli Excel, perche' i numeri che contano qui - i
+              pagamenti - li scrive l'amministrazione la' dentro. Se il PC non
+              risponde entro un minuto si aggiorna comunque, e lo dice. */}
+          <button onClick={rileggiFogli} disabled={inCorso}
+            className={`flex items-center gap-2 text-white text-sm font-medium px-4 py-2 rounded-lg transition ${
+              inCorso ? 'bg-blue-900/50 text-blue-200' : 'bg-blue-600 hover:bg-blue-500'}`}>
+            <RefreshCw size={14} className={(busy || inCorso) ? 'animate-spin' : ''} />
+            {fase === 'chiedo' ? 'Chiedo al PC...'
+              : fase === 'attendo' ? 'Rileggo i fogli...'
+              : fase === 'scaduto' ? 'Il PC non risponde'
+              : 'Ricarica'}
           </button>
         </div>
 

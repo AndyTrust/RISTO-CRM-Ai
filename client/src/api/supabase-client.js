@@ -5003,6 +5003,23 @@ export const scadenzarioApi = {
     return data ?? []
   },
 
+  // ---- Rilettura su richiesta ----------------------------------------------
+  // Il browser non puo' aprire gli xlsx: stanno sul disco del PC. Quindi non
+  // legge, CHIEDE. Lo script sul PC vede la richiesta al giro successivo (gira
+  // ogni minuto), rilegge i fogli anche se non sono cambiati, e la chiude.
+  chiediRilettura: async (autore = null) => {
+    const { data, error } = await supabase.rpc('chiedi_rilettura', { p_autore: autore })
+    if (error) throw error
+    return data
+  },
+
+  // Com'e' messa la rilettura adesso: e' quello che si guarda mentre si aspetta.
+  statoRilettura: async () => {
+    const { data, error } = await supabase.from('v_stato_rilettura').select('*').single()
+    if (error) throw error
+    return data
+  },
+
   // ---- Rilettura dei fogli ------------------------------------------------
   // Il registro dei pagamenti era stato caricato una volta sola, a mano: da li'
   // in poi l'amministrazione segnava un pagamento sull'xlsx e lo Scadenzario

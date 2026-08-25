@@ -2,6 +2,7 @@ import React from 'react'
 import { RefreshCw, FileSpreadsheet, CheckCircle2, AlertTriangle, Clock } from 'lucide-react'
 import { scadenzarioApi } from '../api/supabase-client'
 import { leggiFoglioAmministrazione } from '../lib/sheetjs'
+import { useAggiornamento } from '../lib/aggiornamento'
 
 /**
  * RileggiFogli — il ponte fra l'xlsx dell'amministrazione e lo Scadenzario.
@@ -15,9 +16,14 @@ import { leggiFoglioAmministrazione } from '../lib/sheetjs'
  *
  * DUE STRADE, LA STESSA FUNZIONE
  * Sul PC dell'amministrazione un'attivita' pianificata rilegge i fogli da sola
- * ogni ora. Questo pulsante serve per non aspettare: si scelgono i due file e
- * la rilettura parte subito. Tutti e due chiamano sincronizza_foglio, che e'
- * l'unico posto in cui il foglio viene interpretato.
+ * ogni minuto, e chiude le richieste che arrivano da qui. Il pulsante grande
+ * chiede al PC di farlo adesso e aspetta la conferma: e' la strada normale,
+ * non serve avere i file sottomano.
+ *
+ * La seconda strada - scegliere i due xlsx a mano - resta per il caso in cui
+ * il PC dell'amministrazione sia spento. Da qualunque computer, con i file
+ * sottomano, si aggiorna lo stesso. Tutte e due finiscono in
+ * sincronizza_foglio, che e' l'unico posto in cui il foglio viene interpretato.
  *
  * L'ETICHETTA CONTA QUANTO IL PULSANTE
  * Sopra al bottone c'e' sempre scritto quando i fogli sono stati letti l'ultima
@@ -38,6 +44,7 @@ function quandoUmano(iso) {
 }
 
 export default function RileggiFogli({ onFatto, compatto = false, scuro = false }) {
+  const { inCorso, fase, rileggiFogli } = useAggiornamento()
   const input = React.useRef(null)
   const [stato, setStato] = React.useState('fermo')   // fermo | leggo | fatto | errore
   const [messaggio, setMessaggio] = React.useState(null)
@@ -83,17 +90,29 @@ export default function RileggiFogli({ onFatto, compatto = false, scuro = false 
         : 'rounded-xl border border-gray-200 bg-white p-4'}>
       <div className="flex flex-wrap items-center gap-3">
         <button
-          onClick={() => input.current?.click()}
-          disabled={stato === 'leggo'}
+          onClick={rileggiFogli}
+          disabled={inCorso || stato === 'leggo'}
           className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-            stato === 'leggo'
+            (inCorso || stato === 'leggo')
               ? (scuro ? 'bg-white/5 text-gray-500' : 'bg-gray-100 text-gray-400')
               : (scuro ? 'bg-emerald-600 text-white hover:bg-emerald-500'
                        : 'bg-gray-900 text-white hover:bg-gray-700')
           }`}
         >
-          <RefreshCw size={14} className={stato === 'leggo' ? 'animate-spin' : ''} />
-          {stato === 'leggo' ? 'Rileggo i fogli...' : 'Rileggi i fogli Excel'}
+          <RefreshCw size={14} className={inCorso ? 'animate-spin' : ''} />
+          {fase === 'chiedo'  ? 'Chiedo al PC...'
+            : fase === 'attendo' ? 'Rileggo i fogli...'
+            : fase === 'scaduto' ? 'Il PC non risponde'
+            : 'Rileggi i fogli Excel'}
+        </button>
+
+        <button
+          onClick={() => input.current?.click()}
+          disabled={stato === 'leggo'}
+          className={`text-xs underline underline-offset-2 ${
+            scuro ? 'text-gray-400 hover:text-gray-200' : 'text-gray-500 hover:text-gray-800'}`}
+        >
+          {stato === 'leggo' ? 'leggo i file scelti...' : 'oppure scegli i file a mano'}
         </button>
 
         <span className={`inline-flex items-center gap-1.5 text-xs ${scuro ? 'text-gray-400' : 'text-gray-500'}`}>
@@ -111,10 +130,11 @@ export default function RileggiFogli({ onFatto, compatto = false, scuro = false 
 
       {!compatto && (
         <p className={`mt-2 text-xs leading-relaxed ${scuro ? 'text-gray-400' : 'text-gray-500'}`}>
-          Scegli <strong>Mameli26.xlsx</strong> e <strong>Predda_Niedda26.xlsx</strong>: vengono lette
-          le schede FORNITORI e RATEALI e riportate nel CRM. Sul pagato comanda il foglio, quindi le
-          fatture che l'amministrazione ha gia' saldato spariscono da qui. Sul PC la stessa cosa
-          succede da sola ogni ora.
+          Il PC dell'amministrazione rilegge i fogli <strong>da solo ogni minuto</strong>, e appena
+          uno dei due file cambia lo porta dentro. Il pulsante serve a non aspettare nemmeno quello:
+          chiede al PC di rileggere adesso. Vengono lette le schede FORNITORI e RATEALI; sul pagato
+          comanda il foglio, quindi le fatture gia' saldate spariscono da qui. Se il PC e' spento,
+          <strong>scegli i file a mano</strong>: funziona da qualunque computer.
         </p>
       )}
 
