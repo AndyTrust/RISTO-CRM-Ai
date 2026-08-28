@@ -70,8 +70,8 @@ export default function RileggiFogli({ onFatto, compatto = false, scuro = false 
     const out = []
     for (const f of files) {
       try {
-        const { sede, fornitori, rateali } = await leggiFoglioAmministrazione(f)
-        const r = await scadenzarioApi.sincronizzaFoglio({ sede, fornitori, rateali })
+        const { sede, fornitori, rateali, giornaliera } = await leggiFoglioAmministrazione(f)
+        const r = await scadenzarioApi.sincronizzaFoglio({ sede, fornitori, rateali, giornaliera })
         if (r?.ok === false) throw new Error(r.errore || 'errore sconosciuto')
         out.push({ nome: f.name, sede, ok: true, ...r })
       } catch (e) {

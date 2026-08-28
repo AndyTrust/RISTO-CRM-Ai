@@ -70,7 +70,7 @@ export function grigliaDi(wb, XLSX, nomeScheda) {
   return out
 }
 
-/** Legge un file scelto dall'utente e ne restituisce le due schede che servono. */
+/** Legge un file scelto dall'utente e ne restituisce le tre schede che servono. */
 export async function leggiFoglioAmministrazione(file) {
   const sede = sedeDaNome(file.name)
   if (!sede) throw new Error('Sede non riconosciuta: il nome deve contenere "Mameli" o "Predda".')
@@ -78,5 +78,13 @@ export async function leggiFoglioAmministrazione(file) {
   const wb = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true })
   const fornitori = grigliaDi(wb, XLSX, 'FORNITORI')
   if (!fornitori || fornitori.length < 2) throw new Error('scheda FORNITORI assente o vuota')
-  return { sede, fornitori, rateali: grigliaDi(wb, XLSX, 'RATEALI') }
+  // GIORNALIERA alimenta la dashboard (incassi, coperti, tender). Va con le
+  // altre due: se il PC e' spento e si caricano i file a mano, non ha senso
+  // aggiornare lo scadenzario e lasciare il cruscotto indietro.
+  return {
+    sede,
+    fornitori,
+    rateali: grigliaDi(wb, XLSX, 'RATEALI'),
+    giornaliera: grigliaDi(wb, XLSX, 'GIORNALIERA'),
+  }
 }

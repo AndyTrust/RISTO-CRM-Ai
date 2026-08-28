@@ -5027,9 +5027,11 @@ export const scadenzarioApi = {
   // specchio del foglio, riabbina le righe alle fatture elettroniche e chiude
   // quelle che il foglio da' per pagate. La griglia si manda grezza: come si
   // legge lo decide Postgres, in un posto solo, condiviso con lo script del PC.
-  sincronizzaFoglio: async ({ sede, fornitori = null, rateali = null, origine = 'CRM' }) => {
+  sincronizzaFoglio: async ({ sede, fornitori = null, rateali = null,
+                             giornaliera = null, origine = 'CRM' }) => {
     const { data, error } = await supabase.rpc('sincronizza_foglio', {
-      p_sede: sede, p_fornitori: fornitori, p_rateali: rateali, p_origine: origine,
+      p_sede: sede, p_fornitori: fornitori, p_rateali: rateali,
+      p_giornaliera: giornaliera, p_origine: origine,
     })
     if (error) throw error
     return data
