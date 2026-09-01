@@ -45,6 +45,7 @@ import {
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { scadenzarioApi } from '../api/supabase-client'
+import { num as leggiImporto } from '../lib/numeri'
 import { useAggiornamento } from '../lib/aggiornamento'
 import PageAssistant from '../components/PageAssistant'
 import RileggiFogli from '../components/RileggiFogli'
@@ -121,11 +122,25 @@ function ModificaSaldo({ riga, onChiudi, onSalvato }) {
   const [err, setErr]       = useState(null)
 
   const salva = async () => {
+    // FIX 2026-09-01 (issue #177): qui c'era parseFloat(x.replace(',', '.')),
+    // che su "1.234,56" salvava 1,23. Il parser sta in lib/numeri.js, e' lo
+    // stesso di ImportExcel e di applica_al_foglio.py, e torna null - mai NaN -
+    // quando il testo non e' un importo: NaN sarebbe diventato un `null` a
+    // database, cioe' un pagamento sparito in silenzio.
+    const importo = leggiImporto(pagato)
+    if (importo === null) {
+      setErr('Importo non leggibile. Scrivilo come 1.234,56 oppure 1234.56.')
+      return
+    }
+    if (importo < 0) {
+      setErr('L\'importo pagato non puo\' essere negativo.')
+      return
+    }
     setBusy(true); setErr(null)
     try {
       const out = await scadenzarioApi.segnaFatturaPagata({
         fatturaId: riga.chiave,
-        pagato: parseFloat(String(pagato).replace(',', '.')),
+        pagato: importo,
         data, metodo, autore: 'CRM',
       })
       onSalvato(out)
@@ -201,6 +216,12 @@ export default function Scadenzario() {
   const [fascia, setFascia] = useState(null)
   const [ordina, setOrdina] = useState('importo')
 
+  // FIX 2026-09-01 (issue #189): sei query in parallelo e nessuna guardia di
+  // smontaggio. Col rimontaggio automatico ogni 15 minuti (lib/aggiornamento)
+  // uscire dalla pagina a caricamento avviato e' normale, non eccezionale.
+  const vivo = React.useRef(true)
+  useEffect(() => () => { vivo.current = false }, [])
+
   const carica = React.useCallback(() => {
     setBusy(true); setErr(null)
     Promise.all([
@@ -211,9 +232,12 @@ export default function Scadenzario() {
       scadenzarioApi.riconciliazioneTotali(),
       scadenzarioApi.codaFoglio(),
     ])
-      .then(([e, p, r, rc, rt, cd]) => { setRighe(e); setPiani(p); setRate(r); setRicon(rc); setRiconTot(rt); setCoda(cd) })
-      .catch(e => setErr(e.message || String(e)))
-      .finally(() => setBusy(false))
+      .then(([e, p, r, rc, rt, cd]) => {
+        if (!vivo.current) return
+        setRighe(e); setPiani(p); setRate(r); setRicon(rc); setRiconTot(rt); setCoda(cd)
+      })
+      .catch(e => { if (vivo.current) setErr(e.message || String(e)) })
+      .finally(() => { if (vivo.current) setBusy(false) })
   }, [])
   useEffect(carica, [carica])
 

@@ -124,9 +124,16 @@ export default function F24Page() {
   const [apertaId, setApertaId] = useState(null)
   const [catAperta, setCatAperta] = useState('Contributi INPS')
 
+  // FIX 2026-09-01 (issue #189): guardia di smontaggio, come in Avvisi.jsx.
+  const vivo = React.useRef(true)
+  useEffect(() => () => { vivo.current = false }, [])
+
   const carica = React.useCallback(() => {
     setBusy(true); setErr(null)
-    f24Api.quadro().then(setDati).catch(e => setErr(e.message || String(e))).finally(() => setBusy(false))
+    f24Api.quadro()
+      .then(d => { if (vivo.current) setDati(d) })
+      .catch(e => { if (vivo.current) setErr(e.message || String(e)) })
+      .finally(() => { if (vivo.current) setBusy(false) })
   }, [])
   useEffect(carica, [carica])
 

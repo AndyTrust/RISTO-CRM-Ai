@@ -72,6 +72,23 @@ const EVENTO_INVALIDA = 'crm-dati-aggiornati'
 const SOGLIA_RITORNO = 5 * 60 * 1000
 // Scheda lasciata aperta e visibile: ricontrolla comunque ogni quarto d'ora.
 const SOGLIA_PERIODICA = 15 * 60 * 1000
+// ...ma solo se l'utente non la sta usando in questo momento.
+//
+// FIX 2026-09-01 (issue #186). Il commento qui sopra prometteva "mentre la
+// scheda e' visibile E IN USO", e "in uso" non esisteva: c'era solo
+// visibilityState. Risultato: dopo quindici minuti il rimontaggio azzerava lo
+// stato di una cinquantina di pagine - filtri di Statistiche Sala, sezione
+// aperta di Controllo Costi, periodo di Costi & Prezzi - mentre uno le stava
+// guardando. `data-modifica-in-corso` copriva due soli punti, e solo con un
+// editor aperto.
+//
+// Ora l'aggiornamento periodico aspetta che l'utente stia fermo da un paio di
+// minuti. Chi legge e filtra tiene la sua pagina; chi ha lasciato la scheda
+// aperta e se n'e' andato se la ritrova fresca. Non c'e' un tetto massimo di
+// attesa di proposito: l'eta' del dato e' gia' scritta in chiaro nella barra
+// laterale ("aggiornato 3 min fa"), quindi un dato vecchio si vede, mentre uno
+// stato di pagina azzerato senza spiegazione no.
+const INATTIVITA_MINIMA = 2 * 60 * 1000
 
 /**
  * Un rimontaggio azzera lo stato locale della pagina: se c'e' un editor aperto
@@ -122,6 +139,17 @@ export function ProviderAggiornamento({ children }) {
 
   // Serve dentro i listener senza rimetterli a ogni aggiornamento.
   const ultimoRef = React.useRef(Date.now())
+  // FIX 2026-09-01 (issue #185): il timer dello spinner. Prima `aggiorna`
+  // restituiva `() => clearTimeout(t)`, ma non e' un useEffect: nessuno dei
+  // cinque chiamanti usava quel valore. I timer si accumulavano e uno orfano
+  // (focus e visibilitychange arrivano insieme al ritorno sulla scheda) spegneva
+  // lo spinner dell'aggiornamento successivo appena partito.
+  const timerSpinner = React.useRef(null)
+  const timerFase = React.useRef(null)
+  React.useEffect(() => () => {
+    clearTimeout(timerSpinner.current)
+    clearTimeout(timerFase.current)
+  }, [])
 
   const aggiorna = React.useCallback(() => {
     ultimoRef.current = Date.now()
@@ -131,8 +159,8 @@ export function ProviderAggiornamento({ children }) {
     // Lo spinner non attende le query (che stanno dentro le pagine, ognuna con
     // il suo stato di caricamento): segnala solo che il rimontaggio è partito.
     setInCorso(true)
-    const t = setTimeout(() => setInCorso(false), 900)
-    return () => clearTimeout(t)
+    clearTimeout(timerSpinner.current)
+    timerSpinner.current = setTimeout(() => setInCorso(false), 900)
   }, [])
 
   /**
@@ -142,6 +170,7 @@ export function ProviderAggiornamento({ children }) {
    */
   const rileggiFogli = React.useCallback(async () => {
     setInCorso(true)
+    clearTimeout(timerFase.current)
     setFase('chiedo')
     let esito = { ok: false, motivo: 'ignoto' }
     try {
@@ -165,13 +194,28 @@ export function ProviderAggiornamento({ children }) {
     }
     setFase(esito.ok ? 'fatto' : 'scaduto')
     aggiorna()
-    setTimeout(() => setFase(null), 6000)
+    clearTimeout(timerFase.current)
+    timerFase.current = setTimeout(() => setFase(null), 6000)
     return esito
   }, [aggiorna])
 
-  const aggiornaSeVecchio = React.useCallback((soglia) => {
+  // Ultimo momento in cui l'utente ha toccato qualcosa. In un ref e non in uno
+  // stato: cambia a ogni click e non deve far rirenderizzare niente.
+  const ultimaAzioneRef = React.useRef(Date.now())
+  React.useEffect(() => {
+    const tocco = () => { ultimaAzioneRef.current = Date.now() }
+    const eventi = ['pointerdown', 'keydown', 'wheel', 'touchstart']
+    for (const e of eventi) window.addEventListener(e, tocco, { passive: true, capture: true })
+    return () => {
+      for (const e of eventi) window.removeEventListener(e, tocco, { capture: true })
+    }
+  }, [])
+
+  const aggiornaSeVecchio = React.useCallback((soglia, richiediInattivita = false) => {
     if (Date.now() - ultimoRef.current < soglia) return
     if (modificaInCorso()) return
+    // #186: non si smonta la pagina sotto le mani di chi la sta usando.
+    if (richiediInattivita && Date.now() - ultimaAzioneRef.current < INATTIVITA_MINIMA) return
     aggiorna()
   }, [aggiorna])
 
@@ -192,7 +236,7 @@ export function ProviderAggiornamento({ children }) {
 
     const periodico = setInterval(() => {
       if (document.visibilityState !== 'visible') return
-      aggiornaSeVecchio(SOGLIA_PERIODICA)
+      aggiornaSeVecchio(SOGLIA_PERIODICA, true)   // true = solo se sta fermo (#186)
     }, 60 * 1000)
 
     return () => {

@@ -36,6 +36,7 @@ import {
   CheckCircle2, CircleDashed, AlertTriangle, AlertOctagon, Archive, Pencil, X, Save, FileSpreadsheet,
 } from 'lucide-react'
 import { scadenzarioApi } from '../api/supabase-client'
+import { num as leggiImporto } from '../lib/numeri'
 import { useAggiornamento } from '../lib/aggiornamento'
 import PageAssistant from '../components/PageAssistant'
 import RileggiFogli from '../components/RileggiFogli'
@@ -118,13 +119,24 @@ function ModificaRata({ rata, onChiudi, onSalvato }) {
   const [err, setErr]           = useState(null)
 
   const salva = async () => {
+    // FIX 2026-09-01 (issue #177): il campo ha placeholder "0,00", cioe' invita
+    // al formato italiano, e il vecchio parseFloat(x.replace(',', '.')) su
+    // "1.234,56" salvava 1,23. Campo vuoto = importo assente (caso legittimo:
+    // le rate non ancora datate non hanno importo); campo scritto male = errore
+    // detto in faccia, non un null silenzioso.
+    const vuoto = String(importo).trim() === ''
+    const val = vuoto ? null : leggiImporto(importo)
+    if (!vuoto && val === null) {
+      setErr('Importo non leggibile. Scrivilo come 1.234,56 oppure 1234.56.')
+      return
+    }
     setBusy(true); setErr(null)
     try {
       await scadenzarioApi.segnaRata({
         rataId: rata.id,
         pagata,
         scadenza: scadenza || null,
-        importo: importo === '' ? null : parseFloat(String(importo).replace(',', '.')),
+        importo: val,
         dataPagamento: pagata ? (dataPag || oggiIso()) : null,
         autore: 'CRM',
       })

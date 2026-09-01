@@ -23,6 +23,9 @@ import {
 } from 'lucide-react'
 import { supabase } from '../supabase'
 import { caricaXLSX } from '../lib/sheetjs'
+// La regola di lettura degli importi vive in lib/numeri.js: era corretta qui e
+// sbagliata negli editor di Scadenzario e Rate & Piani (#177). Ora e' una sola.
+import { num } from '../lib/numeri'
 
 /**
  * SheetJS si carica da CDN al primo uso invece di essere una dipendenza npm:
@@ -52,15 +55,6 @@ function sedeDa(nome) {
   return null
 }
 
-function num(v) {
-  if (v === null || v === undefined || v === '') return null
-  if (typeof v === 'number') return v
-  let s = String(v).trim().replace(/[€\s]/g, '')
-  if (s.includes(',') && s.includes('.')) s = s.replace(/\./g, '').replace(',', '.')
-  else if (s.includes(',')) s = s.replace(',', '.')
-  const f = parseFloat(s)
-  return isNaN(f) ? null : f
-}
 
 function dataDa(v, XLSX) {
   if (v instanceof Date) {

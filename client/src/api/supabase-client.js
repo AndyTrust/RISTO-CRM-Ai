@@ -4994,13 +4994,27 @@ export const scadenzarioApi = {
   // avvisi lo scrive la vista v_avvisi, non il frontend: la stessa frase deve
   // arrivare identica alla fascia in cima alla pagina, al pallino nel menu e
   // alla notifica del mattino.
+  // FIX 2026-09-01 (issue #192): la stessa vista veniva interrogata due volte a
+  // ogni aggiornamento - una dal pallino nella barra laterale, una dalla fascia
+  // in cima alla pagina - perche' i due componenti non si conoscono. Qui si
+  // condivide la richiesta GIA' IN VOLO, non il risultato: due chiamate nello
+  // stesso istante diventano una sola query, ma una chiamata successiva riparte
+  // sempre da zero. Niente cache, quindi niente rischio di mostrare avvisi
+  // vecchi dopo un "Aggiorna dati" - che su una rata non pagata sarebbe peggio
+  // della query in piu'.
+  _avvisiInVolo: null,
   avvisi: async () => {
-    const { data, error } = await supabase
-      .from('v_avvisi').select('*')
-      .order('gravita', { ascending: true })
-      .order('scadenza', { ascending: true, nullsFirst: true })
-    if (error) throw error
-    return data ?? []
+    if (scadenzarioApi._avvisiInVolo) return scadenzarioApi._avvisiInVolo
+    const p = (async () => {
+      const { data, error } = await supabase
+        .from('v_avvisi').select('*')
+        .order('gravita', { ascending: true })
+        .order('scadenza', { ascending: true, nullsFirst: true })
+      if (error) throw error
+      return data ?? []
+    })()
+    scadenzarioApi._avvisiInVolo = p
+    try { return await p } finally { scadenzarioApi._avvisiInVolo = null }
   },
 
   // ---- Rilettura su richiesta ----------------------------------------------

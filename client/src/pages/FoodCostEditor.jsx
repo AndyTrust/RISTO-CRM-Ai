@@ -8,6 +8,7 @@ import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import { Coins, Search, Save, Loader, CheckCircle2, AlertTriangle, RefreshCw, Receipt, X, Wand2, ChefHat } from 'lucide-react'
 import { listinoApi, ricetteApi } from '../api/client'
 import { BottoneCsv, NotaCopertura } from '../lib/tabella'
+import { num as leggiImporto } from '../lib/numeri'
 import RecipeCard from './RecipeCard'
 
 // Categorie "rivendita" (prodotto acquistato e rivenduto, senza ricetta)
@@ -123,8 +124,9 @@ export default function FoodCostEditor() {
     if (x && x.n_ingredienti > 0) return x.costo_food
     const k = keyOf(r)
     const raw = edits[k] !== undefined ? edits[k] : (r.costo_acquisto ?? '')
-    const c = parseFloat(String(raw).replace(',', '.'))
-    return isFinite(c) ? c : null
+    // FIX 2026-09-01 (issue #177): stesso parser di Scadenzario e ImportExcel.
+    // Un costo ingrediente scritto "1.234,56" valeva 1,23 e falsava il food cost.
+    return leggiImporto(raw)
   }
 
   // food cost % live (definito da ricetta o indicativo)
@@ -216,7 +218,11 @@ export default function FoodCostEditor() {
     const falliti = []
     for (const k of changedKeys) {
       const r = rows.find(x => keyOf(x) === k)
-      const costo = parseFloat(String(edits[k]).replace(',', '.'))
+      const costo = leggiImporto(edits[k])
+      if (costo === null) {
+        falliti.push(`${r?.prodotto || k}: costo non leggibile ("${edits[k]}")`)
+        continue
+      }
       try {
         await listinoApi.salvaCosto({
           nome_prodotto: r.prodotto, categoria: r.categoria,

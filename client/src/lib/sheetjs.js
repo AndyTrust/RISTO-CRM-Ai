@@ -7,7 +7,22 @@
  * una data - non va scritta due volte in due modi leggermente diversi.
  */
 
-const CDN_XLSX = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'
+// SheetJS non arriva piu' da un CDN.
+//
+// FIX 2026-09-01 (issue #190). Prima era cdnjs, senza `integrity` e senza
+// `crossOrigin`, dentro una pagina che tiene il JWT Supabase in memoria e
+// subito dopo chiama `sincronizza_foglio` - cioe' la scrittura piu' potente del
+// CRM. La via corta sarebbe stata aggiungere un hash SRI; quella giusta e'
+// non dipendere da un dominio di terzi per eseguire codice qui dentro. Il file
+// e' ora servito dal nostro stesso dominio, da public/vendor/, quindi non c'e'
+// nessun hash da tenere aggiornato e nessun terzo da cui dipendere: se cambia
+// il file, e' perche' l'abbiamo cambiato noi.
+//
+// Per aggiornare la libreria: npm pack xlsx@<versione>, prendere
+// dist/xlsx.full.min.js, metterlo in public/vendor/ e cambiare la riga qui
+// sotto. Il file attualmente servito e' xlsx 0.18.5, la stessa versione che
+// arrivava dal CDN.
+const URL_XLSX = '/vendor/xlsx-0.18.5.full.min.js'
 let caricamento = null
 
 export function caricaXLSX() {
@@ -15,9 +30,17 @@ export function caricaXLSX() {
   if (caricamento) return caricamento
   caricamento = new Promise((ok, ko) => {
     const s = document.createElement('script')
-    s.src = CDN_XLSX
-    s.onload = () => (window.XLSX ? ok(window.XLSX) : ko(new Error('SheetJS non disponibile')))
-    s.onerror = () => { caricamento = null; ko(new Error('Non riesco a caricare SheetJS: sei offline?')) }
+    s.src = URL_XLSX
+    // `caricamento` va azzerato su OGNI fallimento, non solo su onerror: se la
+    // risposta arriva ma non definisce window.XLSX (un index.html restituito al
+    // posto del file, un captive portal), la promise rigettata restava in cache
+    // di modulo e ogni tentativo successivo falliva senza nemmeno riprovare,
+    // fino al ricaricamento della pagina.
+    const fallito = (msg) => { caricamento = null; ko(new Error(msg)) }
+    s.onload = () => (window.XLSX
+      ? ok(window.XLSX)
+      : fallito("Il file di SheetJS e' stato scaricato ma non contiene la libreria."))
+    s.onerror = () => fallito('Non riesco a caricare SheetJS da ' + URL_XLSX + '.')
     document.head.appendChild(s)
   })
   return caricamento

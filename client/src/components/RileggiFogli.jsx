@@ -47,26 +47,54 @@ export default function RileggiFogli({ onFatto, compatto = false, scuro = false 
   const { inCorso, fase, rileggiFogli } = useAggiornamento()
   const input = React.useRef(null)
   const [stato, setStato] = React.useState('fermo')   // fermo | leggo | fatto | errore
-  const [messaggio, setMessaggio] = React.useState(null)
   const [esiti, setEsiti] = React.useState([])
   const [ultime, setUltime] = React.useState([])
+  // FIX 2026-09-01 (issue #189): senza questa guardia il .then() di una lettura
+  // partita e non ancora tornata faceva setState su un componente smontato —
+  // e col rimontaggio automatico ogni 15 minuti non e' piu' un caso di scuola.
+  const vivo = React.useRef(true)
+  React.useEffect(() => () => { vivo.current = false }, [])
 
   const caricaUltime = React.useCallback(() => {
-    scadenzarioApi.ultimeSincronie().then(setUltime).catch(() => {})
+    return scadenzarioApi.ultimeSincronie()
+      .then((r) => { if (vivo.current) setUltime(r); return r })
+      .catch(() => [])
   }, [])
+
+  // FIX 2026-09-01 (issue #192, meta' lato client): il pulsante diceva soltanto
+  // "Aggiornato" oppure "Il PC non risponde". Un giro FINITO MA ANDATO MALE -
+  // il PC ha risposto e ha fallito - era indistinguibile da uno riuscito: lo
+  // script scrive un esito con problemi e saltati, e nessuno lo leggeva.
+  // Qui si guardano le sincronie scritte dopo il click: se qualcuna e' ok=false
+  // lo si dice, con il motivo che ha registrato lo script.
+  const [guai, setGuai] = React.useState(null)
+  const rileggiEControlla = React.useCallback(async () => {
+    const da = Date.now()
+    setGuai(null)
+    await rileggiFogli()
+    const righe = await caricaUltime()
+    if (!vivo.current) return
+    const fallite = (righe || []).filter(
+      (r) => !r.ok && r.quando && new Date(r.quando).getTime() >= da - 5000)
+    setGuai(fallite.length ? fallite : null)
+  }, [rileggiFogli, caricaUltime])
   React.useEffect(() => { caricaUltime() }, [caricaUltime])
 
   // L'ultima riuscita per sede: e' quella che dice davvero l'eta' dei numeri.
   const perSede = {}
   for (const s of ultime) if (s.ok && !perSede[s.sede]) perSede[s.sede] = s
-  const piuVecchia = ['MA', 'PN']
-    .map((s) => perSede[s]?.quando)
-    .filter(Boolean)
-    .sort()[0]
+  // FIX 2026-09-01 (issue #182): prima era `.filter(Boolean).sort()[0]`, cioe'
+  // la sede SENZA sincronie riuscite veniva tolta invece di contare come il caso
+  // peggiore. Se Predda Niedda falliva, l'etichetta mostrava sereno l'orario di
+  // Mameli — l'esatto contrario di quello che questo componente esiste per dire.
+  // (ultimeSincronie legge le ultime 20 righe: una sede ferma da un po' ne esce.)
+  const SEDI = [['MA', 'Mameli'], ['PN', 'Predda Niedda']]
+  const senzaLettura = SEDI.filter(([c]) => !perSede[c]).map(([, nome]) => nome)
+  const piuVecchia = SEDI.map(([c]) => perSede[c]?.quando).filter(Boolean).sort()[0]
 
   const gestisci = async (files) => {
     if (!files || !files.length) return
-    setStato('leggo'); setMessaggio(null); setEsiti([])
+    setStato('leggo'); setEsiti([])
     const out = []
     for (const f of files) {
       try {
@@ -78,6 +106,7 @@ export default function RileggiFogli({ onFatto, compatto = false, scuro = false 
         out.push({ nome: f.name, ok: false, errore: e.message })
       }
     }
+    if (!vivo.current) return
     setEsiti(out)
     setStato(out.every((o) => o.ok) ? 'fatto' : 'errore')
     caricaUltime()
@@ -90,7 +119,7 @@ export default function RileggiFogli({ onFatto, compatto = false, scuro = false 
         : 'rounded-xl border border-gray-200 bg-white p-4'}>
       <div className="flex flex-wrap items-center gap-3">
         <button
-          onClick={rileggiFogli}
+          onClick={rileggiEControlla}
           disabled={inCorso || stato === 'leggo'}
           className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
             (inCorso || stato === 'leggo')
@@ -115,11 +144,16 @@ export default function RileggiFogli({ onFatto, compatto = false, scuro = false 
           {stato === 'leggo' ? 'leggo i file scelti...' : 'oppure scegli i file a mano'}
         </button>
 
-        <span className={`inline-flex items-center gap-1.5 text-xs ${scuro ? 'text-gray-400' : 'text-gray-500'}`}>
+        <span className={`inline-flex items-center gap-1.5 text-xs ${
+          senzaLettura.length
+            ? (scuro ? 'text-amber-300' : 'text-amber-700')
+            : (scuro ? 'text-gray-400' : 'text-gray-500')}`}>
           <Clock size={12} />
-          {piuVecchia
-            ? <>fogli letti {quandoUmano(piuVecchia)}</>
-            : <>i fogli non sono ancora mai stati riletti</>}
+          {senzaLettura.length === SEDI.length
+            ? <>i fogli non sono ancora mai stati riletti</>
+            : senzaLettura.length
+              ? <>{senzaLettura.join(' e ')} non risulta letto · l'altro {quandoUmano(piuVecchia)}</>
+              : <>fogli letti {quandoUmano(piuVecchia)}</>}
         </span>
 
         <input
@@ -138,7 +172,23 @@ export default function RileggiFogli({ onFatto, compatto = false, scuro = false 
         </p>
       )}
 
-      {messaggio && <p className={`mt-2 text-xs ${scuro ? 'text-gray-300' : 'text-gray-600'}`}>{messaggio}</p>}
+      {guai && (
+        <div className={`mt-3 rounded-lg border px-3 py-2 text-xs ${
+          scuro ? 'border-rose-700/50 bg-rose-900/20 text-rose-200'
+                : 'border-red-200 bg-red-50 text-red-700'}`}>
+          <p className="font-medium flex items-center gap-2">
+            <AlertTriangle size={13} /> Il PC ha riletto, ma qualcosa non e' andato
+          </p>
+          <ul className="mt-1 ml-5 list-disc space-y-0.5">
+            {guai.map((g) => (
+              <li key={g.id}>
+                {g.sede === 'MA' ? 'Mameli' : g.sede === 'PN' ? 'Predda Niedda' : g.sede}
+                {' — '}{g.errore || 'motivo non registrato'}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {esiti.length > 0 && (
         <div className="mt-3 space-y-2">
