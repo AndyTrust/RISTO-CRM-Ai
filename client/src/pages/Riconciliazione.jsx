@@ -62,6 +62,9 @@ const PERCHE = {
   rate_finanziamenti: 'Rate segnate come pagate nel CRM contro addebiti veri: se non torna, una rata non è partita.',
   costi_fissi_utenze: 'I costi fissi sono pianificati, non consuntivati: lo scarto qui dice quanto la pianificazione è lontana dal vero.',
   commissioni_banca: 'Nessuna voce del CRM copre gli oneri bancari: sono un costo che finora nessuno registrava.',
+  incassi_ticket: 'Edenred e Pellegrini pagano i buoni pasto a settimane di distanza: il ritardo qui è la norma, non un ammanco.',
+  giroconti_entrata: 'Spostamenti fra conti propri. Non sono ricavi: restano fuori dal confronto, ma si mostrano perché sono la voce più grossa di tutte.',
+  giroconti_uscita: 'Spostamenti fra conti propri. Non sono costi: entrata su un conto e uscita sull\'altro si annullano.',
   da_classificare: 'Movimenti che le regole non sanno leggere. Vanno assegnati a mano: finché sono qui, i totali sotto sono incompleti.',
 }
 
@@ -83,7 +86,7 @@ export default function Riconciliazione() {
       .then(([s, c]) => {
         if (!vivo) return
         setSaldi(s); setCategorie(c)
-        setMese(m => m || (s[0]?.mese ?? null))
+        setMese(m => m || ([...new Set(s.map(x => x.mese))].sort().reverse()[0] ?? null))
       })
       .catch(e => vivo && setErrore(e.message))
       .finally(() => vivo && setCaricando(false))
@@ -116,7 +119,23 @@ export default function Riconciliazione() {
     } catch (e) { setErrore(e.message) }
   }
 
-  const saldoMese = useMemo(() => saldi.find(s => s.mese === mese) || null, [saldi, mese])
+  // I conti sono tre. Il confronto col CRM si fa sul totale — il CRM non sa da
+  // quale conto sia uscito un pagamento — ma i saldi restano per conto, perche'
+  // sommarli darebbe un numero che nessun estratto conto conferma.
+  const mesiDisponibili = useMemo(
+    () => [...new Set(saldi.map(s => s.mese))].sort().reverse(), [saldi])
+  const contiDelMese = useMemo(
+    () => saldi.filter(s => s.mese === mese), [saldi, mese])
+  const saldoMese = useMemo(() => {
+    if (!contiDelMese.length) return null
+    const somma = k => contiDelMese.reduce((t, s) => t + (parseFloat(s[k]) || 0), 0)
+    return {
+      entrate: somma('entrate'), uscite: somma('uscite'),
+      saldo_periodo: somma('saldo_periodo'), saldo_finale: somma('saldo_finale'),
+      movimenti: contiDelMese.reduce((t, s) => t + (s.movimenti || 0), 0),
+      da_classificare: contiDelMese.reduce((t, s) => t + (s.da_classificare || 0), 0),
+    }
+  }, [contiDelMese])
   const entrate = righe.filter(r => r.segno === 'E')
   const uscite  = righe.filter(r => r.segno === 'U')
 
@@ -162,7 +181,7 @@ export default function Riconciliazione() {
           onChange={e => setMese(e.target.value)}
           className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium"
         >
-          {saldi.map(s => <option key={s.mese} value={s.mese}>{meseLabel(s.mese)}</option>)}
+          {mesiDisponibili.map(m => <option key={m} value={m}>{meseLabel(m)}</option>)}
         </select>
       </div>
 
@@ -181,6 +200,20 @@ export default function Riconciliazione() {
           <Tessera etichetta="Saldo del periodo" valore={saldoMese.saldo_periodo} evidenzia />
           <Tessera etichetta="Saldo a fine mese" valore={saldoMese.saldo_finale}
                    nota={`${saldoMese.movimenti} movimenti`} />
+        </div>
+      )}
+
+      {contiDelMese.length > 1 && (
+        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+          <div className="text-xs text-slate-500 mb-2">Saldo a fine mese, conto per conto</div>
+          <div className="grid sm:grid-cols-3 gap-3">
+            {contiDelMese.map(c => (
+              <div key={c.conto} className="flex items-baseline justify-between gap-3">
+                <span className="text-sm text-slate-600">{c.conto.replace(/_/g, ' ')}</span>
+                <span className="text-sm font-medium tabular-nums text-slate-900">{eur(c.saldo_finale)}</span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
