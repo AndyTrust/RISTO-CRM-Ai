@@ -90,6 +90,11 @@ const NAV_GROUPS = [
       // sono a sistema, quindi la pagina ragiona per anzianita' e lo dichiara.
       { id: 'scadenzario',    path: '/scadenzario',    icon: CalendarDays, label: 'Scadenzario',       desc: 'Fatture aperte, ratei e costi fissi in arrivo', alwaysEnabled: true },
       { id: 'rate-piani',     path: '/rate-piani',     icon: Landmark,     label: 'Rate & Piani',      desc: 'Rottamazione, Equitalia, IRES: quando cade ogni rata', alwaysEnabled: true },
+      // Subito dopo scadenzario e rate perche' e' la loro verifica: li' c'e'
+      // quello che il CRM dice di aver pagato, qui quello che la banca dice sia
+      // davvero uscito. E' l'unica pagina alimentata da una fonte esterna a
+      // noi, e per questo la sola che puo' smentire tutte le altre.
+      { id: 'riconciliazione', path: '/riconciliazione', icon: GitCompareArrows, label: 'Riconciliazione',   desc: 'Estratto conto vs CRM, mese per mese', alwaysEnabled: true },
       { id: 'fornitori',      path: '/fornitori',      icon: Building2, label: 'Fornitori & Fatture', desc: 'Fatture, costi, riconciliazione' },
       // Voce nuova: le analisi che 114.650 righe di dettaglio fattura rendono
       // possibili per la prima volta (prezzi per articolo, merceologico, sedi).

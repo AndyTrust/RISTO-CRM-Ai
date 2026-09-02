@@ -5117,3 +5117,61 @@ export const scadenzarioApi = {
     return Object.values(m).sort((a, b) => b.n - a.n)
   },
 }
+
+// ---------------------------------------------------------------------------
+// Riconciliazione bancaria — l'estratto conto contro il CRM.
+//
+// I movimenti li porta dentro lo script sul PC che legge la cartella
+// "ESTRATTI CONTO": qui si legge soltanto, tranne la riclassificazione di un
+// movimento, che passa da una RPC perche' le tabelle sono in sola lettura per
+// la chiave pubblica.
+export const riconciliazioneApi = {
+  // Un mese per riga: entrate, uscite, saldo finale letto dalla banca.
+  saldi: async () => {
+    const { data, error } = await supabase
+      .from('v_riconciliazione_saldi').select('*').order('mese', { ascending: false })
+    if (error) throw error
+    return data ?? []
+  },
+
+  // Il confronto vero: per ogni mese e categoria, banca contro CRM.
+  mensile: async (mese = null) => {
+    let q = supabase.from('v_riconciliazione_mensile').select('*')
+    if (mese) q = q.eq('mese', mese)
+    const { data, error } = await q.order('segno').order('ordine')
+    if (error) throw error
+    return data ?? []
+  },
+
+  categorie: async () => {
+    const { data, error } = await supabase
+      .from('categorie_banca').select('*').order('segno').order('ordine')
+    if (error) throw error
+    return data ?? []
+  },
+
+  // I movimenti di un mese, per aprire una categoria e vedere da dove viene lo scarto.
+  movimenti: async ({ mese, categoria = null } = {}) => {
+    let q = supabase
+      .from('movimenti_bancari')
+      .select('impronta,data_contabile,data_valuta,descrizione,importo,saldo,categoria,origine_file')
+    if (mese) {
+      const dal = mese
+      const al = new Date(new Date(mese).getFullYear(),
+                          new Date(mese).getMonth() + 1, 0).toISOString().slice(0, 10)
+      q = q.gte('data_contabile', dal).lte('data_contabile', al)
+    }
+    if (categoria) q = q.eq('categoria', categoria)
+    const { data, error } = await q.order('data_contabile').limit(2000)
+    if (error) throw error
+    return data ?? []
+  },
+
+  riclassifica: async (impronta, categoria, nota = null) => {
+    const { data, error } = await supabase.rpc('riclassifica_movimento', {
+      p_impronta: impronta, p_categoria: categoria, p_nota: nota,
+    })
+    if (error) throw error
+    return data
+  },
+}

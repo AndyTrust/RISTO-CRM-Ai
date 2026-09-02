@@ -81,6 +81,7 @@ import InsightPage from './pages/InsightPage'
 import CommercialistaPage from './pages/CommercialistaPage'
 import F24Page from './pages/F24Page'
 import Scadenzario from './pages/Scadenzario'
+import Riconciliazione from './pages/Riconciliazione'
 import RatePiani from './pages/RatePiani'
 import { modules as modulesApi, crmConfig } from './api/client'
 import { ProviderAggiornamento, useAggiornamento } from './lib/aggiornamento'
@@ -207,6 +208,10 @@ function AppInterno() {
           <Route path="/f24" element={<F24Page />} />
           {/* Scadenzario: fatture aperte + costi fissi pianificati */}
           <Route path="/scadenzario" element={<Scadenzario />} />
+          {/* Riconciliazione: l'estratto conto contro il CRM. E' l'unica pagina
+              che parte da una fonte esterna alla nostra - la banca - e per
+              questo e' la sola che puo' dire se il resto sta dicendo il vero. */}
+          <Route path="/riconciliazione" element={<Riconciliazione />} />
           {/* Rate & Piani: le scadenze certe, staccate dal resto dello scadenzario */}
           <Route path="/rate-piani" element={<RatePiani />} />
           <Route path="/stato-dati" element={<StatoDati />} />
