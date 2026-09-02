@@ -359,7 +359,19 @@ function Movimenti({ righe, categorie, riclassifica }) {
         {righe.map(m => (
           <tr key={m.impronta} className="border-b border-slate-200/60 last:border-0">
             <td className="py-1.5 pr-3 text-slate-500 whitespace-nowrap w-16">{dataIt(m.data_contabile)}</td>
-            <td className="py-1.5 pr-3 text-slate-700">{m.descrizione}</td>
+            <td className="py-1.5 pr-3 text-slate-700">
+                        {/* Chi c'e' dall'altra parte lo dicono le anagrafiche del CRM:
+                            le buste paga per le persone, il foglio FORNITORI per le
+                            ditte. Se qui non c'e' un nome, quel movimento e' uscito
+                            verso qualcuno che il CRM non conosce - ed e' proprio
+                            quello che vale la pena guardare. */}
+                        {m.controparte && (
+                          <span className="inline-block mr-2 px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 text-[11px] font-medium">
+                            {m.controparte}
+                          </span>
+                        )}
+                        {m.descrizione}
+                      </td>
             <td className="py-1.5 pr-3 text-right tabular-nums whitespace-nowrap w-28">
               {eur(Math.abs(parseFloat(m.importo)))}
             </td>

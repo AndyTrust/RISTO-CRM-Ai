@@ -5154,7 +5154,7 @@ export const riconciliazioneApi = {
   movimenti: async ({ mese, categoria = null } = {}) => {
     let q = supabase
       .from('movimenti_bancari')
-      .select('impronta,data_contabile,data_valuta,descrizione,importo,saldo,categoria,origine_file')
+      .select('impronta,data_contabile,data_valuta,descrizione,importo,saldo,categoria,controparte,origine_file')
     if (mese) {
       const dal = mese
       const al = new Date(new Date(mese).getFullYear(),
