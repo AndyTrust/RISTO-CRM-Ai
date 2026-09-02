@@ -65,6 +65,8 @@ const PERCHE = {
   incassi_ticket: 'Edenred e Pellegrini pagano i buoni pasto a settimane di distanza: il ritardo qui è la norma, non un ammanco.',
   giroconti_entrata: 'Spostamenti fra conti propri. Non sono ricavi: restano fuori dal confronto, ma si mostrano perché sono la voce più grossa di tutte.',
   giroconti_uscita: 'Spostamenti fra conti propri. Non sono costi: entrata su un conto e uscita sull\'altro si annullano.',
+  spese_carta: 'Spesa fatta con la carta, dal supermercato al fornitore sotto casa. Non passa dal registro fatture e non ci puo\' passare: sta qui da sola perche\' tenerla fra i fornitori faceva sembrare la banca piu\' alta del CRM.',
+  commercialista: 'Acconti sull\'avviso di parcella dello studio. Non sono fatture fornitore: il costo vero dello studio sta nella sezione Commercialista, dove gli acconti vengono scalati.',
   da_classificare: 'Movimenti che le regole non sanno leggere. Vanno assegnati a mano: finché sono qui, i totali sotto sono incompleti.',
 }
 
